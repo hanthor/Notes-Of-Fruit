@@ -31,6 +31,22 @@ lists the signing certificate's SHA-256.
 > From v0.0.2 onwards every release uses a pinned project-owned key, so
 > future upgrades install cleanly.
 
+### Updates with Obtainium
+
+[Obtainium](https://github.com/ImranR98/Obtainium) can install the app and
+keep it updated straight from GitHub Releases:
+
+1. In Obtainium, tap **Add App**.
+2. Enter the repository URL `https://github.com/hanthor/Notes-Of-Fruit`
+   (Obtainium picks GitHub as the source).
+3. If it asks which file to use, pick the APK: release assets are named
+   `notes-of-fruit-vX.Y.Z.apk` (you can set the APK filter to
+   `notes-of-fruit-v.*\.apk` so the `.sha256` file is ignored).
+4. Tap **Add**, then **Install**.
+
+The app is not on F-Droid or IzzyOnDroid yet; see
+[docs/distribution.md](docs/distribution.md).
+
 If you'd rather build from source, see [Build / run](#build--run) further down.
 
 ## ⚠️ Use at your own risk
@@ -142,6 +158,8 @@ that touches writes.
   decisions (attribute_runs vs Markdown, auto-save, new-note flow, …).
 - [docs/signing.md](docs/signing.md) — how releases are signed and how to
   rotate the key.
+- [docs/distribution.md](docs/distribution.md) — F-Droid / IzzyOnDroid
+  readiness.
 - [PLAN.md](PLAN.md) — points at the roadmap issue.
 
 ## License

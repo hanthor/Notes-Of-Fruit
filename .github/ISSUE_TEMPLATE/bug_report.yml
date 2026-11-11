@@ -1,0 +1,92 @@
+name: Bug report
+description: Something went wrong in the app, or a note didn't survive a round trip.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Notes of Fruit is an unofficial, reverse-engineered
+        client, so details about *where the note came from* matter a lot.
+
+        **Please don't paste the private contents of your notes.** Describe the
+        structure instead (e.g. "a checklist with 3 items, the second one ticked").
+  - type: input
+    id: app-version
+    attributes:
+      label: App version
+      description: Settings > Apps > Notes of Fruit, or the release you installed (e.g. v0.0.3).
+      placeholder: v0.0.3
+    validations:
+      required: true
+  - type: input
+    id: android
+    attributes:
+      label: Android version and device
+      placeholder: Android 15, Pixel 8
+    validations:
+      required: true
+  - type: dropdown
+    id: created-on
+    attributes:
+      label: How was the affected note created?
+      multiple: true
+      options:
+        - Mac (Notes app)
+        - iPhone (iOS)
+        - iPad (iPadOS)
+        - iCloud.com
+        - This app
+        - Not sure / not note-specific
+    validations:
+      required: true
+  - type: checkboxes
+    id: content
+    attributes:
+      label: What does the note contain?
+      options:
+        - label: Attachments (images, scans, sketches, files)
+        - label: Tables
+        - label: Checklists
+        - label: Formatting (headings, lists, bold/italic, links)
+  - type: dropdown
+    id: shared
+    attributes:
+      label: Is the note shared or collaborative?
+      options:
+        - "No"
+        - "Yes, shared with others"
+        - "Yes, in a shared folder"
+        - Not sure
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the note "…" (created on a Mac)
+        2. Append a line and go back
+        3. Open the note on the Mac
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include what you saw on the other device (Mac / iPhone / iCloud.com) if relevant, e.g. duplicated text, lost formatting, note moved to Recently Deleted.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (optional)
+      description: |
+        `adb logcat -s AppleNotesClient:* AppleNotesDebug:*` output if you have it.
+        Remove anything personal first (note text, email addresses, tokens).
+      render: text

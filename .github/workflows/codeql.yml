@@ -1,0 +1,82 @@
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, Monday 05:23 UTC.
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL (java-kotlin)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          # CodeQL has to watch the compiler run; never restore build outputs.
+          cache-read-only: true
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: java-kotlin
+          build-mode: manual
+
+      # The Kotlin compiler must run inside the Gradle process (not the Kotlin
+      # daemon) and nothing may come from the build cache, or CodeQL's
+      # extractor sees no source.
+      - name: Build debug APK
+        run: >-
+          ./gradlew :app:assembleDebug --no-daemon --no-build-cache --rerun-tasks
+          -Pkotlin.compiler.execution.strategy=in-process
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:java-kotlin
+
+  android-lint:
+    name: Android lint (SARIF)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Run lint
+        run: ./gradlew :app:lintDebug --no-daemon
+
+      # Upload even when lint fails, so the errors show up in code scanning.
+      - name: Upload lint SARIF
+        if: ${{ !cancelled() && hashFiles('app/build/reports/lint-results-debug.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: app/build/reports/lint-results-debug.sarif
+          category: android-lint
