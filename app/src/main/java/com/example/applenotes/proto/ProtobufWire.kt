@@ -16,6 +16,7 @@ internal object ProtobufWire {
     const val WIRE_FIXED64 = 1
     const val WIRE_LENGTH_DELIM = 2
     const val WIRE_FIXED32 = 5
+    private const val MAX_FIELD_NUMBER = (1L shl 29) - 1
 
     data class Field(
         val fieldNumber: Int,
@@ -35,7 +36,15 @@ internal object ProtobufWire {
             val tagStart = i
             val (tag, after) = readVarint(bytes, i)
             i = after
-            val fieldNumber = (tag shr 3).toInt()
+            // Field numbers are 1..2^29-1. Anything else (0, or a tag whose
+            // upper bits overflow an Int) means we're not looking at a
+            // protobuf message — callers use decode() failures as a "this is
+            // a string, not a nested message" heuristic, so be strict.
+            val fieldNumberLong = tag ushr 3
+            if (fieldNumberLong < 1 || fieldNumberLong > MAX_FIELD_NUMBER) {
+                error("Protobuf: invalid field number $fieldNumberLong at offset $tagStart")
+            }
+            val fieldNumber = fieldNumberLong.toInt()
             val wireType = (tag and 0x7).toInt()
             when (wireType) {
                 WIRE_VARINT -> {
@@ -47,18 +56,23 @@ internal object ProtobufWire {
                 WIRE_LENGTH_DELIM -> {
                     val (len, lenEnd) = readVarint(bytes, i)
                     val payloadStart = lenEnd
-                    val payloadEnd = payloadStart + len.toInt()
-                    if (payloadEnd > bytes.size) {
-                        error("Protobuf: length-delim field $fieldNumber overflows input ($payloadEnd > ${bytes.size}) at offset $tagStart")
+                    // Compare in Long space: a huge (or "negative" 10-byte)
+                    // varint length must be rejected, not truncated by toInt()
+                    // into a small/negative number.
+                    if (len < 0 || len > (bytes.size - payloadStart).toLong()) {
+                        error("Protobuf: length-delim field $fieldNumber length $len overflows input (${bytes.size - payloadStart} bytes left) at offset $tagStart")
                     }
+                    val payloadEnd = payloadStart + len.toInt()
                     out.add(Field(fieldNumber, wireType, bytes.copyOfRange(payloadStart, payloadEnd)))
                     i = payloadEnd
                 }
                 WIRE_FIXED32 -> {
+                    if (i + 4 > bytes.size) error("Protobuf: truncated fixed32 field $fieldNumber at offset $tagStart")
                     out.add(Field(fieldNumber, wireType, bytes.copyOfRange(i, i + 4)))
                     i += 4
                 }
                 WIRE_FIXED64 -> {
+                    if (i + 8 > bytes.size) error("Protobuf: truncated fixed64 field $fieldNumber at offset $tagStart")
                     out.add(Field(fieldNumber, wireType, bytes.copyOfRange(i, i + 8)))
                     i += 8
                 }
