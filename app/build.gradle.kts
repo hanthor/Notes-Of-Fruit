@@ -94,6 +94,21 @@ android {
     testOptions {
       unitTests.isReturnDefaultValues = true
     }
+
+    lint {
+      // CI runs :app:lintDebug; any error fails the build. There is no
+      // baseline: the code base had 0 lint errors when this was turned on.
+      abortOnError = true
+      // Keep the fatal-only lintVital check that runs as part of assembleRelease.
+      checkReleaseBuilds = true
+      // SARIF is uploaded to GitHub code scanning by the CodeQL workflow.
+      sarifReport = true
+      htmlReport = true
+      xmlReport = true
+      // Version-staleness checks need network access and change from day to
+      // day without any code change; Dependabot covers them instead.
+      disable += setOf("GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion")
+    }
 }
 
 kotlin {

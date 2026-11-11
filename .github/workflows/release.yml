@@ -62,6 +62,22 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Releasing $TAG as versionName=$MAJOR.$MINOR.$PATCH versionCode=$CODE"
 
+      # Same checks as the PR workflow; a release never ships with failing
+      # tests or lint errors.
+      - name: Unit tests and lint
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug --no-daemon --continue
+
+      - name: Upload test and lint reports
+        if: ${{ !cancelled() && steps.tag.outputs.name != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-reports-${{ steps.tag.outputs.name }}
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+            app/build/reports/lint-results-debug.*
+          if-no-files-found: warn
+
       # Optional: sign with a private key held in Actions secrets. Without the
       # NOF_KEYSTORE_BASE64 secret the build falls back to the committed
       # app/keystore/release.keystore. See docs/signing.md.

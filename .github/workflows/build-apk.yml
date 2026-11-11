@@ -7,9 +7,16 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # pr<number>-<head sha> for PRs, <run number>-<sha> otherwise. Used in
+      # artifact names so downloads from different PRs/pushes are distinct.
+      ARTIFACT_SUFFIX: ${{ github.event.pull_request.number && format('pr{0}-{1}', github.event.pull_request.number, github.event.pull_request.head.sha) || format('run{0}-{1}', github.run_number, github.sha) }}
     steps:
       - uses: actions/checkout@v4
 
@@ -20,12 +27,33 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - name: Unit tests and lint
+        run: ./gradlew :app:testDebugUnitTest :app:lintDebug --no-daemon --continue
+
+      - name: Upload test reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports-${{ env.ARTIFACT_SUFFIX }}
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+          if-no-files-found: warn
+
+      - name: Upload lint reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-reports-${{ env.ARTIFACT_SUFFIX }}
+          path: app/build/reports/lint-results-debug.*
+          if-no-files-found: warn
+
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug --no-daemon
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: app-debug
+          name: app-debug-${{ env.ARTIFACT_SUFFIX }}
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
