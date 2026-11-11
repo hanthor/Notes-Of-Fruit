@@ -90,7 +90,6 @@ dependencies {
   // HTTP + JSON + persistence
   implementation(libs.ktor.client.core)
   implementation(libs.ktor.client.okhttp)
-  implementation(libs.ktor.client.logging)
   implementation(libs.kotlinx.serialization.json)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.androidx.datastore.preferences)
@@ -110,9 +109,4 @@ dependencies {
   androidTestImplementation(libs.androidx.test.ext.junit)
   androidTestImplementation(libs.androidx.test.runner)
   androidTestImplementation(libs.androidx.test.espresso.core)
-
-  // Navigation
-  implementation(libs.androidx.navigation3.ui)
-  implementation(libs.androidx.navigation3.runtime)
-  implementation(libs.androidx.lifecycle.viewmodel.navigation3)
 }
