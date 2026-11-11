@@ -27,8 +27,14 @@ private const val TAG = "AppleNotesDebug"
  * from a terminal) drive the app's iCloud Notes operations without going
  * through the UI.
  *
- * Triggered by:
- *   adb shell am broadcast -p com.example.applenotes -a com.example.applenotes.<ACTION> [extras...]
+ * DEBUG BUILDS ONLY. This file lives in `src/debug` and is registered by
+ * `src/debug/AndroidManifest.xml`, so it is never compiled into, or declared
+ * by, a release APK. See that manifest for why the receiver is exported but
+ * guarded by `android.permission.DUMP` (adb shell can send to it; other apps
+ * on the device cannot).
+ *
+ * Triggered by (debug builds use the `.debug` application ID suffix):
+ *   adb shell am broadcast -p io.github.hanthor.notesoffruit.debug -a com.example.applenotes.<ACTION> [extras...]
  *
  * Actions:
  *   LIST                                    — fetchRecents, log every note
@@ -36,6 +42,16 @@ private const val TAG = "AppleNotesDebug"
  *   LOOKUP_BY_TITLE --es title <substring>  — list, find first match, look it up
  *   APPEND --es recordName <name> --es text <chars>           — append text to a specific record
  *   APPEND_BY_TITLE --es title <sub> --es text <chars>        — list+match+append
+ *   SET_BODY_BY_TITLE --es title <sub> --es body <text>       — replace a note's body
+ *   DELETE_BY_TITLE --es title <sub>                          — delete (moves to Recently Deleted)
+ *   DUMP_BY_TITLE --es title <sub>          — log the body proto (base64 + decoded views)
+ *   DUMP_RECORD --es recordName <name>      — log every string field of a record
+ *   CREATE --es title <t> --es body <b>     — create a note in an existing note's folder
+ *
+ * Each operation runs on a coroutine; [goAsync] keeps the broadcast (and so
+ * the process) alive until it finishes. Android still enforces the broadcast
+ * timeout (about 60 s for a background broadcast), so a very slow network
+ * operation can still be cut short.
  *
  * Every step logs under the "AppleNotesDebug" tag with a stable prefix so a
  * driver script can pull `adb logcat -s AppleNotesDebug:* AppleNotesClient:* AppleNotesAppender:*`
@@ -242,6 +258,10 @@ class DebugReceiver : BroadcastReceiver() {
     }
 
     private fun launchOp(label: String, op: suspend (AppleNotesClient, ICloudSession) -> Unit) {
+        // Without goAsync() the system treats the broadcast as handled as soon
+        // as onReceive returns and may kill the (otherwise idle) process while
+        // the coroutine is still mid-write. finish() releases it.
+        val pending = goAsync()
         scope.launch {
             try {
                 val session = bootstrap()
@@ -250,6 +270,8 @@ class DebugReceiver : BroadcastReceiver() {
                 Log.i(TAG, "$label DONE")
             } catch (e: Throwable) {
                 Log.e(TAG, "$label FAILED ${e.javaClass.simpleName}: ${e.message}", e)
+            } finally {
+                pending.finish()
             }
         }
     }

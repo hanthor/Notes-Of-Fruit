@@ -321,7 +321,10 @@ These were dead ends; documenting so you don't repeat them.
 | Share OUT | Detail screen → share button → Android chooser appears |
 | Folder filter | Drawer → select folder → list filters; trash hidden by default |
 
-The `DebugReceiver` exposes the same code paths via `adb` broadcasts:
+The `DebugReceiver` exposes the same code paths via `adb` broadcasts. It only
+exists in **debug builds** (`app/src/debug/`) and only accepts broadcasts from
+senders holding `android.permission.DUMP`, which `adb shell` has and ordinary
+apps don't:
 
 ```bash
 # List all notes

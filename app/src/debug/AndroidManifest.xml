@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Debug-only manifest, merged on top of src/main/AndroidManifest.xml for the
+    debug build type. Nothing declared here ships in a release APK.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+            ADB-driven DebugReceiver: lets `adb shell am broadcast` run iCloud
+            Notes operations (list / lookup / append / set body / delete /
+            dump / create) without going through the UI.
+
+            Why exported="true" + permission="android.permission.DUMP":
+
+            * exported="false" would block adb too. ActivityManager only lets
+              root (uid 0), system (uid 1000) or the app's own uid deliver to a
+              non-exported component; `adb shell` runs as the shell uid (2000),
+              so `am broadcast -n <pkg>/<receiver>` is refused unless the device
+              allows `adb root` (emulator/userdebug images only).
+            * A custom permission with protectionLevel="signature" would block
+              adb too: the shell package is signed with the platform key, not
+              ours, so it can never hold it.
+            * android.permission.DUMP has protectionLevel
+              "signature|privileged|development". The shell package (which adb
+              shell runs as) is granted it, so adb can broadcast to this
+              receiver. A normal third-party app cannot obtain it: it is not a
+              runtime permission the user can grant in a dialog; the only way to
+              give it to another app is for someone with adb access to run
+              `pm grant <pkg> android.permission.DUMP` (development flag) — and
+              anyone with adb access can already drive this receiver.
+
+            The sender must hold DUMP, so a broadcast from any other installed
+            app is dropped by the system before onReceive runs.
+        -->
+        <receiver
+            android:name=".debug.DebugReceiver"
+            android:exported="true"
+            android:permission="android.permission.DUMP">
+            <intent-filter>
+                <action android:name="com.example.applenotes.LIST" />
+                <action android:name="com.example.applenotes.LOOKUP" />
+                <action android:name="com.example.applenotes.LOOKUP_BY_TITLE" />
+                <action android:name="com.example.applenotes.APPEND" />
+                <action android:name="com.example.applenotes.APPEND_BY_TITLE" />
+                <action android:name="com.example.applenotes.SET_BODY_BY_TITLE" />
+                <action android:name="com.example.applenotes.DELETE_BY_TITLE" />
+                <action android:name="com.example.applenotes.DUMP_BY_TITLE" />
+                <action android:name="com.example.applenotes.DUMP_RECORD" />
+                <action android:name="com.example.applenotes.CREATE" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>

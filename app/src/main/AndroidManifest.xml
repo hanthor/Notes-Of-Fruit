@@ -22,25 +22,8 @@
             </intent-filter>
         </activity>
 
-        <!-- Debug-driven receiver. Lets `adb shell am broadcast` invoke iCloud
-             Notes operations (list / lookup / append) without going through
-             the UI. Enables closed-loop testing alongside the `memo` CLI. -->
-        <receiver
-            android:name=".debug.DebugReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="com.example.applenotes.LIST" />
-                <action android:name="com.example.applenotes.LOOKUP" />
-                <action android:name="com.example.applenotes.LOOKUP_BY_TITLE" />
-                <action android:name="com.example.applenotes.APPEND" />
-                <action android:name="com.example.applenotes.APPEND_BY_TITLE" />
-                <action android:name="com.example.applenotes.SET_BODY_BY_TITLE" />
-                <action android:name="com.example.applenotes.DELETE_BY_TITLE" />
-                <action android:name="com.example.applenotes.DUMP_BY_TITLE" />
-                <action android:name="com.example.applenotes.DUMP_RECORD" />
-                <action android:name="com.example.applenotes.CREATE" />
-            </intent-filter>
-        </receiver>
+        <!-- The adb DebugReceiver is declared in src/debug/AndroidManifest.xml
+             so it never ships in release builds. -->
     </application>
 
 </manifest>
