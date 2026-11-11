@@ -223,7 +223,12 @@ object NoteBodyEditor {
             if (len == 1) {
                 if (b == 0x09 || b == 0x0A || b == 0x0D || (b in 0x20..0x7E)) printable++
             } else {
-                printable++
+                // Count BYTES, not characters: the threshold below compares
+                // against bytes.size. Counting one per multi-byte char made a
+                // note written mostly in CJK / emoji (3–4 bytes per char) fall
+                // under 80% and get misclassified as MERGABLE_DATA, which
+                // made every edit to it refuse with "Cannot append/splice".
+                printable += len
             }
             i += len
         }

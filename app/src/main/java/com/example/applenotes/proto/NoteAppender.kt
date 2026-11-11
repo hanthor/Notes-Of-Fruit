@@ -749,11 +749,21 @@ object NoteAppender {
             }
         }
         val currentVisible = visibleSb.toString()
-        if (currentVisible == newFullBody && newSpans == null) {
+        // Callers hand us text that went through NoteBodyEditor.readVisibleText,
+        // which maps U+2028 / U+2029 to '\n' for display. Compare in that
+        // normalised space so an unchanged soft line break isn't seen as an
+        // edit (which used to rewrite every U+2028 in the note into '\n', i.e.
+        // turn soft breaks into paragraph breaks on Mac). The mapping is 1:1
+        // in UTF-16 units, so positions/lengths are identical in both spaces;
+        // kept chars always come from the original substrings, so the
+        // original separators survive.
+        val currentNorm = normaliseLineBreaks(currentVisible)
+        val targetNorm = normaliseLineBreaks(newFullBody)
+        if (currentNorm == targetNorm && newSpans == null) {
             Log.i(TAG, "setBodySplice: no-op (current visible matches target)")
             return protoBytes
         }
-        if (currentVisible == newFullBody && newSpans != null) {
+        if (currentNorm == targetNorm && newSpans != null) {
             // Format-only change — text unchanged but spans differ. Take a
             // shortcut: re-encode just the attribute_runs into the existing
             // proto, without splicing the substring tree.
@@ -764,17 +774,23 @@ object NoteAppender {
             "setBodySplice: currentVisible.len=${currentVisible.length} newBody.len=${newFullBody.length}",
         )
 
-        // Diff: longest common prefix + longest common suffix.
-        val maxPrefix = minOf(currentVisible.length, newFullBody.length)
+        // Diff: longest common prefix + longest common suffix (UTF-16 units),
+        // never splitting a surrogate pair: replacing 😀 (D83D DE00) with
+        // 😁 (D83D DE01) must tombstone/insert the whole code point, not leave
+        // a substring boundary (and a lone surrogate in a substring) between
+        // the halves.
+        val maxPrefix = minOf(currentNorm.length, targetNorm.length)
         var prefixLen = 0
-        while (prefixLen < maxPrefix && currentVisible[prefixLen] == newFullBody[prefixLen]) prefixLen++
+        while (prefixLen < maxPrefix && currentNorm[prefixLen] == targetNorm[prefixLen]) prefixLen++
+        if (prefixLen > 0 && currentNorm[prefixLen - 1].isHighSurrogate()) prefixLen--
         var suffixLen = 0
         while (
-            suffixLen < currentVisible.length - prefixLen &&
-            suffixLen < newFullBody.length - prefixLen &&
-            currentVisible[currentVisible.length - 1 - suffixLen] ==
-                newFullBody[newFullBody.length - 1 - suffixLen]
+            suffixLen < currentNorm.length - prefixLen &&
+            suffixLen < targetNorm.length - prefixLen &&
+            currentNorm[currentNorm.length - 1 - suffixLen] ==
+                targetNorm[targetNorm.length - 1 - suffixLen]
         ) suffixLen++
+        if (suffixLen > 0 && currentNorm[currentNorm.length - suffixLen].isLowSurrogate()) suffixLen--
         val deleteFrom = prefixLen
         val deleteTo = currentVisible.length - suffixLen
         val insertText = newFullBody.substring(prefixLen, newFullBody.length - suffixLen)
@@ -1421,6 +1437,10 @@ object NoteAppender {
         top[versionIdx] = top[versionIdx].copy(payload = ProtobufWire.encode(versionFields))
         return ProtobufWire.encode(top)
     }
+
+    /** The same U+2028/U+2029 → '\n' mapping NoteBodyEditor.readVisibleText applies. */
+    private fun normaliseLineBreaks(s: String): String =
+        s.replace(' ', '\n').replace(' ', '\n')
 
     private data class ParsedSubstring(
         val noteFieldIdx: Int,   // index in stringFields list
