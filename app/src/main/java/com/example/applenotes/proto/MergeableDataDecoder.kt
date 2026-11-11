@@ -154,7 +154,7 @@ object MergeableDataDecoder {
      * decides whether to interpret the int as an object_id ref by context (key
      * meaning).
      */
-    private data class MapValue(val ref: Int? = null, val literal: String? = null)
+    private data class MapValue(val ref: Int? = null, val literal: String? = null, val uint: Long? = null)
 
     private fun customMapEntries(obj: List<ProtobufWire.Field>): Map<Int, MapValue> {
         val outer = obj.firstOrNull { it.fieldNumber == 13 && it.wireType == ProtobufWire.WIRE_LENGTH_DELIM }
@@ -174,9 +174,11 @@ object MergeableDataDecoder {
             val vinner = ProtobufWire.decode(valField.payload)
             val refField = vinner.firstOrNull { it.fieldNumber == 6 && it.wireType == ProtobufWire.WIRE_VARINT }
             val litField = vinner.firstOrNull { it.fieldNumber == 4 && it.wireType == ProtobufWire.WIRE_LENGTH_DELIM }
+            val uintField = vinner.firstOrNull { it.fieldNumber == 2 && it.wireType == ProtobufWire.WIRE_VARINT }
             out[keyId] = MapValue(
                 ref = refField?.let { ProtobufWire.decodeVarint(it).toInt() },
                 literal = litField?.let { runCatching { it.payload.decodeToString() }.getOrNull() },
+                uint = uintField?.let { ProtobufWire.decodeVarint(it) },
             )
         }
         return out
@@ -237,6 +239,75 @@ object MergeableDataDecoder {
         return out
     }
 
+    /** First varint `f` of a length-delimited ObjectID-ish message, or null. */
+    private fun varintIn(payload: ByteArray, f: Int): Long? =
+        ProtobufWire.decode(payload).firstOrNull { it.fieldNumber == f && it.wireType == ProtobufWire.WIRE_VARINT }
+            ?.let { ProtobufWire.decodeVarint(it) }
+
+    private fun subMessages(payload: ByteArray, f: Int): List<ByteArray> =
+        ProtobufWire.decode(payload).filter { it.fieldNumber == f && it.wireType == ProtobufWire.WIRE_LENGTH_DELIM }
+            .map { it.payload }
+
+    /**
+     * The UUID-item index carried by an NSUUID wrapper object: a CustomMap
+     * (f13) whose `UUIDIndex` entry (or, failing that, first entry) has an
+     * unsignedIntegerValue (ObjectID.f2) indexing [ObjectData.uuids].
+     * crRows/crColumns and cellColumns refer to rows/columns through
+     * DIFFERENT wrapper objects, so UUIDs (not object refs) are the common key.
+     */
+    private fun uuidIndexOf(od: ObjectData, objIdx: Int): Int? {
+        val obj = od.objects.getOrNull(objIdx) ?: return null
+        if (objectKind(obj) != ObjectKind.CUSTOM_MAP) return null
+        val entries = customMapEntries(obj)
+        val keyUuidIndex = od.keys.indexOf("UUIDIndex")
+        val v = entries[keyUuidIndex]?.uint ?: entries.values.firstOrNull()?.uint ?: return null
+        return v.toInt().takeIf { it in od.uuids.indices }
+    }
+
+    /**
+     * Visual order of a crRows/crColumns OrderedSet:
+     *
+     *   OrderedSet (f16) { ordering = 1 { array = 1 { contents = 1;
+     *                                                 repeated attachment = 2 { index = 1; uuid = 2 } }
+     *                                     contents = 2 (Dictionary) }
+     *                      elements = 2 (Dictionary) }
+     *
+     * `ordering.array.attachment` lists the member UUIDs (raw 16 bytes) in
+     * visual order. `ordering.contents` maps a key wrapper → value wrapper:
+     * the value UUID is the identity other structures (cellColumns) use for
+     * the member at the key UUID's position.
+     *
+     * Returns (uuidItemIndex → position, member count), or null when the set
+     * can't be resolved (missing pieces, UUID not in the uuid table).
+     */
+    private fun orderedSetPositions(od: ObjectData, obj: List<ProtobufWire.Field>): Pair<Map<Int, Int>, Int>? =
+        runCatching {
+            val set = obj.firstOrNull { it.fieldNumber == 16 && it.wireType == ProtobufWire.WIRE_LENGTH_DELIM }
+                ?: return@runCatching null
+            val ordering = subMessages(set.payload, 1).firstOrNull() ?: return@runCatching null
+            val array = subMessages(ordering, 1).firstOrNull() ?: return@runCatching null
+            val attachments = subMessages(array, 2)
+            if (attachments.isEmpty()) return@runCatching null
+            val pos = HashMap<Int, Int>()
+            for ((k, att) in attachments.withIndex()) {
+                val uuid = subMessages(att, 2).firstOrNull() ?: return@runCatching null
+                val idx = od.uuids.indexOfFirst { it.contentEquals(uuid) }
+                if (idx < 0) return@runCatching null
+                pos[idx] = k
+            }
+            val contents = subMessages(ordering, 2).firstOrNull()
+            if (contents != null) {
+                for (el in subMessages(contents, 1)) {
+                    val keyObj = subMessages(el, 1).firstOrNull()?.let { varintIn(it, 6) }?.toInt() ?: continue
+                    val valObj = subMessages(el, 2).firstOrNull()?.let { varintIn(it, 6) }?.toInt() ?: continue
+                    val keyU = uuidIndexOf(od, keyObj) ?: continue
+                    val valU = uuidIndexOf(od, valObj) ?: continue
+                    pos[keyU]?.let { p -> pos.putIfAbsent(valU, p) }
+                }
+            }
+            pos to attachments.size
+        }.getOrNull()
+
     /** Read NSString.currentText (field 2 of the f10 wrapper). */
     private fun stringText(obj: List<ProtobufWire.Field>): String? {
         val outer = obj.firstOrNull { it.fieldNumber == 10 && it.wireType == ProtobufWire.WIRE_LENGTH_DELIM }
@@ -263,14 +334,13 @@ object MergeableDataDecoder {
             objectKind(it) == ObjectKind.CUSTOM_MAP && customMapTypeId(it) == tableTypeIdx
         } ?: return tableFallback(od)
 
-        // 2. Resolve key index for cellColumns. We use cellColumns as the
-        // single source of truth for grid contents — its outer keys give the
-        // column set, and the inner dicts give the row set per column. crRows
-        // and crColumns OrderedSets carry the canonical visual order, but their
-        // node-ref encoding doesn't match cellColumns' direct refs (they go
-        // through a separate UUIDIndex layer we haven't fully decoded yet).
-        // Iteration order in cellColumns matches insertion order, which
-        // matches visual order for tables created left-to-right top-to-bottom.
+        // 2. Resolve key index for cellColumns. cellColumns is the single
+        // source of truth for grid CONTENTS — its outer keys give the column
+        // set, and the inner dicts give the row set per column. ORDER comes
+        // from the crRows / crColumns OrderedSets, matched to cellColumns'
+        // keys by UUID (see orderedSetPositions). If those can't be resolved
+        // we fall back to cellColumns iteration order, which matches visual
+        // order for tables created left-to-right top-to-bottom.
         val keyCellColumns = od.keys.indexOf("cellColumns")
         if (keyCellColumns < 0) return tableFallback(od)
         val ent = customMapEntries(icTableObj)
@@ -289,7 +359,9 @@ object MergeableDataDecoder {
             perCol[colRef] = dictEntries(innerObj)
         }
 
-        // 5. Row ordering: union of row_refs as they appear across columns,
+        orderedGrid(od, ent, outer, perCol)?.let { return it }
+
+        // 5. Fallback row ordering: union of row_refs as they appear across columns,
         // preserving first-appearance order.
         val rowOrder = LinkedHashSet<Int>()
         for ((_, entries) in perCol) for ((rowRef, _) in entries) rowOrder.add(rowRef)
@@ -310,6 +382,36 @@ object MergeableDataDecoder {
             }
         }
         return TableGrid(rows = rowOrderList.size, cols = colOrder.size, cells = grid)
+    }
+
+    /**
+     * Grid in the visual order given by crRows / crColumns, or null if any
+     * piece can't be resolved (caller then uses cellColumns iteration order).
+     * Every cell's row and column must map to a position — we never guess.
+     */
+    private fun orderedGrid(
+        od: ObjectData,
+        tableEntries: Map<Int, MapValue>,
+        outer: List<Pair<Int, Int>>,
+        perCol: Map<Int, List<Pair<Int, Int>>>,
+    ): TableGrid? {
+        fun setFor(key: String): Pair<Map<Int, Int>, Int>? {
+            val k = od.keys.indexOf(key).takeIf { it >= 0 } ?: return null
+            val ref = tableEntries[k]?.ref ?: return null
+            return orderedSetPositions(od, od.objects.getOrNull(ref) ?: return null)
+        }
+        val (rowPos, rowCount) = setFor("crRows") ?: return null
+        val (colPos, colCount) = setFor("crColumns") ?: return null
+        val grid = List(rowCount) { MutableList(colCount) { "" } }
+        for ((colRef, _) in outer) {
+            val c = uuidIndexOf(od, colRef)?.let { colPos[it] } ?: return null
+            for ((rowRef, strRef) in perCol[colRef].orEmpty()) {
+                val r = uuidIndexOf(od, rowRef)?.let { rowPos[it] } ?: return null
+                val text = od.objects.getOrNull(strRef)?.let { stringText(it) } ?: continue
+                grid[r][c] = text
+            }
+        }
+        return TableGrid(rows = rowCount, cols = colCount, cells = grid)
     }
 
     /**
