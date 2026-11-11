@@ -5,10 +5,10 @@
     <style name="Theme.App.Starting" parent="Theme.SplashScreen">
         <item name="windowSplashScreenBackground">@color/splash_background</item>
         <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
-        <item name="postSplashScreenTheme">@style/Theme.MyApplication</item>
+        <item name="postSplashScreenTheme">@style/Theme.NotesOfFruit</item>
     </style>
 
-    <style name="Theme.MyApplication" parent="android:Theme.Material.Light.NoActionBar">
+    <style name="Theme.NotesOfFruit" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/window_background</item>
     </style>
 </resources>

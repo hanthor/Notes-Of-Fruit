@@ -16,6 +16,13 @@ Grab a signed APK from the [Releases page](../../releases) and side-load it onto
 Android 8.0+ device. Each release's notes link back to the disclaimer below;
 read it first.
 
+> **Upgrading from v0.0.2 or earlier:** the application ID changed from
+> `com.example.applenotes` to `io.github.hanthor.notesoffruit`. Android treats
+> the new build as a different app, so it installs *next to* the old one
+> instead of upgrading it. **Uninstall the old "Notes of Fruit" first**, then
+> install the new APK and sign in again. Your notes live in iCloud; nothing is
+> lost.
+
 > **Note for early v0.0.1 users:** v0.0.1 was signed with an unstable CI key,
 > so upgrading directly to v0.0.2+ will fail with "Something went wrong / app
 > could not be installed." **Uninstall v0.0.1 first**, then install v0.0.2.
@@ -327,18 +334,22 @@ senders holding `android.permission.DUMP`, which `adb shell` has and ordinary
 apps don't:
 
 ```bash
+# Debug builds install as io.github.hanthor.notesoffruit.debug. The action
+# names keep the old com.example.applenotes prefix (they are just strings).
+PKG=io.github.hanthor.notesoffruit.debug
+
 # List all notes
-adb shell am broadcast -p com.example.applenotes -a com.example.applenotes.LIST
+adb shell am broadcast -p $PKG -a com.example.applenotes.LIST
 
 # Look up a specific note by title
-adb shell am broadcast -p com.example.applenotes -a com.example.applenotes.LOOKUP_BY_TITLE --es title 'foo'
+adb shell am broadcast -p $PKG -a com.example.applenotes.LOOKUP_BY_TITLE --es title 'foo'
 
 # Append to an existing note
-adb shell am broadcast -p com.example.applenotes -a com.example.applenotes.APPEND_BY_TITLE \
+adb shell am broadcast -p $PKG -a com.example.applenotes.APPEND_BY_TITLE \
   --es title 'foo' --es text 'extra line'
 
 # Create a new note
-adb shell am broadcast -p com.example.applenotes -a com.example.applenotes.CREATE \
+adb shell am broadcast -p $PKG -a com.example.applenotes.CREATE \
   --es title 'newnote' --es body 'hello'
 ```
 
@@ -372,8 +383,24 @@ Read order if you're new:
 ```bash
 ./gradlew :app:assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
-adb shell am start -n com.example.applenotes/.MainActivity
+adb shell am start -n io.github.hanthor.notesoffruit.debug/com.example.applenotes.MainActivity
 ```
+
+Debug builds use the application ID `io.github.hanthor.notesoffruit.debug`
+(label "Notes of Fruit (debug)"), so they can sit next to a release install
+(`io.github.hanthor.notesoffruit`). The Kotlin packages and Gradle namespace
+are still `com.example.applenotes`, which is why the activity's class name in
+`am start -n` keeps that prefix. For a release build:
+
+```bash
+./gradlew :app:assembleRelease   # signed; see docs/signing.md
+adb install -r app/build/outputs/apk/release/app-release.apk
+adb shell am start -n io.github.hanthor.notesoffruit/com.example.applenotes.MainActivity
+```
+
+Versions default to the values in `app/build.gradle.kts`; override them with
+`-PversionName=0.1.2 -PversionCode=102`. The release workflow derives both from
+the tag (`vX.Y.Z` → name `X.Y.Z`, code `X*10000 + Y*100 + Z`).
 
 You'll need an Android emulator or device with Google Play Services. Sign in
 with an Apple ID that has Notes enabled in iCloud. The first launch goes through

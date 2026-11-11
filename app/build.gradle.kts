@@ -4,39 +4,72 @@ plugins {
   alias(libs.plugins.kotlin.serialization)
 }
 
+// Version comes from Gradle properties so the release workflow can derive it
+// from the git tag:  ./gradlew assembleRelease -PversionName=0.1.2 -PversionCode=102
+// The defaults are what a plain local build gets.
+val appVersionName: String = providers.gradleProperty("versionName").getOrElse("0.0.2")
+val appVersionCode: Int = providers.gradleProperty("versionCode").map { it.toInt() }.getOrElse(2)
+
+// Release signing: prefer a keystore supplied through the environment (wired
+// from GitHub Actions secrets in .github/workflows/release.yml); fall back to
+// the committed alpha keystore. See docs/signing.md for rotating to a private
+// key and what that means for people upgrading.
+fun env(name: String): String? = providers.environmentVariable(name).orNull?.takeIf { it.isNotBlank() }
+val envKeystorePath: String? = env("NOF_KEYSTORE_PATH")
+
 android {
+    // The namespace (R class / Kotlin package) stays com.example.applenotes;
+    // only the installed application ID changed. See README "Install".
     namespace = "com.example.applenotes"
     compileSdk = 36
     defaultConfig {
-        applicationId = "com.example.applenotes"
+        applicationId = "io.github.hanthor.notesoffruit"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.0.2"
+        versionCode = appVersionCode
+        versionName = appVersionName
     }
 
     signingConfigs {
-        // Stable project-owned keystore so every release-tagged build is
-        // signed with the SAME key. Without this, GH Actions generates a
-        // fresh ~/.android/debug.keystore per runner and users can't upgrade
-        // across releases (Android rejects an APK update with a different
-        // signing certificate).
+        // Stable keystore so every release-tagged build is signed with the
+        // SAME key. Without this, GH Actions generates a fresh
+        // ~/.android/debug.keystore per runner and users can't upgrade across
+        // releases (Android rejects an APK update with a different signing
+        // certificate).
         //
-        // Password is committed alongside the keystore on purpose — this is
-        // an alpha self-signed cert, not a Play Store key. Anyone who can
-        // pull the repo can rebuild & sign their own APK; that's the
-        // expected level of trust for a research project.
+        // The fallback keystore's password is committed alongside it on
+        // purpose — this is an alpha self-signed cert, not a Play Store key.
+        // Anyone who can pull the repo can rebuild & sign their own APK; that's
+        // the expected level of trust for a research project. Setting the
+        // NOF_KEYSTORE_* environment variables overrides it.
         create("releaseAlpha") {
-            storeFile = file("keystore/release.keystore")
-            storePassword = "notesoffruit"
-            keyAlias = "notes-of-fruit"
-            keyPassword = "notesoffruit"
+            if (envKeystorePath != null) {
+                storeFile = file(envKeystorePath)
+                storePassword = env("NOF_KEYSTORE_PASSWORD")
+                    ?: error("NOF_KEYSTORE_PATH is set but NOF_KEYSTORE_PASSWORD is not")
+                keyAlias = env("NOF_KEY_ALIAS")
+                    ?: error("NOF_KEYSTORE_PATH is set but NOF_KEY_ALIAS is not")
+                keyPassword = env("NOF_KEY_PASSWORD") ?: storePassword
+            } else {
+                storeFile = file("keystore/release.keystore")
+                storePassword = "notesoffruit"
+                keyAlias = "notes-of-fruit"
+                keyPassword = "notesoffruit"
+            }
         }
     }
 
     buildTypes {
+        debug {
+            // Lets a debug build sit next to a release install on one device.
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+        }
         release {
-            isMinifyEnabled = false
+            // R8 on. proguard-rules.pro keeps every class in the app's own
+            // packages, so only library code is shrunk/obfuscated.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             signingConfig = signingConfigs.getByName("releaseAlpha")
         }
