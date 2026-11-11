@@ -1,13 +1,21 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample backup rules file; uncomment and customize as necessary.
-   See https://developer.android.com/guide/topics/data/autobackup
-   for details.
-   Note: This file is ignored for devices older than API 31
-   See https://developer.android.com/about/versions/12/backup-restore
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Full-backup rules for API 23-30 (android:fullBackupContent).
+
+    Backup is disabled in the manifest (allowBackup="false"); this file is a
+    second guard in case that flag is ever flipped. Nothing in the app's
+    private storage may leave the device:
+      * file/datastore/device_identity.preferences_pb holds this install's CRDT
+        replica UUID. Restoring it onto another device makes two installs write
+        as the same replica and corrupts notes.
+      * root/app_webview/ holds the WebView cookie jar with the iCloud session.
+    Everything else (DataStore prefs, caches) is cheap to rebuild after signing
+    in again.
 -->
 <full-backup-content>
-    <!--
-   <include domain="sharedpref" path="."/>
-   <exclude domain="sharedpref" path="device.xml"/>
--->
+    <exclude domain="root" path="." />
+    <exclude domain="file" path="." />
+    <exclude domain="database" path="." />
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="external" path="." />
 </full-backup-content>

@@ -4,8 +4,23 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!--
+        Backup is OFF, on purpose. The app's private data holds:
+          * files/datastore/device_identity.preferences_pb: this install's
+            CRDT replica UUID. Restoring it onto another device would make two
+            installs write as the same replica and corrupt notes.
+          * app_webview/: the WebView cookie jar with the iCloud session.
+        allowBackup="false" covers Auto Backup and adb backup on API 30 and
+        below (fullBackupContent excludes everything as a second guard). On
+        API 31+ allowBackup does NOT stop device-to-device transfer, so
+        dataExtractionRules excludes every domain for both cloud backup and
+        device transfer. A new device signs in again and creates a fresh
+        replica UUID.
+    -->
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
