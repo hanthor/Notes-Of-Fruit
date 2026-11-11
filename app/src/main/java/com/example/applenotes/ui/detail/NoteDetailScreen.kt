@@ -37,6 +37,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,167 +48,55 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import com.example.applenotes.client.NoteRecord
-import com.example.applenotes.proto.NoteBodyEditor
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.applenotes.ui.common.CenteredSpinner
 import com.example.applenotes.ui.common.humanRelative
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun NoteDetailScreen(
-    record: NoteRecord,
+    vm: NoteDetailViewModel,
+    /** Leave to the list without saving (nothing to save, or a save is in flight). */
     onBack: () -> Unit,
-    onSave: (newBody: String, isPureAppend: Boolean, alsoExit: Boolean, newSpans: List<NoteBodyEditor.AttrSpan>?) -> Unit,
-    onDelete: () -> Unit,
-    saving: Boolean,
-    savedHint: String? = null,
-    lastSavedAtMs: Long? = null,
-    onHintShown: () -> Unit = {},
-    onFetchAttachment: (suspend (String) -> NoteRecord?)? = null,
-    onFetchAsset: (suspend (String) -> ByteArray?)? = null,
 ) {
+    val status by vm.status.collectAsStateWithLifecycle()
+    val record = vm.record
+    if (status.loading || record == null) {
+        CenteredSpinner("Loading note…")
+        return
+    }
+    if (status.deleting) {
+        CenteredSpinner("Deleting…")
+        return
+    }
     val lifecycleOwner = LocalLifecycleOwner.current
     val shareContext = LocalContext.current
     val snackbarHostState = remember { SnackbarHostState() }
-    LaunchedEffect(savedHint) {
-        if (savedHint != null) {
-            snackbarHostState.showSnackbar(savedHint)
-            onHintShown()
-        }
-    }
-    val originalBody = remember(record.recordName, record.recordChangeTag) {
-        record.stringField("TextDataEncrypted")?.let { b64 ->
-            runCatching { NoteBodyEditor.readVisibleTextFromBase64(b64) }.getOrNull()
-                ?: runCatching { NoteBodyEditor.readTextFromBase64(b64) }.getOrNull()
-        }.orEmpty()
-    }
-    // Apple Notes stores the title as the first line of the body. We split the
-    // raw originalBody into two editable pieces:
-    //   - `titleDraft`  → rendered as a TextField inside the top app bar
-    //   - `bodyDraft`   → rendered as the main BasicTextField below
-    // On save we re-assemble `titleDraft + "\n" + bodyDraft` (omitting the
-    // separator if either piece is empty) so the underlying CloudKit body
-    // shape stays identical to what Mac expects (first line == title).
-    val initialTitle = remember(originalBody) {
-        val firstNl = originalBody.indexOf('\n')
-        if (firstNl < 0) originalBody else originalBody.substring(0, firstNl)
-    }
-    val initialBody = remember(originalBody) {
-        val firstNl = originalBody.indexOf('\n')
-        if (firstNl < 0) "" else originalBody.substring(firstNl + 1)
-    }
-    var titleDraft by remember(record.recordName, record.recordChangeTag) {
-        mutableStateOf(initialTitle)
-    }
-    var bodyDraft by remember(record.recordName, record.recordChangeTag) {
-        mutableStateOf(androidx.compose.ui.text.input.TextFieldValue(initialBody))
-    }
-    val fullBodyForSave = when {
-        titleDraft.isEmpty() && bodyDraft.text.isEmpty() -> ""
-        titleDraft.isEmpty() -> bodyDraft.text
-        bodyDraft.text.isEmpty() -> titleDraft
-        else -> "$titleDraft\n${bodyDraft.text}"
-    }
-    // isModified is computed after spansDraft is declared below — see further down.
-    val isPureAppend = remember(fullBodyForSave, originalBody) {
-        fullBodyForSave.startsWith(originalBody) && fullBodyForSave.length > originalBody.length
-    }
-    var isModified = fullBodyForSave != originalBody
-
-    // Parse the note's attribute_runs once per record load — kept around so
-    // the splice path in NoteAppender can preserve paragraph styles through
-    // edits (Phase D1). Display-time formatting via VisualTransformation is
-    // a future enhancement; for now the editor shows plain text.
-    val attrSpans = remember(record.recordName, record.recordChangeTag) {
-        record.stringField("TextDataEncrypted")?.let { b64 ->
-            runCatching { NoteBodyEditor.parseAttributeRunsFromBase64(b64) }.getOrNull()
-        }.orEmpty()
-    }
-    // attrSpans cover the FULL visible text including the title line (which
-    // we render separately in the app bar). Trim the title's worth of spans
-    // off the front so styleAt indexes align with `initialBody`. Computed
-    // from spansDraft so toolbar/tap mutations are reflected live.
-    // (spansDraft is declared below; we wrap in remember after that.)
-    // Default to the formatted view when the note has any non-body paragraph
-    // style (heading, bullets, checkboxes, etc.). Plain notes go straight to
-    // the editor — no extra tap needed. Tapping the formatted view drops
-    // into the editor; we don't auto-toggle back, to avoid losing edits.
-    val bodyAttrSpansInit = remember(originalBody, attrSpans) {
-        val skip = if (originalBody.contains('\n')) initialTitle.length + 1
-                   else initialTitle.length
-        attrSpansAfter(attrSpans, skip)
-    }
-    val hasRichFormatting = remember(bodyAttrSpansInit) {
-        bodyAttrSpansInit.any {
-            it.style != NoteBodyEditor.ParagraphStyle.BODY &&
-                it.style != NoteBodyEditor.ParagraphStyle.TITLE
-        }
-    }
-    var viewMode by remember(record.recordName, record.recordChangeTag) {
-        mutableStateOf(hasRichFormatting && initialBody.isNotEmpty())
-    }
-
-    // Mutable AttrSpan list driving the editor's formatting state. Covers the
-    // FULL visible body (title + "\n" + body) — same coordinate space as the
-    // proto. Toolbar mutations operate on body-relative ranges and we add the
-    // title prefix length when applying.
-    var spansDraft by remember(record.recordName, record.recordChangeTag) {
-        mutableStateOf(attrSpans)
-    }
-    // Track the previous full-body text so we can keep [spansDraft] in sync
-    // with character insertions/deletions.
-    var prevFullBody by remember(record.recordName, record.recordChangeTag) {
-        mutableStateOf(originalBody)
-    }
-    LaunchedEffect(fullBodyForSave) {
-        if (fullBodyForSave == prevFullBody) return@LaunchedEffect
-        spansDraft = syncSpansToText(prevFullBody, spansDraft, fullBodyForSave)
-        prevFullBody = fullBodyForSave
-    }
-    // Format-only changes need to mark the note as modified so save fires.
-    if (spansDraft != attrSpans) isModified = true
+    val saving = status.saving
+    val lastSavedAtMs = status.lastSavedAtMs
+    val titleDraft = vm.titleDraft
+    val bodyDraft = vm.bodyDraft
+    val spansDraft = vm.spansDraft
+    val fullBodyForSave = vm.fullBodyForSave
+    val isModified = vm.isModified
+    val viewMode = vm.viewMode
+    val attachments by vm.attachments.collectAsStateWithLifecycle()
 
     // Live body-only spans for formatted view (mirrors any draft mutation).
     val bodyAttrSpans = remember(titleDraft, fullBodyForSave, spansDraft) {
-        val skip = if (fullBodyForSave.contains('\n')) titleDraft.length + 1
-                   else titleDraft.length
-        attrSpansAfter(spansDraft, skip)
+        vm.bodyAttrSpans()
     }
 
-    // Resolve attachment cards. For each AttrSpan with isAttachment + recordName
-    // we kick off an async lookup, decode the result by attachment type
-    // ("com.apple.notes.table" → table grid; "public.png/jpeg/heic" → image
-    // bytes), and feed the cache into FormattedNoteBody.
-    val attachmentCache = remember(record.recordName, record.recordChangeTag) {
-        mutableStateOf<Map<String, AttachmentContent>>(emptyMap())
-    }
-    LaunchedEffect(record.recordName, record.recordChangeTag, onFetchAttachment) {
-        val fetcher = onFetchAttachment ?: return@LaunchedEffect
-        val assetFetcher = onFetchAsset ?: { _ -> null }
-        val recordNames = bodyAttrSpans.mapNotNull { it.attachmentRecordName }.toSet()
-        for (rn in recordNames) {
-            if (attachmentCache.value.containsKey(rn)) continue
-            val rec = runCatching { fetcher(rn) }.getOrNull() ?: continue
-            val content = decodeAttachment(rec, assetFetcher, fetcher)
-            if (content != null) {
-                attachmentCache.value = attachmentCache.value + (rn to content)
-            }
-        }
-    }
-
-    var showDeleteDialog by remember { mutableStateOf(false) }
+    var showDeleteDialog by rememberSaveable { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
 
     // Auto-save on lifecycle ON_PAUSE (app backgrounded, screen turns off,
     // another activity covers us, etc.). Best-effort fire-and-forget — the
-    // parent's onSave coroutine handles the actual network call. We pass
+    // ViewModel's save handles the actual network call. We pass
     // `alsoExit=false` because we're not navigating, just persisting.
-    // Use `rememberUpdatedState` semantics by referencing the latest values
-    // through the captured composable scope.
-    DisposableEffect(lifecycleOwner, isModified, fullBodyForSave, isPureAppend) {
+    DisposableEffect(lifecycleOwner, vm) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_PAUSE && isModified && !saving) {
-                onSave(fullBodyForSave, isPureAppend, false, spansDraft)
-            }
+            if (event == Lifecycle.Event.ON_PAUSE) vm.autoSave()
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -233,9 +122,9 @@ internal fun NoteDetailScreen(
 
     val onBackOrSave: () -> Unit = {
         if (isModified && !saving) {
-            // Save and navigate atomically. Parent handles the navigation in
-            // the save's success callback (sees alsoExit=true).
-            onSave(fullBodyForSave, isPureAppend, true, spansDraft)
+            // Save and navigate atomically. The ViewModel requests the
+            // navigation in the save's success path (alsoExit=true).
+            vm.save(alsoExit = true)
         } else {
             onBack()
         }
@@ -265,7 +154,7 @@ internal fun NoteDetailScreen(
                             // Editable title in the app bar — tap to type.
                             BasicTextField(
                                 value = titleDraft,
-                                onValueChange = { titleDraft = it.replace("\n", "") },
+                                onValueChange = { vm.onTitleChange(it) },
                                 singleLine = true,
                                 textStyle = MaterialTheme.typography.titleLarge.copy(
                                     color = MaterialTheme.colorScheme.onSurface,
@@ -307,7 +196,7 @@ internal fun NoteDetailScreen(
                         if (isModified) {
                             IconButton(
                                 enabled = !saving,
-                                onClick = { onSave(fullBodyForSave, isPureAppend, false, spansDraft) },
+                                onClick = { vm.save(alsoExit = false) },
                             ) {
                                 Icon(Icons.Default.Check, contentDescription = "Save")
                             }
@@ -360,17 +249,11 @@ internal fun NoteDetailScreen(
                     fullBody = bodyDraft.text,
                     titlePrefixLength = 0,
                     attrSpans = bodyAttrSpans,
-                    attachmentContent = attachmentCache.value,
-                    onTap = { viewMode = false },
+                    attachmentContent = attachments,
+                    onTap = { vm.enterEditMode() },
                     onToggleCheckbox = { bodyParaStart ->
-                        val skip = if (fullBodyForSave.contains('\n')) titleDraft.length + 1
-                            else titleDraft.length
-                        val fullPos = bodyParaStart + skip
-                        spansDraft = NoteBodyEditor.toggleCheckbox(
-                            fullBodyForSave, spansDraft, fullPos,
-                        )
-                        // Auto-save the toggle so check state persists.
-                        onSave(fullBodyForSave, false, false, spansDraft)
+                        // Auto-saves the toggle so check state persists.
+                        vm.toggleCheckbox(bodyParaStart)
                     },
                     modifier = Modifier
                         .weight(1f)
@@ -379,7 +262,7 @@ internal fun NoteDetailScreen(
             } else {
                 BasicTextField(
                     value = bodyDraft,
-                    onValueChange = { bodyDraft = it },
+                    onValueChange = { vm.onBodyChange(it) },
                     visualTransformation = remember(bodyAttrSpans) {
                         FormattingVisualTransformation(bodyAttrSpans)
                     },
@@ -411,7 +294,7 @@ internal fun NoteDetailScreen(
                     fullBody = fullBodyForSave,
                     spans = spansDraft,
                     onSpansChange = { newSpans ->
-                        spansDraft = newSpans
+                        vm.onSpansChange(newSpans)
                     },
                 )
             }
@@ -445,7 +328,7 @@ internal fun NoteDetailScreen(
             title = { Text("Delete this note?") },
             text = { Text("This moves the note to Recently Deleted in iCloud Notes.") },
             confirmButton = {
-                TextButton(onClick = { showDeleteDialog = false; onDelete() }) {
+                TextButton(onClick = { showDeleteDialog = false; vm.delete() }) {
                     Text("Delete")
                 }
             },

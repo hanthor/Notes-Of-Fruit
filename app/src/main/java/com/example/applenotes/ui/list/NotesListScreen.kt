@@ -39,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -66,7 +67,7 @@ internal fun NotesListScreen(
     onCreateNote: () -> Unit,
     onSignOut: () -> Unit,
 ) {
-    var query by remember { mutableStateOf("") }
+    var query by rememberSaveable { mutableStateOf("") }
     // Notes filtered to the currently-selected folder. null = "All notes"
     // (every folder except trash). TRASH_RECORD_NAME = trash only.
     val notesInFolder = remember(allNotes, selectedFolder) {
