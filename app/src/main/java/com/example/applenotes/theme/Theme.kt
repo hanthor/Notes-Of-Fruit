@@ -48,7 +48,7 @@ private val LightColorScheme = lightColorScheme(
 )
 
 @Composable
-fun MyApplicationTheme(
+fun NotesOfFruitTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     // Dynamic color is OFF — we want our own warm Notes-y palette to dominate.
     dynamicColor: Boolean = false,

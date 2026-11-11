@@ -103,13 +103,25 @@ Watch with `adb logcat -s AppleNotesClient:* AppleNotesDebug:*`.
 app/src/main/java/com/example/applenotes/
 ├── auth/                      WebView cookie harvest, session refresh, DeviceIdentity (v4 UUID!)
 ├── client/                    AppleNotesClient: HTTP layer, fetchRecents/lookupNote/createNote/modifyNoteBody
+├── data/
+│   ├── NotesApi.kt           Interface over the client calls the UI uses (+ fakes in tests)
+│   ├── NotesRepository.kt    App-scoped session, cached notes/folders, save/delete flow
+│   ├── AppGraph.kt           Lazy singleton: one HttpClient, repository, alpha gate
+│   └── NoteBody.kt           decodeNoteBody(): Editable vs ReadOnly(reason)
 ├── proto/
 │   ├── ProtobufWire.kt       Hand-rolled protobuf wire format (no schema dep)
 │   ├── Gzip.kt               gzip + zlib detect/compress/decompress
 │   ├── NoteBodyEditor.kt     Decode topotext.String → visible text + attribute runs
 │   ├── NoteAppender.kt       Append / splice / setBody — produces new proto bytes
-│   └── NoteCreator.kt        Build proto for a fresh note
-└── ui/                       Compose UI: list, detail, FAB draft state, drawer, save flow
+│   ├── NoteCreator.kt        Build proto for a fresh note
+│   └── MergeableDataDecoder.kt  Table attachments (MergeableData CRDT graph)
+└── ui/
+    ├── AppleNotesApp.kt      Screen switch
+    ├── AppViewModel.kt       Navigation, sign-in, list, folder selection
+    ├── list/                 Notes list + folder drawer
+    ├── detail/               NoteDetailViewModel, editor, formatting toolbar, attachments
+    ├── login/                WebView sign-in
+    └── common/               Shared screens, snackbar helper, alpha dialog
 
 app/src/debug/java/com/example/applenotes/
 └── debug/DebugReceiver.kt    Broadcast-driven CLI for testing without UI (debug builds only)
@@ -120,9 +132,11 @@ Read order if you're new:
 1. `NoteBodyEditor.kt` — get a feel for what a substring tree looks like.
 2. `AppleNotesClient.kt` — see the wire shape of every CloudKit op.
 3. `NoteAppender.setBodySpliceBytes` — the slot-promotion pattern in detail.
-4. The UI under `ui/` — the `ScreenState.Detail` state, `NoteDetailScreen`
-   (including its `ON_PAUSE` auto-save observer) and the deferred-create FAB
-   flow.
+4. `NotesRepository.saveNote` — the deferred-create draft flow and the
+   modify path; then `NoteDetailViewModel` (draft state, auto-save) and
+   `AppViewModel.createNote` (the FAB).
+5. `src/test/.../proto/TopotextTestSupport.kt` — the invariant checker every
+   write-path test runs; use it for any new proto code.
 
 ## Known limitations
 

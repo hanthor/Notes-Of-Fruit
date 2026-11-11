@@ -196,11 +196,15 @@ col_uuid → Dict of row_uuid → string_obj_id). Walk those to extract a 2D
 grid; resolve each string_obj_id to its NSString.currentText.
 
 See [`MergeableDataDecoder.kt`](../app/src/main/java/com/example/applenotes/proto/MergeableDataDecoder.kt).
-The decoder uses cellColumns iteration order as the column order and
-first-appearance order across columns as the row order — crRows/crColumns
-OrderedSets carry the canonical visual order via a separate UUIDIndex layer
-that we don't fully reconstruct yet, but the iteration order matches the
-visual order for tables created left-to-right top-to-bottom.
+The decoder orders rows and columns by the `crRows`/`crColumns`
+OrderedSets, matching each entry to `cellColumns` by UUID; rows listed in
+`crRows` with no cells render as empty rows. If any piece of that can't be
+resolved, it falls back to `cellColumns` iteration order for columns and
+first-appearance order for rows, which matches the visual order for tables
+created left-to-right top-to-bottom. The OrderedSet handling is based on this
+README's structure and public reverse-engineering work, tested on synthetic
+graphs only — it still needs checking against a real table that has had rows
+or columns moved.
 
 ### Image attachments
 

@@ -78,11 +78,11 @@ you can't say you weren't warned.
 | Append text | Works (round-trips with Mac) |
 | Mid-text splice (insert/replace/delete) | Works (matches iCloud.com's slot-promotion pattern) |
 | Create new note (FAB → save) | Code path works (deferred-create + v4 UUID); end-to-end Mac round-trip not yet user-confirmed |
-| Auto-save on lifecycle pause | Works (lifecycle `ON_PAUSE` only — see the `ON_PAUSE` observer in `NoteDetailScreen` under [`ui/`](app/src/main/java/com/example/applenotes/ui/)) |
+| Auto-save on lifecycle pause | Works (lifecycle `ON_PAUSE` only — see `NoteDetailViewModel.autoSave` in [`ui/detail/`](app/src/main/java/com/example/applenotes/ui/detail/)) |
 | Share OUT (Android intent chooser) | Works (plaintext only) |
 | Delete | Uses CloudKit `forceDelete`; Mac surfaces as "Recently Deleted" (server-managed, not a hard wipe) |
 | Format display (paragraph styles + inline) | Works — Title / Heading / Subheading / Body / Monospaced; Bulleted / Dashed / Numbered / Checkbox; bold / italic / underline / strikethrough; clickable links |
-| Table attachments | Decoded from `MergeableDataEncrypted` (CRDT graph), rendered as a real grid |
+| Table attachments | Decoded from `MergeableDataEncrypted` (CRDT graph), rendered as a real grid; row/column order from `crRows`/`crColumns` (synthetic-tested only) |
 | Image attachments | Fetched as CKAsset bytes from the Media reference, rendered inline |
 | Other attachments (sketches, maps, etc.) | Rendered as a labeled placeholder card |
 | Format input toolbar | Works — paragraph style picker, list toggles (bullet/dash/numbered/checkbox), inline B/I/U/S, link |
