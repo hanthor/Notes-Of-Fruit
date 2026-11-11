@@ -52,6 +52,11 @@ import com.example.applenotes.client.FolderSummary
 import com.example.applenotes.client.NoteSummary
 import com.example.applenotes.data.DEFAULT_FOLDER_RECORD_NAME
 import com.example.applenotes.data.TRASH_RECORD_NAME
+import com.example.applenotes.ui.ListAction
+import com.example.applenotes.ui.common.MessageSnackbarEffect
+import com.example.applenotes.ui.common.UiMessage
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import com.example.applenotes.ui.common.humanRelative
 import kotlinx.coroutines.launch
 
@@ -66,8 +71,13 @@ internal fun NotesListScreen(
     onRefresh: () -> Unit,
     onCreateNote: () -> Unit,
     onSignOut: () -> Unit,
+    message: UiMessage<ListAction>? = null,
+    onMessageAction: (UiMessage<ListAction>) -> Unit = {},
+    onMessageDismissed: (UiMessage<ListAction>) -> Unit = {},
 ) {
     var query by rememberSaveable { mutableStateOf("") }
+    val snackbarHostState = remember { SnackbarHostState() }
+    MessageSnackbarEffect(message, snackbarHostState, onMessageAction, onMessageDismissed)
     // Notes filtered to the currently-selected folder. null = "All notes"
     // (every folder except trash). TRASH_RECORD_NAME = trash only.
     val notesInFolder = remember(allNotes, selectedFolder) {
@@ -120,6 +130,7 @@ internal fun NotesListScreen(
     ) {
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             LargeTopAppBar(
                 navigationIcon = {

@@ -152,4 +152,56 @@ class AppViewModelTest {
         assertEquals(AppScreen.NotesList, restored.screen.value)
         assertFalse(restored.screen.value is AppScreen.Detail)
     }
+
+    // ----- #2: only bootstrap failures are full-screen -----
+
+    @Test
+    fun refreshFailureKeepsTheListAndOffersRetry() {
+        val vm = newVm()
+        api.failNext["fetchRecents"] = RuntimeException("HTTP 502")
+        vm.refresh()
+        assertEquals(AppScreen.NotesList, vm.screen.value)
+        assertEquals(3, vm.listState.value.notes.size)
+        val m = vm.listMessage.value!!
+        assertEquals("Couldn't refresh: HTTP 502", m.text)
+        assertEquals(ListAction.RetryRefresh, m.action)
+        vm.onListMessageAction(m)
+        assertNull(vm.listMessage.value)
+        assertEquals(AppScreen.NotesList, vm.screen.value)
+    }
+
+    @Test
+    fun openFailureStaysOnTheListWithRetry() {
+        val vm = newVm()
+        val note = vm.listState.value.notes.first()
+        api.failNext["lookupNote"] = RuntimeException("timeout")
+        vm.openNote(note)
+        assertEquals(AppScreen.NotesList, vm.screen.value)
+        val m = vm.listMessage.value!!
+        assertEquals(ListAction.RetryOpen(note), m.action)
+        vm.onListMessageAction(m)
+        assertTrue(vm.screen.value is AppScreen.Detail)
+    }
+
+    @Test
+    fun createFailureStaysOnTheListWithRetry() {
+        val vm = newVm()
+        api.failNext["lookupNote"] = RuntimeException("timeout")
+        vm.createNote()
+        assertEquals(AppScreen.NotesList, vm.screen.value)
+        val m = vm.listMessage.value!!
+        assertEquals(ListAction.RetryCreate, m.action)
+        vm.onListMessageDismissed(m)
+        assertNull(vm.listMessage.value)
+    }
+
+    @Test
+    fun showListCanCarryAMessage() {
+        val vm = newVm()
+        vm.openNote(vm.listState.value.notes.first())
+        vm.showList("Couldn't reopen the note: offline")
+        assertEquals(AppScreen.NotesList, vm.screen.value)
+        assertEquals("Couldn't reopen the note: offline", vm.listMessage.value!!.text)
+        assertNull(vm.listMessage.value!!.action)
+    }
 }

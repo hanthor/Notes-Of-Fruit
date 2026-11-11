@@ -302,4 +302,181 @@ class NoteDetailViewModelTest {
         assertTrue(restored.status.value.exitRequested)
         assertNotNull(restored.status.value.openId)
     }
+
+    // ----- #2: failures keep the draft -----
+
+    @Test
+    fun failedSaveKeepsDraftAndOffersRetry() {
+        val vm = newVm()
+        vm.openExisting("NOTE-A")
+        vm.type("milk\neggs\nbread")
+        api.failNext["modifyNoteBody"] = RuntimeException("HTTP 503")
+
+        vm.save(alsoExit = false)
+
+        val s = vm.status.value
+        assertFalse(s.saving)
+        assertTrue(s.saveFailed)
+        assertFalse(s.exitRequested)
+        assertEquals("open-1", s.openId)
+        assertEquals("Couldn't save: HTTP 503", s.message!!.text)
+        assertEquals(NoteDetailViewModel.DetailAction.RetrySave(alsoExit = false), s.message!!.action)
+        // The typed text is untouched and still counts as unsaved.
+        assertEquals("milk\neggs\nbread", vm.bodyDraft.text)
+        assertTrue(vm.isModified)
+        assertEquals("tag-1", vm.record!!.recordChangeTag)
+
+        vm.onMessageAction(s.message!!)
+        assertNull(vm.status.value.message)
+        assertFalse(vm.status.value.saveFailed)
+        assertFalse(vm.isModified)
+        assertEquals("Shopping\nmilk\neggs\nbread", api.records.getValue("NOTE-A").visibleText())
+    }
+
+    @Test
+    fun failedSaveAndExitStaysOnTheNote() {
+        val vm = newVm()
+        vm.openExisting("NOTE-A")
+        vm.type("milk\nunsaved")
+        api.failNext["modifyNoteBody"] = RuntimeException("offline")
+
+        vm.save(alsoExit = true)
+
+        assertFalse(vm.status.value.exitRequested)
+        assertEquals("milk\nunsaved", vm.bodyDraft.text)
+        val retry = vm.status.value.message!!
+        assertEquals(NoteDetailViewModel.DetailAction.RetrySave(alsoExit = true), retry.action)
+        vm.onMessageAction(retry)
+        assertTrue(vm.status.value.exitRequested)
+    }
+
+    @Test
+    fun failedFirstSaveOfANewNoteKeepsItAsADraft() {
+        val vm = newVm()
+        vm.open("open-d", com.example.applenotes.client.NoteRecord("draft-1", "Note", null, emptyMap()), folderRef("F"))
+        vm.onTitleChange("Important")
+        api.failNext["createNote"] = RuntimeException("timeout")
+
+        vm.save(alsoExit = true)
+
+        assertEquals("draft-1", vm.record!!.recordName)
+        assertNull(vm.record!!.recordChangeTag)
+        assertEquals("Important", vm.titleDraft)
+        assertFalse(vm.status.value.exitRequested)
+        assertTrue(api.creates.isEmpty())
+
+        vm.onMessageAction(vm.status.value.message!!)
+        assertEquals(1, api.creates.size)
+        assertTrue(vm.status.value.exitRequested)
+    }
+
+    @Test
+    fun failedDeleteStaysOnTheNote() {
+        val vm = newVm()
+        vm.openExisting("NOTE-A")
+        vm.type("milk\nedited")
+        api.failNext["deleteNote"] = RuntimeException("HTTP 500")
+
+        vm.delete()
+
+        val s = vm.status.value
+        assertFalse(s.deleting)
+        assertFalse(s.exitRequested)
+        assertEquals(NoteDetailViewModel.DetailAction.RetryDelete, s.message!!.action)
+        assertEquals("milk\nedited", vm.bodyDraft.text)
+        assertTrue(repo.notes.value.any { it.recordName == "NOTE-A" })
+
+        vm.onMessageAction(s.message!!)
+        assertTrue(vm.status.value.exitRequested)
+        assertEquals(1, api.deletes.size)
+    }
+
+    @Test
+    fun dismissingTheMessageClearsIt() {
+        val vm = newVm()
+        vm.openExisting("NOTE-A")
+        vm.type("x")
+        api.failNext["modifyNoteBody"] = RuntimeException("nope")
+        vm.save(alsoExit = false)
+        vm.onMessageDismissed(vm.status.value.message!!)
+        assertNull(vm.status.value.message)
+        assertTrue(vm.status.value.saveFailed)
+    }
+
+    @Test
+    fun textTypedDuringASaveIsKept() {
+        val vm = newVm()
+        vm.openExisting("NOTE-A")
+        vm.type("milk\neggs\nbread")
+        val gate = CompletableDeferred<Unit>()
+        api.gates["modifyNoteBody"] = gate
+        vm.save(alsoExit = false)
+        vm.type("milk\neggs\nbread\nbutter")
+        gate.complete(Unit)
+
+        assertEquals("milk\neggs\nbread\nbutter", vm.bodyDraft.text)
+        assertEquals("tag-101", vm.record!!.recordChangeTag)
+        assertEquals("Shopping\nmilk\neggs\nbread", vm.originalBody)
+        assertTrue(vm.isModified)
+        assertEquals(1, api.modifies.size)
+    }
+
+    @Test
+    fun backDuringASaveLeavesWhenItLands() {
+        val vm = newVm()
+        vm.openExisting("NOTE-A")
+        vm.type("milk\neggs\nbread")
+        val gate = CompletableDeferred<Unit>()
+        api.gates["modifyNoteBody"] = gate
+        vm.save(alsoExit = false)
+        vm.save(alsoExit = true) // back pressed while saving
+        assertFalse(vm.status.value.exitRequested)
+        gate.complete(Unit)
+        assertTrue(vm.status.value.exitRequested)
+        assertEquals(1, api.modifies.size)
+    }
+
+    @Test
+    fun backDuringASaveSavesLaterTypingBeforeLeaving() {
+        val vm = newVm()
+        vm.openExisting("NOTE-A")
+        vm.type("milk\neggs\nbread")
+        val gate = CompletableDeferred<Unit>()
+        api.gates["modifyNoteBody"] = gate
+        vm.save(alsoExit = false)
+        vm.type("milk\neggs\nbread\nbutter")
+        vm.save(alsoExit = true)
+        gate.complete(Unit)
+        assertEquals(2, api.modifies.size)
+        assertEquals("tag-101", api.modifies[1].tag)
+        assertEquals("Shopping\nmilk\neggs\nbread\nbutter", api.records.getValue("NOTE-A").visibleText())
+        assertTrue(vm.status.value.exitRequested)
+    }
+
+    @Test
+    fun overlappingSavesOfANewNoteCreateItOnce() {
+        val vm = newVm()
+        vm.open("open-d", com.example.applenotes.client.NoteRecord("draft-1", "Note", null, emptyMap()), folderRef("F"))
+        vm.onTitleChange("Title")
+        val gate = CompletableDeferred<Unit>()
+        api.gates["createNote"] = gate
+        vm.save(alsoExit = false)   // e.g. ON_PAUSE auto-save
+        vm.type("body")
+        vm.save(alsoExit = false)   // e.g. Save button
+        gate.complete(Unit)
+        assertEquals(1, api.creates.size)
+        assertEquals("CREATED-1", api.modifies.single().recordName)
+        assertEquals("Title\nbody", api.records.getValue("CREATED-1").visibleText())
+    }
+
+    @Test
+    fun failedRestoreLookupReturnsToTheListWithAMessage() {
+        val vm = newVm()
+        vm.openExisting("NOTE-A")
+        val restored = newVm(savedState)
+        api.failNext["lookupNote"] = RuntimeException("offline")
+        restored.open("open-1", record = null, pendingFolderRef = null)
+        assertTrue(restored.status.value.exitRequested)
+        assertEquals("Couldn't reopen the note: offline", restored.status.value.exitMessage)
+    }
 }

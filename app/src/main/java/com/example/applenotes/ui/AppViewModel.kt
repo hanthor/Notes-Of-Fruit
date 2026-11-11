@@ -19,6 +19,7 @@ import com.example.applenotes.data.DRAFT_RECORD_PREFIX
 import com.example.applenotes.data.NotesRepository
 import com.example.applenotes.data.runCatchingCancellable
 import com.example.applenotes.data.userMessage
+import com.example.applenotes.ui.common.UiMessage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -36,7 +37,7 @@ sealed interface AppScreen {
     data object Splash : AppScreen
     data object Login : AppScreen
     data class Loading(val msg: String) : AppScreen
-    /** Full-screen error. Reserved for failures with nothing to fall back to. */
+    /** Full-screen error. Reserved for bootstrap (sign-in) failures. */
     data class Error(val msg: String) : AppScreen
     data object NotesList : AppScreen
 
@@ -63,6 +64,13 @@ sealed interface AppScreen {
         val record: NoteRecord?,
         val pendingFolderRef: JsonElement? = null,
     ) : AppScreen
+}
+
+/** Snackbar actions offered by the list screen. */
+sealed interface ListAction {
+    data object RetryRefresh : ListAction
+    data class RetryOpen(val note: NoteSummary) : ListAction
+    data object RetryCreate : ListAction
 }
 
 data class NotesListUiState(
@@ -99,6 +107,16 @@ class AppViewModel(
         .getStateFlow(KEY_SELECTED_FOLDER, DEFAULT_FOLDER_RECORD_NAME)
         .map { if (it == ALL_NOTES) null else it }
         .stateIn(viewModelScope, SharingStarted.Eagerly, DEFAULT_FOLDER_RECORD_NAME)
+
+    private val _listMessage = MutableStateFlow<UiMessage<ListAction>?>(null)
+    private var messageCounter = 0L
+
+    /**
+     * Snackbar for the list screen. Failures to refresh, open or create a
+     * note land here (with Retry) instead of replacing the screen; the
+     * full-screen [AppScreen.Error] is only for bootstrap failures.
+     */
+    val listMessage: StateFlow<UiMessage<ListAction>?> = _listMessage.asStateFlow()
 
     val listState: StateFlow<NotesListUiState> =
         combine(repository.notes, repository.folders, selectedFolder) { notes, folders, folder ->
@@ -164,6 +182,7 @@ class AppViewModel(
     fun signOut() {
         repository.signOut()
         savedState.remove<String>(KEY_DETAIL_OPEN_ID)
+        _listMessage.value = null
         _screen.value = AppScreen.Login
     }
 
@@ -174,10 +193,13 @@ class AppViewModel(
     fun refresh() {
         _screen.value = AppScreen.Loading("Refreshing…")
         viewModelScope.launch {
-            _screen.value = runCatchingCancellable { repository.refresh() }.fold(
-                onSuccess = { AppScreen.NotesList },
-                onFailure = { AppScreen.Error(userMessage(it)) },
-            )
+            runCatchingCancellable { repository.refresh() }
+                .onFailure {
+                    Log.e(TAG, "refresh failed", it)
+                    postListMessage("Couldn't refresh: ${userMessage(it)}", ListAction.RetryRefresh)
+                }
+            // Either way the (possibly stale) cached list is still good.
+            _screen.value = AppScreen.NotesList
         }
     }
 
@@ -186,7 +208,11 @@ class AppViewModel(
         viewModelScope.launch {
             runCatchingCancellable { repository.lookupNote(note.recordName) }
                 .onSuccess { showDetail(it, pendingFolderRef = null) }
-                .onFailure { _screen.value = AppScreen.Error(userMessage(it)) }
+                .onFailure {
+                    Log.e(TAG, "lookupNote failed", it)
+                    _screen.value = AppScreen.NotesList
+                    postListMessage("Couldn't open the note: ${userMessage(it)}", ListAction.RetryOpen(note))
+                }
         }
     }
 
@@ -219,7 +245,8 @@ class AppViewModel(
                 }
                 .onFailure {
                     Log.e(TAG, "createNote (folder lookup) failed", it)
-                    _screen.value = AppScreen.Error(userMessage(it))
+                    _screen.value = AppScreen.NotesList
+                    postListMessage("Couldn't create a note: ${userMessage(it)}", ListAction.RetryCreate)
                 }
         }
     }
@@ -235,15 +262,28 @@ class AppViewModel(
      * its cache in place when we saved, so the snippet for the just-edited
      * note already reflects our changes.
      */
-    fun showList() {
+    fun showList(message: String? = null) {
         savedState.remove<String>(KEY_DETAIL_OPEN_ID)
         _screen.value = AppScreen.NotesList
+        if (message != null) postListMessage(message, action = null)
     }
 
-    /** A failure on the detail screen that has no in-place recovery. */
-    fun showError(msg: String) {
-        savedState.remove<String>(KEY_DETAIL_OPEN_ID)
-        _screen.value = AppScreen.Error(msg)
+    private fun postListMessage(text: String, action: ListAction?) {
+        _listMessage.value = UiMessage(++messageCounter, text, action)
+    }
+
+    fun onListMessageAction(m: UiMessage<ListAction>) {
+        onListMessageDismissed(m)
+        when (val a = m.action) {
+            ListAction.RetryRefresh -> refresh()
+            is ListAction.RetryOpen -> openNote(a.note)
+            ListAction.RetryCreate -> createNote()
+            null -> Unit
+        }
+    }
+
+    fun onListMessageDismissed(m: UiMessage<ListAction>) {
+        if (_listMessage.value?.id == m.id) _listMessage.value = null
     }
 
     companion object {

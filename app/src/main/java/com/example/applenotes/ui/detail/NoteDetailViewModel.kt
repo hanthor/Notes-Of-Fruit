@@ -20,6 +20,7 @@ import com.example.applenotes.data.NotesRepository
 import com.example.applenotes.data.runCatchingCancellable
 import com.example.applenotes.data.userMessage
 import com.example.applenotes.proto.NoteBodyEditor
+import com.example.applenotes.ui.common.UiMessage
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -57,11 +58,25 @@ class NoteDetailViewModel(
         val saving: Boolean = false,
         val deleting: Boolean = false,
         val lastSavedAtMs: Long? = null,
+        /**
+         * The most recent save attempt failed and the draft is still
+         * unsaved. Back then asks before discarding instead of retrying
+         * silently forever.
+         */
+        val saveFailed: Boolean = false,
+        /** Snackbar to show (save/delete failures, with Retry). */
+        val message: UiMessage<DetailAction>? = null,
         /** Set when the screen should navigate back to the list. */
         val exitRequested: Boolean = false,
-        /** Set for failures that should replace the screen with an error. */
-        val fatalError: String? = null,
+        /** Optional snackbar text for the list after [exitRequested]. */
+        val exitMessage: String? = null,
     )
+
+    /** Snackbar actions offered by the detail screen. */
+    sealed interface DetailAction {
+        data class RetrySave(val alsoExit: Boolean) : DetailAction
+        data object RetryDelete : DetailAction
+    }
 
     private val _status = MutableStateFlow(Status())
     val status: StateFlow<Status> = _status.asStateFlow()
@@ -195,13 +210,29 @@ class NoteDetailViewModel(
                 .onFailure {
                     Log.w(TAG, "restore: lookupNote failed", it)
                     if (_status.value.openId == openId) {
-                        _status.update { s -> s.copy(loading = false, exitRequested = true) }
+                        _status.update { s ->
+                            s.copy(
+                                loading = false,
+                                exitRequested = true,
+                                exitMessage = "Couldn't reopen the note: ${userMessage(it)}",
+                            )
+                        }
                     }
                 }
         }
     }
 
-    private fun load(rec: NoteRecord, folderRef: JsonElement?, draft: DraftSnapshot?) {
+    /**
+     * Point the editor at [rec]. The draft comes from [draft] (process-death
+     * restore), is kept as-is ([keepCurrentDraft]: the user typed while a
+     * save was in flight), or is reset to the record's content.
+     */
+    private fun load(
+        rec: NoteRecord,
+        folderRef: JsonElement?,
+        draft: DraftSnapshot?,
+        keepCurrentDraft: Boolean = false,
+    ) {
         record = rec
         pendingFolderRef = folderRef
         val original = decodeOriginalBody(rec)
@@ -215,7 +246,10 @@ class NoteDetailViewModel(
         val initialTitle = if (firstNl < 0) original else original.substring(0, firstNl)
         val initialBody = if (firstNl < 0) "" else original.substring(firstNl + 1)
 
-        if (draft != null) {
+        if (keepCurrentDraft) {
+            // titleDraft / bodyDraft / spansDraft / prevFullBody stay; they
+            // are now diffed against the freshly saved record.
+        } else if (draft != null) {
             titleDraft = draft.title
             bodyDraft = TextFieldValue(
                 draft.body,
@@ -318,47 +352,86 @@ class NoteDetailViewModel(
 
     // ----- Save / delete -----
 
+    /** A save requested while another was in flight: (openId, alsoExit). */
+    private var queuedSave: Pair<String, Boolean>? = null
+    private var messageCounter = 0L
+
+    private fun message(text: String, action: DetailAction?) =
+        UiMessage(++messageCounter, text, action)
+
+    /** Update [status] only if [openId] is still the open note. */
+    private inline fun updateIfOpen(openId: String, f: (Status) -> Status) {
+        _status.update { if (it.openId == openId) f(it) else it }
+    }
+
     /**
      * Save the draft. [alsoExit] = save and navigate back atomically (the
      * navigation happens in the save's success path). Note: the UI always
      * passes the current spans, so the splice path (setBodyBase64) is used
      * even for pure appends — same as before the ViewModel refactor.
+     *
+     * Saves never overlap: one requested while another is in flight is
+     * queued and runs (if there is still something to save) when the first
+     * finishes. For a draft this is what keeps a second createNote from
+     * duplicating the note.
+     *
+     * On failure the editor stays put with the draft intact and a snackbar
+     * offers Retry; nothing navigates.
      */
     fun save(alsoExit: Boolean, isPureAppendOverride: Boolean? = null) {
         val rec = record ?: return
         val openId = _status.value.openId ?: return
+        if (_status.value.saving) {
+            val alreadyExits = queuedSave?.takeIf { it.first == openId }?.second ?: false
+            queuedSave = openId to (alreadyExits || alsoExit)
+            return
+        }
         val newBody = fullBodyForSave
         val pureAppend = isPureAppendOverride ?: isPureAppend
         val spans = spansDraft
         val folderRef = pendingFolderRef
-        _status.update { it.copy(saving = true) }
+        _status.update { it.copy(saving = true, message = null) }
         viewModelScope.launch {
-            try {
-                val updated = repository.saveNote(rec, folderRef, newBody, pureAppend, spans)
-                // Defensive state update: the save may complete AFTER the user
-                // has navigated away (e.g. they tapped back while a save was in
-                // flight). Only touch the editor if it still shows the same
-                // note. Match by recordName for both real notes (CloudKit ID)
-                // and drafts (the local "draft-<uuid>" we minted on FAB tap) —
-                // this disambiguates multiple drafts in flight. The list cache
-                // was already patched by the repository either way.
-                val stillHere = _status.value.openId == openId &&
-                    record?.recordName == rec.recordName
-                if (stillHere) {
-                    if (alsoExit) {
-                        _status.update { it.copy(exitRequested = true) }
-                    } else {
-                        load(updated, null, draft = null)
-                    }
+            val result = runCatchingCancellable {
+                repository.saveNote(rec, folderRef, newBody, pureAppend, spans)
+            }
+            val queuedExit = queuedSave?.takeIf { it.first == openId }?.second
+            if (queuedExit != null) queuedSave = null
+            // Defensive state update: the save may complete AFTER the user
+            // has navigated away. Only touch the editor if it still shows the
+            // same note. Match by recordName for both real notes (CloudKit
+            // ID) and drafts (the local "draft-<uuid>" we minted on FAB tap)
+            // — this disambiguates multiple drafts in flight. The list cache
+            // was already patched by the repository either way.
+            val stillHere = _status.value.openId == openId &&
+                record?.recordName == rec.recordName
+            result.onSuccess { updated ->
+                if (!stillHere) return@onSuccess
+                // Did the user keep typing while the save was in flight?
+                val changedSince = fullBodyForSave != newBody || spansDraft != spans
+                load(updated, null, draft = null, keepCurrentDraft = changedSince)
+                val exit = alsoExit || queuedExit == true
+                _status.update {
+                    it.copy(saving = false, saveFailed = false, lastSavedAtMs = clock())
                 }
-                _status.update { it.copy(lastSavedAtMs = clock()) }
-            } catch (e: kotlin.coroutines.cancellation.CancellationException) {
-                throw e
-            } catch (e: Throwable) {
+                when {
+                    exit && !changedSince -> _status.update { it.copy(exitRequested = true) }
+                    // Save the rest before leaving / for the queued request.
+                    changedSince && (exit || queuedExit != null) -> save(alsoExit = exit)
+                }
+            }.onFailure { e ->
                 Log.e(TAG, "save failed", e)
-                _status.update { it.copy(fatalError = userMessage(e)) }
-            } finally {
-                _status.update { it.copy(saving = false) }
+                if (!stillHere) return@onFailure
+                _status.update {
+                    it.copy(
+                        saving = false,
+                        saveFailed = true,
+                        message = message(
+                            "Couldn't save: ${userMessage(e)}",
+                            DetailAction.RetrySave(alsoExit || queuedExit == true),
+                        ),
+                    )
+                }
             }
         }
     }
@@ -377,24 +450,42 @@ class NoteDetailViewModel(
             _status.update { it.copy(exitRequested = true) }
             return
         }
-        _status.update { it.copy(deleting = true) }
+        _status.update { it.copy(deleting = true, message = null) }
         viewModelScope.launch {
             runCatchingCancellable { repository.deleteNote(rec) }
                 .onSuccess {
-                    if (_status.value.openId == openId) {
-                        _status.update { it.copy(deleting = false, exitRequested = true) }
-                    }
+                    updateIfOpen(openId) { it.copy(deleting = false, exitRequested = true) }
                 }
                 .onFailure { e ->
                     Log.e(TAG, "delete failed", e)
-                    _status.update { it.copy(deleting = false, fatalError = userMessage(e)) }
+                    // Stay on the note (draft intact) and offer a retry.
+                    updateIfOpen(openId) {
+                        it.copy(
+                            deleting = false,
+                            message = message("Couldn't delete: ${userMessage(e)}", DetailAction.RetryDelete),
+                        )
+                    }
                 }
         }
+    }
+
+    fun onMessageAction(m: UiMessage<DetailAction>) {
+        onMessageDismissed(m)
+        when (val a = m.action) {
+            is DetailAction.RetrySave -> save(alsoExit = a.alsoExit)
+            DetailAction.RetryDelete -> delete()
+            null -> Unit
+        }
+    }
+
+    fun onMessageDismissed(m: UiMessage<DetailAction>) {
+        _status.update { if (it.message?.id == m.id) it.copy(message = null) else it }
     }
 
     /** The screen navigated away; forget the open note. */
     fun close() {
         attachmentsJob?.cancel()
+        queuedSave = null
         _status.value = Status()
         record = null
         pendingFolderRef = null

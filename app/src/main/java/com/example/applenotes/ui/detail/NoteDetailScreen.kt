@@ -50,13 +50,14 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.applenotes.ui.common.CenteredSpinner
+import com.example.applenotes.ui.common.MessageSnackbarEffect
 import com.example.applenotes.ui.common.humanRelative
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun NoteDetailScreen(
     vm: NoteDetailViewModel,
-    /** Leave to the list without saving (nothing to save, or a save is in flight). */
+    /** Leave to the list without saving (nothing to save, or the user chose to discard). */
     onBack: () -> Unit,
 ) {
     val status by vm.status.collectAsStateWithLifecycle()
@@ -120,21 +121,30 @@ internal fun NoteDetailScreen(
         }
     }
 
+    // Save / delete failures: snackbar with Retry, the draft stays put.
+    MessageSnackbarEffect(status.message, snackbarHostState, vm::onMessageAction, vm::onMessageDismissed)
+    var showUnsavedDialog by rememberSaveable { mutableStateOf(false) }
+
     val onBackOrSave: () -> Unit = {
-        if (isModified && !saving) {
+        when {
+            // A save is in flight: leave once it lands. The ViewModel queues
+            // the exit (saving anything typed meanwhile first); if the save
+            // fails we stay here with the draft.
+            saving -> vm.save(alsoExit = true)
+            // The last save failed: ask instead of retrying silently.
+            isModified && status.saveFailed -> showUnsavedDialog = true
             // Save and navigate atomically. The ViewModel requests the
             // navigation in the save's success path (alsoExit=true).
-            vm.save(alsoExit = true)
-        } else {
-            onBack()
+            isModified -> vm.save(alsoExit = true)
+            else -> onBack()
         }
     }
 
     // Intercept the system back button / gesture so it navigates to the list
     // instead of closing the activity. Mirrors the back-arrow's behaviour
-    // (save-if-modified, then exit). Disabled while saving so a tap on
-    // "Save" → back doesn't fire twice.
-    androidx.activity.compose.BackHandler(enabled = !saving) {
+    // (save-if-modified, then exit). Stays enabled while saving: a second
+    // back during a save is queued by the ViewModel, not fired twice.
+    androidx.activity.compose.BackHandler {
         onBackOrSave()
     }
 
@@ -320,6 +330,32 @@ internal fun NoteDetailScreen(
                 )
             }
         }
+    }
+
+    if (showUnsavedDialog) {
+        AlertDialog(
+            onDismissRequest = { showUnsavedDialog = false },
+            title = { Text("Changes not saved") },
+            text = {
+                Text(
+                    "The last save to iCloud failed. Try again, or leave and " +
+                        "discard your unsaved changes to this note.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showUnsavedDialog = false; vm.save(alsoExit = true) }) {
+                    Text("Retry")
+                }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { showUnsavedDialog = false; onBack() }) {
+                        Text("Discard")
+                    }
+                    TextButton(onClick = { showUnsavedDialog = false }) { Text("Keep editing") }
+                }
+            },
+        )
     }
 
     if (showDeleteDialog) {

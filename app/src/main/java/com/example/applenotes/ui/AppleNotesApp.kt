@@ -48,6 +48,7 @@ fun AppleNotesApp() {
         )
         AppScreen.NotesList -> {
             val list by appVm.listState.collectAsStateWithLifecycle()
+            val message by appVm.listMessage.collectAsStateWithLifecycle()
             NotesListScreen(
                 allNotes = list.notes,
                 folders = list.folders,
@@ -57,6 +58,9 @@ fun AppleNotesApp() {
                 onRefresh = appVm::refresh,
                 onCreateNote = appVm::createNote,
                 onSignOut = appVm::signOut,
+                message = message,
+                onMessageAction = appVm::onListMessageAction,
+                onMessageDismissed = appVm::onListMessageDismissed,
             )
         }
         is AppScreen.Detail -> DetailRoute(s, appVm, detailVm)
@@ -78,19 +82,12 @@ private fun DetailRoute(
         CenteredSpinner("Loading note…")
         return
     }
-    val leave = {
+    val leave = { message: String? ->
         detailVm.close()
-        appVm.showList()
+        appVm.showList(message)
     }
     LaunchedEffect(status.exitRequested) {
-        if (status.exitRequested) leave()
+        if (status.exitRequested) leave(status.exitMessage)
     }
-    val fatal = status.fatalError
-    LaunchedEffect(fatal) {
-        if (fatal != null) {
-            detailVm.close()
-            appVm.showError(fatal)
-        }
-    }
-    NoteDetailScreen(vm = detailVm, onBack = leave)
+    NoteDetailScreen(vm = detailVm, onBack = { leave(null) })
 }
