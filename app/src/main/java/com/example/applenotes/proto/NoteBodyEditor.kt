@@ -223,7 +223,12 @@ object NoteBodyEditor {
             if (len == 1) {
                 if (b == 0x09 || b == 0x0A || b == 0x0D || (b in 0x20..0x7E)) printable++
             } else {
-                printable++
+                // Count BYTES, not characters: the threshold below compares
+                // against bytes.size. Counting one per multi-byte char made a
+                // note written mostly in CJK / emoji (3–4 bytes per char) fall
+                // under 80% and get misclassified as MERGABLE_DATA, which
+                // made every edit to it refuse with "Cannot append/splice".
+                printable += len
             }
             i += len
         }
@@ -1136,6 +1141,177 @@ object NoteBodyEditor {
             FIELD_NOTE_ATTRIBUTE_RUN, ProtobufWire.WIRE_LENGTH_DELIM,
             ProtobufWire.encode(arFields),
         )
+    }
+
+    /**
+     * Encode [span] as an AttributeRun by EDITING an existing run's bytes
+     * ([template], an AttributeRun payload as stored in the note) instead of
+     * building one from scratch. Only the fields [AttrSpan] models are
+     * touched, and only when their decoded value actually differs:
+     *
+     *  - f1 length (always rewritten)
+     *  - f2 paragraph style: f2.f1 style type, f2.f5 checklist {uuid, done}
+     *  - f5 font weight (bold/italic bits; other bits kept), f6 underline,
+     *    f7 strikethrough, f9 link, f12 attachment_info
+     *
+     * Everything else — font (f3), colour, timestamps, paragraph UUIDs,
+     * indent/alignment inside f2, the checklist UUID, and any field number
+     * we've never seen — survives byte-for-byte. A field that needs adding is
+     * inserted in field-number order (Apple's serialisation order).
+     *
+     * With no template this falls back to [encodeAttributeRunField].
+     *
+     * @param checklistUuid used only when [span] is a checkbox and the
+     *  template carries no checklist message of its own.
+     */
+    internal fun mergeSpanIntoAttributeRun(
+        span: AttrSpan,
+        template: ByteArray?,
+        checklistUuid: ByteArray? = null,
+    ): ProtobufWire.Field {
+        if (template == null) return encodeAttributeRunField(span, checklistUuid)
+        val fields = ProtobufWire.decode(template).toMutableList()
+        val current = decodeRunFields(fields, length = span.length)
+
+        setVarint(fields, FIELD_AR_LENGTH, span.length.toLong())
+
+        // ----- paragraph style (f2) -----
+        val styleSame = current.style == span.style &&
+            (span.style != ParagraphStyle.CHECKBOX_LIST || current.checked == span.checked)
+        if (!styleSame) {
+            val psIdx = fields.indexOfFirst {
+                it.fieldNumber == FIELD_AR_STYLE && it.wireType == ProtobufWire.WIRE_LENGTH_DELIM
+            }
+            val ps = if (psIdx >= 0) ProtobufWire.decode(fields[psIdx].payload).toMutableList()
+            else mutableListOf(ProtobufWire.encodeVarintField(FIELD_PS_FONTVARIANT, 4L))
+            if (current.style != span.style) {
+                if (span.style == ParagraphStyle.BODY) {
+                    // The template has an explicit non-Body style type. Mac
+                    // writes Body as an explicit 3 (see fmt-baseline-1);
+                    // iCloud omits it. Either decodes as Body — rewrite the
+                    // value rather than dropping the field (smallest change).
+                    setVarint(ps, FIELD_PS_STYLETYPE, ParagraphStyle.BODY.code.toLong())
+                } else {
+                    setVarint(ps, FIELD_PS_STYLETYPE, span.style.code.toLong())
+                }
+            }
+            if (span.style == ParagraphStyle.CHECKBOX_LIST) {
+                val clIdx = ps.indexOfFirst {
+                    it.fieldNumber == FIELD_PS_CHECKLIST && it.wireType == ProtobufWire.WIRE_LENGTH_DELIM
+                }
+                if (clIdx >= 0) {
+                    val cl = ProtobufWire.decode(ps[clIdx].payload).toMutableList()
+                    setVarint(cl, 2, if (span.checked) 1L else 0L)
+                    ps[clIdx] = ps[clIdx].copy(payload = ProtobufWire.encode(cl))
+                } else {
+                    val uuid = checklistUuid ?: randomUuidBytes()
+                    insertOrdered(ps, ProtobufWire.Field(
+                        FIELD_PS_CHECKLIST, ProtobufWire.WIRE_LENGTH_DELIM,
+                        ProtobufWire.encode(listOf(
+                            ProtobufWire.Field(1, ProtobufWire.WIRE_LENGTH_DELIM, uuid),
+                            ProtobufWire.encodeVarintField(2, if (span.checked) 1L else 0L),
+                        )),
+                    ))
+                }
+            } else {
+                // Leaving a checklist drops the checklist message (as the
+                // from-scratch encoder never emits one for other styles).
+                ps.removeAll { it.fieldNumber == FIELD_PS_CHECKLIST }
+            }
+            when {
+                ps.isEmpty() && psIdx >= 0 -> fields.removeAt(psIdx)
+                ps.isEmpty() -> Unit
+                psIdx >= 0 -> fields[psIdx] = fields[psIdx].copy(payload = ProtobufWire.encode(ps))
+                else -> insertOrdered(fields, ProtobufWire.Field(
+                    FIELD_AR_STYLE, ProtobufWire.WIRE_LENGTH_DELIM, ProtobufWire.encode(ps),
+                ))
+            }
+        }
+
+        // ----- inline siblings -----
+        if (current.bold != span.bold || current.italic != span.italic) {
+            val old = fields.firstOrNull {
+                it.fieldNumber == FIELD_AR_FONTWEIGHT && it.wireType == ProtobufWire.WIRE_VARINT
+            }?.let { ProtobufWire.decodeVarint(it) } ?: 0L
+            val weight = (old and 3L.inv()) or (if (span.bold) 1L else 0L) or (if (span.italic) 2L else 0L)
+            if (weight == 0L) fields.removeAll { it.fieldNumber == FIELD_AR_FONTWEIGHT }
+            else setVarint(fields, FIELD_AR_FONTWEIGHT, weight)
+        }
+        if (current.underline != span.underline) {
+            if (span.underline) setVarint(fields, FIELD_AR_UNDERLINE, 1L)
+            else fields.removeAll { it.fieldNumber == FIELD_AR_UNDERLINE }
+        }
+        if (current.strikethrough != span.strikethrough) {
+            if (span.strikethrough) setVarint(fields, FIELD_AR_STRIKE, 1L)
+            else fields.removeAll { it.fieldNumber == FIELD_AR_STRIKE }
+        }
+        if (current.linkUrl != span.linkUrl) {
+            fields.removeAll { it.fieldNumber == FIELD_AR_LINK }
+            if (span.linkUrl != null) insertOrdered(fields, ProtobufWire.encodeString(FIELD_AR_LINK, span.linkUrl))
+        }
+        if (!span.isAttachment) {
+            fields.removeAll { it.fieldNumber == FIELD_AR_ATTACHMENT }
+        } else if (!current.isAttachment && span.attachmentRecordName != null) {
+            val info = mutableListOf(ProtobufWire.encodeString(1, span.attachmentRecordName))
+            if (span.attachmentType != null) info.add(ProtobufWire.encodeString(2, span.attachmentType))
+            insertOrdered(fields, ProtobufWire.Field(
+                FIELD_AR_ATTACHMENT, ProtobufWire.WIRE_LENGTH_DELIM, ProtobufWire.encode(info),
+            ))
+        }
+        return ProtobufWire.Field(
+            FIELD_NOTE_ATTRIBUTE_RUN, ProtobufWire.WIRE_LENGTH_DELIM, ProtobufWire.encode(fields),
+        )
+    }
+
+    /** The checklist UUID (f2.f5.f1) of an AttributeRun payload, if any. */
+    internal fun checklistUuidOf(runPayload: ByteArray): ByteArray? = runCatching {
+        val ps = ProtobufWire.decode(runPayload).firstOrNull {
+            it.fieldNumber == FIELD_AR_STYLE && it.wireType == ProtobufWire.WIRE_LENGTH_DELIM
+        } ?: return@runCatching null
+        val cl = ProtobufWire.decode(ps.payload).firstOrNull {
+            it.fieldNumber == FIELD_PS_CHECKLIST && it.wireType == ProtobufWire.WIRE_LENGTH_DELIM
+        } ?: return@runCatching null
+        ProtobufWire.decode(cl.payload).firstOrNull {
+            it.fieldNumber == 1 && it.wireType == ProtobufWire.WIRE_LENGTH_DELIM
+        }?.payload
+    }.getOrNull()
+
+    /** Decode one AttributeRun payload into the [AttrSpan] model. */
+    internal fun decodeRunPayload(runPayload: ByteArray): AttrSpan =
+        decodeRunFields(ProtobufWire.decode(runPayload), length = null)
+
+    private fun decodeRunFields(fields: List<ProtobufWire.Field>, length: Int?): AttrSpan {
+        // Reuse parseAttributeRuns' logic by wrapping the run in a minimal note.
+        val note = ProtobufWire.encode(listOf(
+            ProtobufWire.Field(FIELD_NOTE_ATTRIBUTE_RUN, ProtobufWire.WIRE_LENGTH_DELIM, ProtobufWire.encode(fields)),
+        ))
+        val doc = ProtobufWire.encode(listOf(
+            ProtobufWire.Field(FIELD_DOCUMENT_NOTE, ProtobufWire.WIRE_LENGTH_DELIM, note),
+        ))
+        val top = ProtobufWire.encode(listOf(
+            ProtobufWire.Field(FIELD_NOTESTOREPROTO_DOCUMENT, ProtobufWire.WIRE_LENGTH_DELIM, doc),
+        ))
+        val span = parseAttributeRuns(top).single()
+        return if (length != null) span.copy(length = length) else span
+    }
+
+    private fun setVarint(fields: MutableList<ProtobufWire.Field>, fieldNumber: Int, value: Long) {
+        val idx = fields.indexOfFirst { it.fieldNumber == fieldNumber && it.wireType == ProtobufWire.WIRE_VARINT }
+        val f = ProtobufWire.encodeVarintField(fieldNumber, value)
+        if (idx >= 0) fields[idx] = f else insertOrdered(fields, f)
+    }
+
+    private fun insertOrdered(fields: MutableList<ProtobufWire.Field>, f: ProtobufWire.Field) {
+        val at = fields.indexOfFirst { it.fieldNumber > f.fieldNumber }
+        if (at < 0) fields.add(f) else fields.add(at, f)
+    }
+
+    private fun randomUuidBytes(): ByteArray {
+        val u = java.util.UUID.randomUUID()
+        val out = ByteArray(16)
+        for (i in 0 until 8) out[i] = ((u.mostSignificantBits shr (56 - i * 8)) and 0xFF).toByte()
+        for (i in 0 until 8) out[8 + i] = ((u.leastSignificantBits shr (56 - i * 8)) and 0xFF).toByte()
+        return out
     }
 
     /**

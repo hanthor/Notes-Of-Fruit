@@ -109,6 +109,7 @@ object NoteAppender {
     // AttributeRun fields (a tiny subset; see /tmp/apple-notes-real.proto for full schema)
     private const val FIELD_ATTR_LENGTH = 1
     private const val FIELD_ATTR_FONT = 3
+    private const val FIELD_ATTR_ATTACHMENT = 12 // attachment_info {uuid, uti} on a U+FFFC
     private const val FIELD_FONT_NAME = 1
     private const val FIELD_FONT_POINT_SIZE = 2
 
@@ -502,7 +503,27 @@ object NoteAppender {
         val lastAttrRunNoteFieldIdx = stringFields.indexOfLast {
             it.fieldNumber == FIELD_STRING_ATTRIBUTE_RUN && it.wireType == ProtobufWire.WIRE_LENGTH_DELIM
         }
-        if (lastAttrRunNoteFieldIdx >= 0) {
+        val lastRunIsAttachment = lastAttrRunNoteFieldIdx >= 0 &&
+            ProtobufWire.decode(stringFields[lastAttrRunNoteFieldIdx].payload)
+                .any { it.fieldNumber == FIELD_ATTR_ATTACHMENT }
+        if (lastRunIsAttachment) {
+            // The note ends with an attachment (U+FFFC + attachment_info).
+            // Growing that run would claim our appended text as part of the
+            // attachment; instead add a run with the same attributes minus
+            // attachment_info, right after it.
+            val runFields = ProtobufWire.decode(stringFields[lastAttrRunNoteFieldIdx].payload)
+                .filter { it.fieldNumber != FIELD_ATTR_ATTACHMENT }
+                .map {
+                    if (it.fieldNumber == FIELD_ATTR_LENGTH && it.wireType == ProtobufWire.WIRE_VARINT) {
+                        ProtobufWire.encodeVarintField(FIELD_ATTR_LENGTH, n.toLong())
+                    } else it
+                }
+            stringFields.add(
+                lastAttrRunNoteFieldIdx + 1,
+                ProtobufWire.Field(FIELD_STRING_ATTRIBUTE_RUN, ProtobufWire.WIRE_LENGTH_DELIM, ProtobufWire.encode(runFields)),
+            )
+            Log.i(TAG, "last attribute_run is an attachment; added new run length=$n after it")
+        } else if (lastAttrRunNoteFieldIdx >= 0) {
             val runFields = ProtobufWire.decode(stringFields[lastAttrRunNoteFieldIdx].payload).toMutableList()
             val lengthIdx = runFields.indexOfFirst {
                 it.fieldNumber == FIELD_ATTR_LENGTH && it.wireType == ProtobufWire.WIRE_VARINT
@@ -576,48 +597,21 @@ object NoteAppender {
     ): ByteArray = setBodySpliceBytes(protoBytes, ourReplicaUuid, newFullBody, nowEpochSec, newSpans)
 
     /**
-     * Splice-based mid-edit. Mirrors iCloud.com's pattern verified by capturing
-     * its outgoing proto on a typed-then-edited test note:
-     *
-     *  1. Promote ourselves to replica slot 1; demote everyone else by one;
-     *     remap every existing substring's CharID.replicaID + timestamp.replicaID.
-     *  2. Walk the substring tree to build (visiblePos -> originalSubIdx + offset)
-     *     and the chain-order list.
-     *  3. Compute a longest-common-prefix / longest-common-suffix diff against
-     *     [newFullBody]. The middle (deleteFrom..deleteTo in visible space) is
-     *     the splice region; [insertText] is what goes there instead.
-     *  4. SPLIT the substring(s) that straddle the splice boundaries: the kept
-     *     left part keeps the original (R, C0)+offset; the deleted part gets
-     *     tombstoned at (R, C0+offset)+(deleteLenInThisSub); the kept right
-     *     part is (R, C0+offset+deleteLenInThisSub)+(remainder).
-     *  5. Tombstone any substrings that were entirely inside the splice region.
-     *  6. Insert ONE new substring with our (replicaID=1, ourCharIDClock+) and
-     *     length = insertText.length, content = insertText. Anchor it between
-     *     the kept-left and the tombstoned-middle so tree walk sees:
-     *        ...prefix... -> NEW -> ...tombstones... -> ...suffix...
-     *  7. Rebuild the substring list in chain order and re-emit field-3 entries.
-     *  8. Rebuild flat (String.string) as the concat of non-tombstoned chars in
-     *     tree-walk order.
-     *  9. Rebuild attribute_runs as ONE run covering the new visible length —
-     *     iCloud.com keeps multiple runs but for now we collapse (formatting
-     *     fidelity is a TODO; visible text correctness comes first).
-     * 10. Bump our replica's counter1 by insertText.length.
-     */
-    /**
      * Format-only change path: keep the proto's substring tree intact and
      * just rewrite the attribute_runs to match [newSpans]. Used when the
      * user toggles bold/heading/etc. without changing any characters.
+     *
+     * Each new run is the ORIGINAL run covering those chars with only the
+     * span-modelled fields edited (see
+     * [NoteBodyEditor.mergeSpanIntoAttributeRun]), so fonts, checklist and
+     * paragraph UUIDs, attachment_info and unknown fields survive. If the
+     * result is byte-identical to what's stored, the input is returned as is.
      */
     private fun rewriteAttributeRunsOnly(
         protoBytes: ByteArray,
         newSpans: List<NoteBodyEditor.AttrSpan>,
-        bodyText: String,
+        visibleText: String,
     ): ByteArray {
-        val coalesced = NoteBodyEditor.coalesceSpans(newSpans)
-        if (coalesced.sumOf { it.length } != bodyText.length) {
-            Log.w(TAG, "rewriteARsOnly: span sum=${coalesced.sumOf { it.length }} != body=${bodyText.length}; skipping")
-            return protoBytes
-        }
         val top = ProtobufWire.decode(protoBytes).toMutableList()
         val versionIdx = top.indexOfFirst {
             it.fieldNumber == FIELD_OUTER_VERSION && it.wireType == ProtobufWire.WIRE_LENGTH_DELIM
@@ -630,20 +624,238 @@ object NoteAppender {
         require(dataIdx >= 0)
         val stringFields = ProtobufWire.decode(versionFields[dataIdx].payload).toMutableList()
 
-        // Drop existing AR fields, keep everything else, append new AR fields.
-        val rebuilt = ArrayList<ProtobufWire.Field>(stringFields.size)
-        for (f in stringFields) {
+        val templates = attributeRunPayloads(stringFields).toMutableList()
+        val charRun = charToRun(templates, visibleText.length)
+        val newARs = encodeSpansOverTemplates(visibleText, newSpans, charRun, templates)
+        if (newARs == null) {
+            Log.w(TAG, "rewriteARsOnly: span sum=${newSpans.sumOf { it.length }} != body=${visibleText.length}; skipping")
+            return protoBytes
+        }
+
+        // Replace the AR fields in place (at the first AR's position), keep
+        // every other field where it was.
+        val firstAr = stringFields.indexOfFirst {
+            it.fieldNumber == FIELD_STRING_ATTRIBUTE_RUN && it.wireType == ProtobufWire.WIRE_LENGTH_DELIM
+        }
+        val rebuilt = ArrayList<ProtobufWire.Field>(stringFields.size + newARs.size)
+        for ((i, f) in stringFields.withIndex()) {
+            if (i == firstAr) rebuilt.addAll(newARs)
             if (f.fieldNumber == FIELD_STRING_ATTRIBUTE_RUN && f.wireType == ProtobufWire.WIRE_LENGTH_DELIM) continue
             rebuilt.add(f)
         }
-        for (s in coalesced) rebuilt.add(NoteBodyEditor.encodeAttributeRunField(s))
+        if (firstAr < 0) rebuilt.addAll(newARs)
 
-        versionFields[dataIdx] = versionFields[dataIdx].copy(payload = ProtobufWire.encode(rebuilt))
+        val newData = ProtobufWire.encode(rebuilt)
+        if (newData.contentEquals(versionFields[dataIdx].payload)) {
+            Log.i(TAG, "rewriteARsOnly: no formatting change")
+            return protoBytes
+        }
+        versionFields[dataIdx] = versionFields[dataIdx].copy(payload = newData)
         top[versionIdx] = top[versionIdx].copy(payload = ProtobufWire.encode(versionFields))
-        Log.i(TAG, "rewriteARsOnly: emitted ${coalesced.size} spans")
+        Log.i(TAG, "rewriteARsOnly: emitted ${newARs.size} runs")
         return ProtobufWire.encode(top)
     }
 
+    /** Payloads of every AttributeRun (topotext.String field 5), in order. */
+    private fun attributeRunPayloads(stringFields: List<ProtobufWire.Field>): List<ByteArray> =
+        stringFields.filter {
+            it.fieldNumber == FIELD_STRING_ATTRIBUTE_RUN && it.wireType == ProtobufWire.WIRE_LENGTH_DELIM
+        }.map { it.payload }
+
+    private fun runLength(runPayload: ByteArray): Int =
+        ProtobufWire.decode(runPayload).firstOrNull {
+            it.fieldNumber == FIELD_ATTR_LENGTH && it.wireType == ProtobufWire.WIRE_VARINT
+        }?.let { ProtobufWire.decodeVarint(it).toInt() } ?: 0
+
+    /**
+     * For each of [textLength] visible chars (UTF-16 units, the unit Apple
+     * uses for AttributeRun.length), the index of the run covering it, or -1
+     * past the runs' coverage (tolerated: Apple's lengths usually sum to the
+     * visible length, but we don't crash if they don't).
+     */
+    private fun charToRun(runs: List<ByteArray>, textLength: Int): IntArray {
+        val out = IntArray(textLength) { -1 }
+        var p = 0
+        for ((idx, run) in runs.withIndex()) {
+            val end = (p + runLength(run)).coerceAtMost(textLength)
+            for (i in p until end) out[i] = idx
+            p = end
+            if (p >= textLength) break
+        }
+        return out
+    }
+
+    private fun withRunLength(runPayload: ByteArray, length: Int): ProtobufWire.Field {
+        val f = ProtobufWire.decode(runPayload).toMutableList()
+        val li = f.indexOfFirst { it.fieldNumber == FIELD_ATTR_LENGTH && it.wireType == ProtobufWire.WIRE_VARINT }
+        val lf = ProtobufWire.encodeVarintField(FIELD_ATTR_LENGTH, length.toLong())
+        if (li >= 0) f[li] = lf else f.add(0, lf)
+        return ProtobufWire.Field(FIELD_STRING_ATTRIBUTE_RUN, ProtobufWire.WIRE_LENGTH_DELIM, ProtobufWire.encode(f))
+    }
+
+    private fun isParagraphBreak(c: Char) = c == '\n' || c == ' '
+
+    /** The same U+2028/U+2029 → '\n' mapping NoteBodyEditor.readVisibleText applies. */
+    private fun normaliseLineBreaks(s: String): String =
+        s.replace(' ', '\n').replace(' ', '\n')
+
+    /**
+     * Pick a source run for inserted chars `text[a, b)` the way a text view's
+     * typing attributes would:
+     *
+     *  - Chars up to and including the first paragraph break of the insert
+     *    continue the paragraph to their left, so they take the run of the
+     *    char just before the insert (when that char isn't itself a break).
+     *    When the insert REPLACES text ([replacedSrc] >= 0, the run of the
+     *    first replaced char), that run is used instead — retyping a bold
+     *    word keeps it bold.
+     *  - An insert at the start of a paragraph that adds no break of its own
+     *    joins the paragraph to its right, so it takes the following char's run.
+     *  - Anything else starts a new paragraph and keeps -1 (default body run),
+     *    so we never copy one paragraph's checklist/paragraph UUID onto a
+     *    different paragraph.
+     *
+     * A borrowed run never carries attachment_info (f12): the U+FFFC it
+     * describes isn't being copied. Such runs are added to [templates] as a
+     * stripped copy. Runs without f12 are reused by index, so typing inside a
+     * run extends it instead of splitting it into three identical runs.
+     */
+    private fun inheritRunsForInsert(
+        text: String,
+        charRun: IntArray,
+        a: Int,
+        b: Int,
+        templates: MutableList<ByteArray>,
+        replacedSrc: Int = -1,
+    ) {
+        if (a >= b) return
+        val stripped = HashMap<Int, Int>()
+        fun inheritable(src: Int): Int {
+            if (src < 0) return -1
+            val f = ProtobufWire.decode(templates[src])
+            if (f.none { it.fieldNumber == FIELD_ATTR_ATTACHMENT }) return src
+            return stripped.getOrPut(src) {
+                templates.add(ProtobufWire.encode(f.filter { it.fieldNumber != FIELD_ATTR_ATTACHMENT }))
+                templates.size - 1
+            }
+        }
+        val leftSrc = when {
+            replacedSrc >= 0 -> inheritable(replacedSrc)
+            a > 0 && !isParagraphBreak(text[a - 1]) -> inheritable(charRun[a - 1])
+            else -> -1
+        }
+        val firstBreak = (a until b).firstOrNull { isParagraphBreak(text[it]) }
+        if (leftSrc >= 0) {
+            val end = if (firstBreak != null) firstBreak + 1 else b
+            for (i in a until end) charRun[i] = leftSrc
+        } else if (firstBreak == null && b < text.length) {
+            val rightSrc = inheritable(charRun[b])
+            for (i in a until b) charRun[i] = rightSrc
+        }
+    }
+
+    /**
+     * Encode [spans] (the caller's formatting model for [text]) as
+     * AttributeRuns, editing the source run of each char ([charRun] →
+     * [templates], -1 = none) instead of encoding from scratch. Runs break
+     * wherever the span OR the source run changes, so Apple's own run
+     * boundaries (e.g. one run per list paragraph) are kept. Checkbox
+     * paragraphs that need a NEW checklist UUID get one per paragraph, not
+     * one per run. Returns null if the spans don't cover [text] exactly.
+     */
+    private fun encodeSpansOverTemplates(
+        text: String,
+        spans: List<NoteBodyEditor.AttrSpan>,
+        charRun: IntArray,
+        templates: List<ByteArray>,
+    ): List<ProtobufWire.Field>? {
+        val coalesced = NoteBodyEditor.coalesceSpans(spans).filter { it.length > 0 }
+        if (coalesced.sumOf { it.length } != text.length) return null
+        val spanOf = IntArray(text.length)
+        run {
+            var p = 0
+            for ((si, s) in coalesced.withIndex()) {
+                for (i in p until p + s.length) spanOf[i] = si
+                p += s.length
+            }
+        }
+        val paraOf = IntArray(text.length)
+        run {
+            var para = 0
+            for (i in text.indices) {
+                paraOf[i] = para
+                if (isParagraphBreak(text[i])) para++
+            }
+        }
+        val paraChecklistUuid = HashMap<Int, ByteArray>()
+        fun checklistUuidFor(para: Int): ByteArray = paraChecklistUuid.getOrPut(para) {
+            // Reuse a checklist UUID already present on this paragraph, else mint one.
+            text.indices.asSequence()
+                .filter { paraOf[it] == para && charRun[it] >= 0 }
+                .mapNotNull { NoteBodyEditor.checklistUuidOf(templates[charRun[it]]) }
+                .firstOrNull()
+                ?: ByteArray(16).also { u ->
+                    val r = java.util.UUID.randomUUID()
+                    for (k in 0 until 8) u[k] = ((r.mostSignificantBits shr (56 - k * 8)) and 0xFF).toByte()
+                    for (k in 0 until 8) u[8 + k] = ((r.leastSignificantBits shr (56 - k * 8)) and 0xFF).toByte()
+                }
+        }
+        val out = ArrayList<ProtobufWire.Field>()
+        var i = 0
+        while (i < text.length) {
+            val s = spanOf[i]
+            val t = charRun[i]
+            val isCheckbox = coalesced[s].style == NoteBodyEditor.ParagraphStyle.CHECKBOX_LIST
+            var j = i + 1
+            while (j < text.length && spanOf[j] == s && charRun[j] == t &&
+                (!isCheckbox || paraOf[j] == paraOf[i])
+            ) j++
+            val span = coalesced[s].copy(length = j - i)
+            out.add(
+                NoteBodyEditor.mergeSpanIntoAttributeRun(
+                    span,
+                    template = if (t >= 0) templates[t] else null,
+                    checklistUuid = if (isCheckbox) checklistUuidFor(paraOf[i]) else null,
+                ),
+            )
+            i = j
+        }
+        return out
+    }
+
+    /**
+     * Splice-based mid-edit. Mirrors iCloud.com's pattern verified by capturing
+     * its outgoing proto on a typed-then-edited test note:
+     *
+     *  1. Promote ourselves to replica slot 1; demote everyone else by one;
+     *     remap every existing substring's CharID.replicaID + timestamp.replicaID.
+     *  2. Walk the substring tree to build (visiblePos -> originalSubIdx + offset)
+     *     and the chain-order list.
+     *  3. Compute a longest-common-prefix / longest-common-suffix diff against
+     *     [newFullBody] (U+2028/U+2029 compare equal to '\n'; boundaries never
+     *     split a surrogate pair). The middle (deleteFrom..deleteTo in visible
+     *     space) is the splice region; `insertText` is what goes there instead.
+     *  4. SPLIT the substring(s) that straddle the splice boundaries: the kept
+     *     left part keeps the original (R, C0)+offset; the deleted part gets
+     *     tombstoned at (R, C0+offset)+(deleteLenInThisSub); the kept right
+     *     part is (R, C0+offset+deleteLenInThisSub)+(remainder).
+     *  5. Tombstone any substrings that were entirely inside the splice region.
+     *  6. Insert ONE new substring with our (replicaID=1, ourCharIDClock+) and
+     *     length = insertText.length, content = insertText. Anchor it between
+     *     the kept-left and the tombstoned-middle so tree walk sees:
+     *        ...prefix... -> NEW -> ...tombstones... -> ...suffix...
+     *  7. Rebuild the substring list in chain order and re-emit field-3 entries.
+     *  8. Rebuild flat (String.string) as the concat of non-tombstoned chars in
+     *     tree-walk order.
+     *  9. Rebuild attribute_runs. Without [newSpans] (plain-text edit): every
+     *     surviving char keeps its original run byte-for-byte (lengths
+     *     adjusted), inserted chars inherit the run of the paragraph they're
+     *     typed into (default body run for a new paragraph), and runs
+     *     only split/merge at the edit. With [newSpans]: the spans are applied
+     *     on top of those same source runs, so fields the span model doesn't
+     *     cover are preserved.
+     * 10. Bump our replica's counter1 by insertText.length.
+     */
     fun setBodySpliceBytes(
         protoBytes: ByteArray,
         ourReplicaUuid: ByteArray,
@@ -749,32 +961,72 @@ object NoteAppender {
             }
         }
         val currentVisible = visibleSb.toString()
-        if (currentVisible == newFullBody && newSpans == null) {
+        // Callers hand us text that went through NoteBodyEditor.readVisibleText,
+        // which maps U+2028 / U+2029 to '\n' for display. Compare in that
+        // normalised space so an unchanged soft line break isn't seen as an
+        // edit (which used to rewrite every U+2028 in the note into '\n', i.e.
+        // turn soft breaks into paragraph breaks on Mac). The mapping is 1:1
+        // in UTF-16 units, so positions/lengths are identical in both spaces;
+        // kept chars always come from the original substrings, so the
+        // original separators survive.
+        val currentNorm = normaliseLineBreaks(currentVisible)
+        val targetNorm = normaliseLineBreaks(newFullBody)
+        if (currentNorm == targetNorm && newSpans == null) {
             Log.i(TAG, "setBodySplice: no-op (current visible matches target)")
             return protoBytes
         }
-        if (currentVisible == newFullBody && newSpans != null) {
+        if (currentNorm == targetNorm && newSpans != null) {
             // Format-only change — text unchanged but spans differ. Take a
             // shortcut: re-encode just the attribute_runs into the existing
             // proto, without splicing the substring tree.
-            return rewriteAttributeRunsOnly(protoBytes, newSpans, newFullBody)
+            return rewriteAttributeRunsOnly(protoBytes, newSpans, currentVisible)
         }
         Log.i(
             TAG,
             "setBodySplice: currentVisible.len=${currentVisible.length} newBody.len=${newFullBody.length}",
         )
 
-        // Diff: longest common prefix + longest common suffix.
-        val maxPrefix = minOf(currentVisible.length, newFullBody.length)
+        // Diff: longest common prefix + longest common suffix (UTF-16 units),
+        // never splitting a surrogate pair: replacing 😀 (D83D DE00) with
+        // 😁 (D83D DE01) must tombstone/insert the whole code point, not leave
+        // a substring boundary (and a lone surrogate in a substring) between
+        // the halves.
+        val maxPrefix = minOf(currentNorm.length, targetNorm.length)
         var prefixLen = 0
-        while (prefixLen < maxPrefix && currentVisible[prefixLen] == newFullBody[prefixLen]) prefixLen++
+        while (prefixLen < maxPrefix && currentNorm[prefixLen] == targetNorm[prefixLen]) prefixLen++
+        if (prefixLen > 0 && currentNorm[prefixLen - 1].isHighSurrogate()) prefixLen--
         var suffixLen = 0
         while (
-            suffixLen < currentVisible.length - prefixLen &&
-            suffixLen < newFullBody.length - prefixLen &&
-            currentVisible[currentVisible.length - 1 - suffixLen] ==
-                newFullBody[newFullBody.length - 1 - suffixLen]
+            suffixLen < currentNorm.length - prefixLen &&
+            suffixLen < targetNorm.length - prefixLen &&
+            currentNorm[currentNorm.length - 1 - suffixLen] ==
+                targetNorm[targetNorm.length - 1 - suffixLen]
         ) suffixLen++
+        if (suffixLen > 0 && currentNorm[currentNorm.length - suffixLen].isLowSurrogate()) suffixLen--
+
+        // Attachments (U+FFFC + attachment_info) must never be "deleted and
+        // re-typed": a re-inserted U+FFFC is a new char with no attachment
+        // run, i.e. a broken attachment. A single prefix/suffix diff does
+        // exactly that when one save edits text on BOTH sides of an
+        // attachment ("a￼b" → "Xa￼bY" deletes and re-inserts the ￼). So if
+        // the changed region contains a U+FFFC on both sides, apply the edit
+        // in steps anchored on that U+FFFC: first the hunk before it, then
+        // (recursively) the rest. Each step is an ordinary splice by us, so
+        // the result is a valid sequence of edits.
+        run {
+            val deletedMid = currentVisible.substring(prefixLen, currentVisible.length - suffixLen)
+            val insertedMid = newFullBody.substring(prefixLen, newFullBody.length - suffixLen)
+            val dObj = deletedMid.indexOf('￼')
+            val iObj = insertedMid.indexOf('￼')
+            if (dObj >= 0 && iObj >= 0) {
+                val intermediate = currentVisible.substring(0, prefixLen) +
+                    insertedMid.substring(0, iObj) +
+                    currentVisible.substring(prefixLen + dObj)
+                Log.i(TAG, "setBodySplice: edit spans an attachment; splitting at U+FFFC")
+                val step = setBodySpliceBytes(protoBytes, ourReplicaUuid, intermediate, nowEpochSec, null)
+                return setBodySpliceBytes(step, ourReplicaUuid, newFullBody, nowEpochSec, newSpans)
+            }
+        }
         val deleteFrom = prefixLen
         val deleteTo = currentVisible.length - suffixLen
         val insertText = newFullBody.substring(prefixLen, newFullBody.length - suffixLen)
@@ -1023,109 +1275,65 @@ object NoteAppender {
 
         // ===== Preserve attribute_runs across the splice =====
         //
-        // Naive: emit ONE body-styled AR covering all chars (loses headings,
-        // bullets, checkboxes, every paragraph's f9 UUID).
-        // Correct: keep the original AR for each char that survives the
-        // splice (prefix + suffix), emit a default-body AR for the inserted
-        // middle. Run-length-encode consecutive same-source chars into ARs.
+        // Every char that survives the splice (prefix + suffix) keeps the
+        // original AttributeRun it was covered by, byte-for-byte (only the
+        // run's length changes). Inserted chars inherit the run of the text
+        // they were typed into — see [inheritRunsForInsert] — and fall back to
+        // a default body run only when they start a brand-new paragraph.
+        // Consecutive chars with the same source run are run-length-encoded,
+        // so runs never merge or split except at the edit.
         //
-        // For each char in `currentVisible` we know its origin AR (cumulative
-        // walk over original AR lengths). For each char in the new body, we
-        // know whether it came from the prefix, the insert, or the suffix
-        // (computed earlier). Map new chars → origin AR, then emit ARs.
-        val origARFields = stringFields.filter {
-            it.fieldNumber == FIELD_STRING_ATTRIBUTE_RUN && it.wireType == ProtobufWire.WIRE_LENGTH_DELIM
-        }
-        val origARLengths = origARFields.map { ar ->
-            val arf = ProtobufWire.decode(ar.payload)
-            val len = arf.firstOrNull {
-                it.fieldNumber == FIELD_ATTR_LENGTH && it.wireType == ProtobufWire.WIRE_VARINT
-            }?.let { ProtobufWire.decodeVarint(it).toInt() } ?: 0
-            len
-        }
-        // origCharAR[i] = index into origARFields for the original visible
-        // char at position i, or -1 if past the AR coverage (Apple's AR
-        // lengths usually total visible.length but we tolerate mismatch).
-        val origCharAR = IntArray(currentVisible.length) { -1 }
-        run {
-            var p = 0
-            for ((arIdx, len) in origARLengths.withIndex()) {
-                val end = (p + len).coerceAtMost(currentVisible.length)
-                for (i in p until end) origCharAR[i] = arIdx
-                p = end
-                if (p >= currentVisible.length) break
-            }
-        }
-        // newCharAR[i] = origARFields index for char i of the new body, or -1
-        // for "this char is newly inserted, give it default body style".
-        val newCharAR = IntArray(newFullBody.length) { -1 }
-        for (i in 0 until prefixLen.coerceAtMost(currentVisible.length)) {
-            newCharAR[i] = origCharAR[i]
-        }
-        // Suffix chars: come from the END of currentVisible.
-        val newSuffixStart = newFullBody.length - suffixLen
+        // The new visible text as it will actually be stored: original chars
+        // for prefix/suffix (keeps U+2028 etc.), caller's chars for the insert.
+        val newVisible = currentVisible.substring(0, prefixLen) + insertText +
+            currentVisible.substring(currentVisible.length - suffixLen)
+        val templates = attributeRunPayloads(stringFields).toMutableList()
+        val origCharAR = charToRun(templates, currentVisible.length)
+        // newCharAR[i] = index into `templates` for char i of the new body, or
+        // -1 for "newly inserted, starts a new paragraph: default body run".
+        val newCharAR = IntArray(newVisible.length) { -1 }
+        for (i in 0 until prefixLen) newCharAR[i] = origCharAR[i]
+        val newSuffixStart = newVisible.length - suffixLen
         for (i in 0 until suffixLen) {
-            val origIdx = currentVisible.length - suffixLen + i
-            if (origIdx in origCharAR.indices) {
-                newCharAR[newSuffixStart + i] = origCharAR[origIdx]
-            }
+            newCharAR[newSuffixStart + i] = origCharAR[currentVisible.length - suffixLen + i]
         }
-        // The middle chars (if any insertion) keep the default -1.
+        inheritRunsForInsert(
+            newVisible, newCharAR, prefixLen, prefixLen + insertText.length, templates,
+            replacedSrc = if (deleteLen > 0) origCharAR[deleteFrom] else -1,
+        )
 
         // Run-length encode consecutive same-source chars into ARs. For -1
-        // (newly inserted), emit a default body AR using the template font of
-        // the last existing AR (matches the look of typing into a body region).
+        // (new paragraph), emit a default body AR using the template font of
+        // the last existing AR.
         val templateFont = lastAttributeRunFont(stringFields)
         val newARs = ArrayList<ProtobufWire.Field>()
         var runStart = 0
-        while (runStart < newFullBody.length) {
+        while (runStart < newVisible.length) {
             val src = newCharAR[runStart]
             var runEnd = runStart + 1
-            while (runEnd < newFullBody.length && newCharAR[runEnd] == src) runEnd++
+            while (runEnd < newVisible.length && newCharAR[runEnd] == src) runEnd++
             val len = runEnd - runStart
             if (src >= 0) {
-                // Copy the original AR's bytes, replace its length field.
-                val origPayload = origARFields[src].payload
-                val arFields = ProtobufWire.decode(origPayload).toMutableList()
-                val li = arFields.indexOfFirst {
-                    it.fieldNumber == FIELD_ATTR_LENGTH && it.wireType == ProtobufWire.WIRE_VARINT
-                }
-                if (li >= 0) {
-                    arFields[li] = ProtobufWire.encodeVarintField(FIELD_ATTR_LENGTH, len.toLong())
-                } else {
-                    arFields.add(0, ProtobufWire.encodeVarintField(FIELD_ATTR_LENGTH, len.toLong()))
-                }
-                newARs.add(
-                    ProtobufWire.Field(
-                        FIELD_STRING_ATTRIBUTE_RUN,
-                        ProtobufWire.WIRE_LENGTH_DELIM,
-                        ProtobufWire.encode(arFields),
-                    ),
-                )
+                newARs.add(withRunLength(templates[src], len))
             } else {
                 newARs.add(buildAttributeRun(length = len, fontFields = templateFont))
             }
             runStart = runEnd
         }
-        Log.i(TAG, "splice attribute_runs: orig=${origARFields.size} new=${newARs.size} " +
+        Log.i(TAG, "splice attribute_runs: orig=${origCharAR.size} new=${newARs.size} " +
                 "(prefix=$prefixLen insert=${insertText.length} suffix=$suffixLen)")
 
-        // If the caller provided explicit new spans (formatting changes), use
-        // those — encoded fresh — instead of the AR-preservation path. We
-        // still ran the splice above to keep the substring tree right; this
-        // just overrides what attribute_runs we emit.
+        // If the caller provided explicit new spans (formatting changes),
+        // apply them ON TOP of the same per-char source runs, so fields the
+        // span model doesn't know about (fonts, checklist UUIDs, paragraph
+        // UUIDs, colours, unknown fields) survive. We still ran the splice
+        // above to keep the substring tree right.
         val effectiveARs = if (newSpans != null) {
-            val coalesced = NoteBodyEditor.coalesceSpans(newSpans)
-            // Sanity: span lengths must sum to the visible body length.
-            val sum = coalesced.sumOf { it.length }
-            if (sum != newFullBody.length) {
-                Log.w(TAG, "newSpans length sum=$sum != body=${newFullBody.length}; using splice ARs")
-                newARs
-            } else {
-                ArrayList<ProtobufWire.Field>().apply {
-                    coalesced.forEach { add(NoteBodyEditor.encodeAttributeRunField(it)) }
+            encodeSpansOverTemplates(newVisible, newSpans, newCharAR, templates)
+                ?: run {
+                    Log.w(TAG, "newSpans length sum=${newSpans.sumOf { it.length }} != body=${newVisible.length}; using splice ARs")
+                    newARs
                 }
-            }
         } else newARs
 
         val rebuiltStringFields = ArrayList<ProtobufWire.Field>()
