@@ -71,6 +71,19 @@ internal object Topotext {
             return offs
         }
 
+        /** (char, (replica UUID hex, clock)) for every visible char, in visible order. */
+        fun visibleCharIds(): List<Pair<Char, Pair<String, Long>>> {
+            val offs = flatOffsets()
+            val out = ArrayList<Pair<Char, Pair<String, Long>>>()
+            for (i in chain()) {
+                val s = subs[i]
+                if (s.tombstone || s.isSentinel || s.length == 0) continue
+                val uuid = hex(clocks[(s.charId.replica - 1).toInt()].uuid)
+                for (k in 0 until s.length) out.add(flat[offs[i] + k] to (uuid to s.charId.clock + k))
+            }
+            return out
+        }
+
         /** Raw visible text (no U+2028/U+2029 normalisation): tree walk, live chars only. */
         fun rawVisible(): String {
             val offs = flatOffsets()
@@ -164,90 +177,101 @@ internal object Topotext {
         expectedRawVisible: String? = null,
         ourUuid: ByteArray? = null,
         strictChain: Boolean = true,
+    ): Doc = try {
+        checkInvariantsImpl(bytes, expectedRawVisible, ourUuid, strictChain)
+    } catch (e: AssertionError) {
+        // Attach a readable dump of the offending proto (built only on failure).
+        throw AssertionError(e.message + "\n" + runCatching { dump(bytes) }.getOrElse { "(dump failed: $it)" }, e)
+    }
+
+    private fun checkInvariantsImpl(
+        bytes: ByteArray,
+        expectedRawVisible: String?,
+        ourUuid: ByteArray?,
+        strictChain: Boolean,
     ): Doc {
         val d = parse(bytes)
-        val ctx = { "\n" + dump(bytes) }
-        assertTrue("need doc-start + sentinel" + ctx(), d.subs.size >= 2)
+        assertTrue("need doc-start + sentinel", d.subs.size >= 2)
 
         // Doc-start first, sentinel last.
         val first = d.subs.first()
-        assertEquals("doc-start charID" + ctx(), CharId(0, 0), first.charId)
-        assertEquals("doc-start length" + ctx(), 0, first.length)
+        assertEquals("doc-start charID", CharId(0, 0), first.charId)
+        assertEquals("doc-start length", 0, first.length)
         val last = d.subs.last()
-        assertEquals("sentinel charID" + ctx(), CharId(0, SENTINEL_CLOCK), last.charId)
-        assertEquals("sentinel length" + ctx(), 0, last.length)
-        assertTrue("sentinel has no children" + ctx(), last.children.isEmpty())
-        assertEquals("exactly one sentinel" + ctx(), 1, d.subs.count { it.isSentinel })
+        assertEquals("sentinel charID", CharId(0, SENTINEL_CLOCK), last.charId)
+        assertEquals("sentinel length", 0, last.length)
+        assertTrue("sentinel has no children", last.children.isEmpty())
+        assertEquals("exactly one sentinel", 1, d.subs.count { it.isSentinel })
 
         // Children are forward links within range.
         for (s in d.subs) for (c in s.children) {
-            assertTrue("child $c of [${s.arrayIdx}] out of range" + ctx(), c in d.subs.indices)
-            assertTrue("child $c of [${s.arrayIdx}] is not a forward link" + ctx(), c > s.arrayIdx)
+            assertTrue("child $c of [${s.arrayIdx}] out of range", c in d.subs.indices)
+            assertTrue("child $c of [${s.arrayIdx}] is not a forward link", c > s.arrayIdx)
         }
 
         // Walk reaches the sentinel.
         val chain = d.chain()
-        assertEquals("walk ends at sentinel" + ctx(), d.subs.lastIndex, chain.last())
+        assertEquals("walk ends at sentinel", d.subs.lastIndex, chain.last())
         if (strictChain) {
-            assertEquals("walk visits every substring" + ctx(), d.subs.size, chain.size)
-            assertEquals("chain is array order" + ctx(), d.subs.indices.toList(), chain)
-            for (s in d.subs) assertTrue("at most one child" + ctx(), s.children.size <= 1)
+            assertEquals("walk visits every substring", d.subs.size, chain.size)
+            assertEquals("chain is array order", d.subs.indices.toList(), chain)
+            for (s in d.subs) assertTrue("at most one child", s.children.size <= 1)
         }
 
         // String.string holds exactly the live chars.
-        assertEquals("flat length == live substring lengths" + ctx(), d.liveLength(), d.flat.length)
+        assertEquals("flat length == live substring lengths", d.liveLength(), d.flat.length)
         // No live substring boundary splits a surrogate pair.
         run {
             val offs = d.flatOffsets()
             for (s in d.subs) {
                 if (s.tombstone || s.length == 0) continue
                 val chars = d.flat.substring(offs[s.arrayIdx], offs[s.arrayIdx] + s.length)
-                assertTrue("substring [${s.arrayIdx}] starts mid surrogate pair" + ctx(), !chars.first().isLowSurrogate())
-                assertTrue("substring [${s.arrayIdx}] ends mid surrogate pair" + ctx(), !chars.last().isHighSurrogate())
+                assertTrue("substring [${s.arrayIdx}] starts mid surrogate pair", !chars.first().isLowSurrogate())
+                assertTrue("substring [${s.arrayIdx}] ends mid surrogate pair", !chars.last().isHighSurrogate())
             }
         }
         val raw = d.rawVisible()
-        if (expectedRawVisible != null) assertEquals("visible text" + ctx(), expectedRawVisible, raw)
+        if (expectedRawVisible != null) assertEquals("visible text", expectedRawVisible, raw)
         // The production reader must agree with our independent walk.
         assertEquals(
-            "NoteBodyEditor.readVisibleText disagrees" + ctx(),
+            "NoteBodyEditor.readVisibleText disagrees",
             normalise(raw), NoteBodyEditor.readVisibleText(bytes),
         )
         assertEquals(NoteProtoKind.NOTE_STORE_PROTO, NoteBodyEditor.probe(bytes))
 
         // Attribute runs cover the visible text exactly (UTF-16 units).
         if (raw.isNotEmpty() || d.runs.isNotEmpty()) {
-            assertEquals("attribute-run lengths sum to visible length" + ctx(), raw.length, d.runs.sumOf { it.length })
+            assertEquals("attribute-run lengths sum to visible length", raw.length, d.runs.sumOf { it.length })
         }
-        for (r in d.runs) assertTrue("zero/negative run length" + ctx(), r.length > 0)
+        for (r in d.runs) assertTrue("zero/negative run length", r.length > 0)
         // An attachment run (f12) must cover exactly one U+FFFC.
         run {
             var p = 0
             for (r in d.runs) {
                 val hasAttachment = r.fields.any { it.fieldNumber == 12 }
                 if (hasAttachment) {
-                    assertEquals("attachment run length" + ctx(), 1, r.length)
-                    assertEquals("attachment run covers U+FFFC" + ctx(), '\uFFFC', raw[p])
+                    assertEquals("attachment run length", 1, r.length)
+                    assertEquals("attachment run covers U+FFFC", '\uFFFC', raw[p])
                 }
                 p += r.length
             }
         }
 
         // Replica registry.
-        assertTrue("at least one replica" + ctx(), d.clocks.isNotEmpty())
+        assertTrue("at least one replica", d.clocks.isNotEmpty())
         val uuidKeys = d.clocks.map { hex(it.uuid) }
-        assertEquals("replica UUIDs unique" + ctx(), uuidKeys.size, uuidKeys.toSet().size)
+        assertEquals("replica UUIDs unique", uuidKeys.size, uuidKeys.toSet().size)
         for (c in d.clocks) {
-            assertEquals("replica UUID is 16 bytes" + ctx(), 16, c.uuid.size)
-            assertEquals("two ReplicaClocks per replica" + ctx(), 2, c.counters.size)
+            assertEquals("replica UUID is 16 bytes", 16, c.uuid.size)
+            assertEquals("two ReplicaClocks per replica", 2, c.counters.size)
         }
         if (ourUuid != null) {
-            assertArrayEquals("our replica must be slot 1 after an edit" + ctx(), ourUuid, d.clocks[0].uuid)
+            assertArrayEquals("our replica must be slot 1 after an edit", ourUuid, d.clocks[0].uuid)
         }
         for (s in d.subs) {
             if (s.isDocStart || s.isSentinel) continue
-            assertTrue("charID replica ${s.charId.replica} not registered" + ctx(), s.charId.replica in 1..d.clocks.size.toLong())
-            assertTrue("ts replica ${s.ts.replica} not registered" + ctx(), s.ts.replica in 0..d.clocks.size.toLong())
+            assertTrue("charID replica ${s.charId.replica} not registered", s.charId.replica in 1..d.clocks.size.toLong())
+            assertTrue("ts replica ${s.ts.replica} not registered", s.ts.replica in 0..d.clocks.size.toLong())
         }
 
         // CharIDs are globally unique: per replica, [clock, clock+len) ranges don't overlap,
@@ -258,13 +282,13 @@ internal object Topotext {
             for (k in 1 until sorted.size) {
                 val prev = sorted[k - 1]
                 assertTrue(
-                    "charID overlap in replica $rep: $prev / ${sorted[k]}" + ctx(),
+                    "charID overlap in replica $rep: $prev / ${sorted[k]}",
                     prev.charId.clock + prev.length <= sorted[k].charId.clock,
                 )
             }
             val counter1 = d.clocks[(rep - 1).toInt()].counters[0]
             val maxEnd = sorted.maxOf { it.charId.clock + it.length }
-            assertTrue("replica $rep counter1=$counter1 < used $maxEnd" + ctx(), counter1 >= maxEnd)
+            assertTrue("replica $rep counter1=$counter1 < used $maxEnd", counter1 >= maxEnd)
         }
         return d
     }
