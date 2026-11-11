@@ -268,6 +268,15 @@ class NotesRepository(
                 }
             }
         }
+        // The editor re-decodes the returned record. If CloudKit didn't echo
+        // the body field, fetch it so a just-saved note doesn't look body-less
+        // (and therefore read-only).
+        if (updated.stringField("TextDataEncrypted") == null) {
+            runCatchingCancellable { client.lookupNote(updated.recordName) }
+                .getOrNull()
+                ?.takeIf { it.stringField("TextDataEncrypted") != null }
+                ?.let { return it }
+        }
         return updated
     }
 

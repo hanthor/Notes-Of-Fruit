@@ -479,4 +479,80 @@ class NoteDetailViewModelTest {
         assertTrue(restored.status.value.exitRequested)
         assertEquals("Couldn't reopen the note: offline", restored.status.value.exitMessage)
     }
+
+    // ----- #3: unsupported / undecodable notes open read-only -----
+
+    @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
+    private fun mergeableB64(): String {
+        val w = com.example.applenotes.proto.ProtobufWire
+        fun msg(n: Int, vararg c: com.example.applenotes.proto.ProtobufWire.Field) =
+            com.example.applenotes.proto.ProtobufWire.Field(n, w.WIRE_LENGTH_DELIM, w.encode(c.toList()))
+        val leaf = com.example.applenotes.proto.ProtobufWire.Field(3, w.WIRE_LENGTH_DELIM, byteArrayOf(0x08, 0x01))
+        return kotlin.io.encoding.Base64.encode(
+            com.example.applenotes.proto.Gzip.compress(w.encode(listOf(msg(2, msg(3, leaf))))),
+        )
+    }
+
+    @Test
+    fun modernNoteOpensReadOnlyAndCannotBeSaved() {
+        api.put(noteRecord("NOTE-M", text = null, textB64 = mergeableB64()))
+        val vm = newVm()
+        vm.openExisting("NOTE-M")
+
+        assertTrue(vm.isReadOnly)
+        assertEquals(com.example.applenotes.data.ReadOnlyReason.MODERN_FORMAT, vm.readOnlyReason)
+        assertTrue(vm.viewMode)
+        assertEquals("", vm.fullBodyForSave)
+
+        // Every edit path is inert…
+        vm.onTitleChange("typed")
+        vm.type("typed")
+        vm.onSpansChange(listOf(NoteBodyEditor.AttrSpan(5, NoteBodyEditor.ParagraphStyle.HEADING)))
+        vm.enterEditMode()
+        vm.toggleCheckbox(0)
+        assertEquals("", vm.titleDraft)
+        assertEquals("", vm.bodyDraft.text)
+        assertTrue(vm.viewMode)
+        assertFalse(vm.isModified)
+        // …and nothing is ever written back.
+        vm.save(alsoExit = false)
+        vm.autoSave()
+        assertTrue(api.modifies.isEmpty())
+        assertFalse(vm.status.value.saving)
+    }
+
+    @Test
+    fun readOnlyNoteCanStillBeDeleted() {
+        api.put(noteRecord("NOTE-M", text = null, textB64 = mergeableB64()))
+        val vm = newVm()
+        vm.openExisting("NOTE-M")
+        vm.delete()
+        assertEquals("NOTE-M", api.deletes.single().first)
+        assertTrue(vm.status.value.exitRequested)
+    }
+
+    @Test
+    fun existingNoteWithoutBodyIsReadOnlyButNewDraftIsEditable() {
+        api.put(noteRecord("NOTE-E", text = null))
+        val vm = newVm()
+        vm.openExisting("NOTE-E")
+        assertEquals(com.example.applenotes.data.ReadOnlyReason.MISSING_BODY, vm.readOnlyReason)
+
+        vm.close()
+        vm.open("open-d", com.example.applenotes.client.NoteRecord("draft-1", "Note", null, emptyMap()), folderRef("F"))
+        assertFalse(vm.isReadOnly)
+        vm.onTitleChange("hello")
+        assertEquals("hello", vm.titleDraft)
+    }
+
+    @Test
+    fun emptyButValidNoteIsEditable() {
+        api.put(noteRecord("NOTE-0", ""))
+        val vm = newVm()
+        vm.openExisting("NOTE-0")
+        assertFalse(vm.isReadOnly)
+        vm.type("first words")
+        vm.save(alsoExit = false)
+        assertEquals("first words", api.records.getValue("NOTE-0").visibleText())
+    }
 }

@@ -51,9 +51,10 @@ internal fun FormattedNoteBody(
     titlePrefixLength: Int,
     attrSpans: List<NoteBodyEditor.AttrSpan>,
     attachmentContent: Map<String, AttachmentContent> = emptyMap(),
-    onTap: () -> Unit,
+    onTap: (() -> Unit)?,
     onToggleCheckbox: ((paragraphCharStart: Int) -> Unit)? = null,
     modifier: Modifier = Modifier,
+    emptyPlaceholder: String = "Start typing…",
 ) {
     // Map each char index -> (style, checked). Walk attrSpans in order and
     // assign each char its span's style. Total span lengths usually match
@@ -94,7 +95,7 @@ internal fun FormattedNoteBody(
         modifier = modifier
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 16.dp)
-            .clickable(onClick = onTap),
+            .then(if (onTap != null) Modifier.clickable(onClick = onTap) else Modifier),
     ) {
         var listCounter = 0
         for (range in paragraphs) {
@@ -228,7 +229,7 @@ internal fun FormattedNoteBody(
         }
         if (paragraphs.isEmpty()) {
             Text(
-                "Start typing…",
+                emptyPlaceholder,
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

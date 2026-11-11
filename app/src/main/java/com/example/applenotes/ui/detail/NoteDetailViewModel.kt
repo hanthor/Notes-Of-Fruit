@@ -16,7 +16,10 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.example.applenotes.client.NoteRecord
 import com.example.applenotes.data.AppGraph
+import com.example.applenotes.data.NoteBody
 import com.example.applenotes.data.NotesRepository
+import com.example.applenotes.data.ReadOnlyReason
+import com.example.applenotes.data.decodeNoteBody
 import com.example.applenotes.data.runCatchingCancellable
 import com.example.applenotes.data.userMessage
 import com.example.applenotes.proto.NoteBodyEditor
@@ -140,6 +143,16 @@ class NoteDetailViewModel(
     var viewMode: Boolean by mutableStateOf(false)
         private set
 
+    /**
+     * Non-null when the open note must not be edited (unsupported or
+     * undecodable body; see [decodeNoteBody]). Editing, formatting, saving
+     * and auto-save are all disabled; delete still works.
+     */
+    var readOnlyReason: ReadOnlyReason? by mutableStateOf(null)
+        private set
+
+    val isReadOnly: Boolean get() = readOnlyReason != null
+
     val fullBodyForSave: String
         get() = assembleFullBody(titleDraft, bodyDraft.text)
 
@@ -235,21 +248,27 @@ class NoteDetailViewModel(
     ) {
         record = rec
         pendingFolderRef = folderRef
-        val original = decodeOriginalBody(rec)
+        // Probe before anything else: only a cleanly decoded NOTE_STORE_PROTO
+        // (or a brand-new draft) is editable. Everything else is shown
+        // read-only, and no draft is ever applied to it.
+        val body = decodeNoteBody(rec)
+        readOnlyReason = (body as? NoteBody.ReadOnly)?.reason
+        if (body is NoteBody.ReadOnly) {
+            Log.w(TAG, "opening ${rec.recordName} read-only: ${body.reason}")
+        }
+        val original = body.text.orEmpty()
         originalBody = original
-        val spans = rec.stringField("TextDataEncrypted")?.let { b64 ->
-            runCatching { NoteBodyEditor.parseAttributeRunsFromBase64(b64) }.getOrNull()
-        }.orEmpty()
+        val spans = body.spans
         attrSpans = spans
 
         val firstNl = original.indexOf('\n')
         val initialTitle = if (firstNl < 0) original else original.substring(0, firstNl)
         val initialBody = if (firstNl < 0) "" else original.substring(firstNl + 1)
 
-        if (keepCurrentDraft) {
+        if (keepCurrentDraft && body is NoteBody.Editable) {
             // titleDraft / bodyDraft / spansDraft / prevFullBody stay; they
             // are now diffed against the freshly saved record.
-        } else if (draft != null) {
+        } else if (draft != null && body is NoteBody.Editable) {
             titleDraft = draft.title
             bodyDraft = TextFieldValue(
                 draft.body,
@@ -275,7 +294,8 @@ class NoteDetailViewModel(
                 it.style != NoteBodyEditor.ParagraphStyle.BODY &&
                     it.style != NoteBodyEditor.ParagraphStyle.TITLE
             }
-            viewMode = hasRichFormatting && initialBody.isNotEmpty()
+            // Read-only notes always use the (non-editable) formatted view.
+            viewMode = (hasRichFormatting && initialBody.isNotEmpty()) || body is NoteBody.ReadOnly
         }
         persistIdentity()
         persistDraft()
@@ -309,22 +329,26 @@ class NoteDetailViewModel(
     // ----- Editing -----
 
     fun onTitleChange(value: String) {
+        if (isReadOnly) return
         titleDraft = value.replace("\n", "")
         syncSpans()
     }
 
     fun onBodyChange(value: TextFieldValue) {
+        if (isReadOnly) return
         bodyDraft = value
         syncSpans()
     }
 
     /** Toolbar / link-dialog span mutations (full-body coordinates). */
     fun onSpansChange(spans: List<NoteBodyEditor.AttrSpan>) {
+        if (isReadOnly) return
         spansDraft = spans
         persistDraft()
     }
 
     fun enterEditMode() {
+        if (isReadOnly) return
         viewMode = false
         persistDraft()
     }
@@ -344,6 +368,7 @@ class NoteDetailViewModel(
 
     /** Tap on a checkbox in the formatted view; auto-saves so check state persists. */
     fun toggleCheckbox(bodyParagraphStart: Int) {
+        if (isReadOnly) return
         val fullPos = bodyParagraphStart + titlePrefixSkip
         spansDraft = NoteBodyEditor.toggleCheckbox(fullBodyForSave, spansDraft, fullPos)
         persistDraft()
@@ -381,6 +406,8 @@ class NoteDetailViewModel(
     fun save(alsoExit: Boolean, isPureAppendOverride: Boolean? = null) {
         val rec = record ?: return
         val openId = _status.value.openId ?: return
+        // Never write a body we couldn't decode back to iCloud.
+        if (isReadOnly) return
         if (_status.value.saving) {
             val alreadyExits = queuedSave?.takeIf { it.first == openId }?.second ?: false
             queuedSave = openId to (alreadyExits || alsoExit)
@@ -438,7 +465,7 @@ class NoteDetailViewModel(
 
     /** Lifecycle ON_PAUSE auto-save (best effort, not navigating). */
     fun autoSave() {
-        if (isModified && !_status.value.saving) save(alsoExit = false)
+        if (isModified && !isReadOnly && !_status.value.saving) save(alsoExit = false)
     }
 
     fun delete() {
@@ -489,6 +516,7 @@ class NoteDetailViewModel(
         _status.value = Status()
         record = null
         pendingFolderRef = null
+        readOnlyReason = null
         savedState.remove<String>(KEY_OPEN_ID)
         savedState.remove<String>(KEY_RECORD_NAME)
         savedState.remove<String>(KEY_RECORD_TAG)
@@ -551,10 +579,3 @@ internal fun assembleFullBody(title: String, body: String): String = when {
     body.isEmpty() -> title
     else -> "$title\n$body"
 }
-
-/** Visible text of [record]'s body; "" when it can't be decoded. */
-internal fun decodeOriginalBody(record: NoteRecord): String =
-    record.stringField("TextDataEncrypted")?.let { b64 ->
-        runCatching { NoteBodyEditor.readVisibleTextFromBase64(b64) }.getOrNull()
-            ?: runCatching { NoteBodyEditor.readTextFromBase64(b64) }.getOrNull()
-    }.orEmpty()

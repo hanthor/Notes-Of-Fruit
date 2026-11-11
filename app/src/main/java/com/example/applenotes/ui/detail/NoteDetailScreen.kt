@@ -49,7 +49,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.applenotes.data.ReadOnlyReason
 import com.example.applenotes.ui.common.CenteredSpinner
+import androidx.compose.material3.Surface
+import androidx.compose.material.icons.filled.Lock
 import com.example.applenotes.ui.common.MessageSnackbarEffect
 import com.example.applenotes.ui.common.humanRelative
 
@@ -81,6 +84,7 @@ internal fun NoteDetailScreen(
     val fullBodyForSave = vm.fullBodyForSave
     val isModified = vm.isModified
     val viewMode = vm.viewMode
+    val readOnly = vm.isReadOnly
     val attachments by vm.attachments.collectAsStateWithLifecycle()
 
     // Live body-only spans for formatted view (mirrors any draft mutation).
@@ -165,6 +169,7 @@ internal fun NoteDetailScreen(
                             BasicTextField(
                                 value = titleDraft,
                                 onValueChange = { vm.onTitleChange(it) },
+                                readOnly = readOnly,
                                 singleLine = true,
                                 textStyle = MaterialTheme.typography.titleLarge.copy(
                                     color = MaterialTheme.colorScheme.onSurface,
@@ -187,6 +192,7 @@ internal fun NoteDetailScreen(
                                 modifier = Modifier.fillMaxWidth(),
                             )
                             val pill = when {
+                                readOnly -> "Read-only"
                                 saving -> "Saving…"
                                 isModified -> "Unsaved"
                                 savedAgoText != null -> savedAgoText
@@ -245,6 +251,7 @@ internal fun NoteDetailScreen(
                 if (saving) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
+                vm.readOnlyReason?.let { ReadOnlyBanner(it) }
             }
         },
     ) { padding ->
@@ -260,11 +267,14 @@ internal fun NoteDetailScreen(
                     titlePrefixLength = 0,
                     attrSpans = bodyAttrSpans,
                     attachmentContent = attachments,
-                    onTap = { vm.enterEditMode() },
-                    onToggleCheckbox = { bodyParaStart ->
+                    // Read-only notes never drop into the editor or toggle
+                    // checkboxes (which would auto-save).
+                    onTap = if (readOnly) null else ({ vm.enterEditMode() }),
+                    onToggleCheckbox = if (readOnly) null else ({ bodyParaStart ->
                         // Auto-saves the toggle so check state persists.
                         vm.toggleCheckbox(bodyParaStart)
-                    },
+                    }),
+                    emptyPlaceholder = if (readOnly) "Nothing to show." else "Start typing…",
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth(),
@@ -372,5 +382,27 @@ internal fun NoteDetailScreen(
                 TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
             },
         )
+    }
+}
+
+/** Explains why the open note can't be edited (issue #3). */
+@Composable
+private fun ReadOnlyBanner(reason: ReadOnlyReason) {
+    Surface(
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Default.Lock,
+                contentDescription = null,
+                modifier = Modifier.padding(end = 12.dp),
+            )
+            Text(reason.explanation, style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
