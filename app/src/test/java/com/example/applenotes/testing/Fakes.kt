@@ -28,6 +28,12 @@ val REPLICA_UUID: ByteArray = ByteArray(16) { (it + 1).toByte() }.also {
     it[8] = ((it[8].toInt() and 0x3F) or 0x80).toByte()
 }
 
+/** The replica of "another device" in conflict tests. */
+val OTHER_DEVICE_UUID: ByteArray = ByteArray(16) { (0x50 + it).toByte() }.also {
+    it[6] = ((it[6].toInt() and 0x0F) or 0x40).toByte()
+    it[8] = ((it[8].toInt() and 0x3F) or 0x80).toByte()
+}
+
 fun stringField(value: String): JsonElement = buildJsonObject {
     put("type", "ENCRYPTED_BYTES")
     put("value", value)
@@ -69,6 +75,9 @@ class FakeNotesApi : NotesApi {
     /** Operation name ("modifyNoteBody", "lookupNote", ...) → error to throw on its next call. */
     val failNext = mutableMapOf<String, Throwable>()
 
+    /** Operation name → errors to throw on the next calls, in order (after [failNext]). */
+    val failQueue = mutableMapOf<String, ArrayDeque<Throwable>>()
+
     /** Operation name → gate the next call waits on (to test races). */
     val gates = mutableMapOf<String, CompletableDeferred<Unit>>()
 
@@ -84,6 +93,33 @@ class FakeNotesApi : NotesApi {
     data class Create(val title: String, val body: String, val folderRef: JsonElement, val uuid: ByteArray)
 
     val modifies = mutableListOf<Modify>()
+
+    /** Reject a modify whose tag isn't the record's current one, like CloudKit's oplock. */
+    var checkTags = false
+    var conflicts = 0
+
+    /** Runs at the start of the n-th modifyNoteBody call (1-based), e.g. to land a remote edit. */
+    var beforeModify: ((Int) -> Unit)? = null
+    private var modifyCalls = 0
+
+    /**
+     * Simulate another device editing [recordName] to [newText]: spliced by
+     * [editor]'s replica, new tag, new ReplicaIDToNotesVersionDataEncrypted.
+     */
+    fun remoteEdit(recordName: String, newText: String, editor: ByteArray = OTHER_DEVICE_UUID): NoteRecord {
+        val old = records.getValue(recordName)
+        val b64 = com.example.applenotes.proto.NoteAppender.setBodyBase64(
+            old.stringField("TextDataEncrypted")!!, editor, newText, 500,
+        )
+        val rec = old.copy(
+            recordChangeTag = "remote-${++tagCounter}",
+            rawFields = old.rawFields +
+                ("TextDataEncrypted" to stringField(b64)) +
+                ("ReplicaIDToNotesVersionDataEncrypted" to stringField("cmVtb3RlLXZlcnNpb24=")),
+        )
+        put(rec)
+        return rec
+    }
     val creates = mutableListOf<Create>()
     val deletes = mutableListOf<Pair<String, String>>()
     private var tagCounter = 100
@@ -97,6 +133,7 @@ class FakeNotesApi : NotesApi {
         calls += op
         gates.remove(op)?.await()
         failNext.remove(op)?.let { throw it }
+        failQueue[op]?.removeFirstOrNull()?.let { throw it }
     }
 
     override suspend fun fetchRecents(limit: Int): List<NoteSummary> {
@@ -172,6 +209,11 @@ class FakeNotesApi : NotesApi {
         replicaVersionPassThroughB64: String?,
     ): NoteRecord {
         enter("modifyNoteBody")
+        beforeModify?.invoke(++modifyCalls)
+        if (checkTags && records[recordName]?.recordChangeTag != recordChangeTag) {
+            conflicts++
+            throw com.example.applenotes.client.NotesError.Conflict(details = "serverErrorCode=CONFLICT")
+        }
         modifies += Modify(recordName, recordChangeTag, newTextDataEncryptedB64, newTitle, newSnippet, replicaVersionPassThroughB64)
         val old = records[recordName] ?: error("no such record $recordName")
         val rec = old.copy(
@@ -188,6 +230,9 @@ class FakeAuthGateway(private val api: NotesApi, var savedLogin: Boolean = true)
     var failOpen: Throwable? = null
     var cleared = false
 
+    /** The auth-token cookie value [currentAuthToken] reports. */
+    var authToken: String? = "token-1"
+
     override fun hasSavedLogin() = savedLogin
 
     override suspend fun openSession(): NotesApi {
@@ -195,6 +240,8 @@ class FakeAuthGateway(private val api: NotesApi, var savedLogin: Boolean = true)
         failOpen?.let { failOpen = null; throw it }
         return api
     }
+
+    override fun currentAuthToken(): String? = authToken
 
     override fun clearLogin() {
         cleared = true
@@ -214,4 +261,9 @@ class FakeAlphaGate(var acknowledged: Boolean = true) : AlphaGate {
 class MainDispatcherRule(val dispatcher: TestDispatcher = UnconfinedTestDispatcher()) : TestWatcher() {
     override fun starting(description: Description) = Dispatchers.setMain(dispatcher)
     override fun finished(description: Description) = Dispatchers.resetMain()
+}
+
+/** Connectivity the test flips by hand. */
+class FakeConnectivity(initial: Boolean = true) : com.example.applenotes.data.ConnectivityMonitor {
+    override val online = kotlinx.coroutines.flow.MutableStateFlow(initial)
 }

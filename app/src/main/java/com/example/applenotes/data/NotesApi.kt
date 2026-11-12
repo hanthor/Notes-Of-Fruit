@@ -1,5 +1,6 @@
 package com.example.applenotes.data
 
+import com.example.applenotes.auth.AUTH_TOKEN_COOKIE
 import com.example.applenotes.auth.AppleNotesSession
 import com.example.applenotes.auth.CookieReader
 import com.example.applenotes.client.AppleNotesClient
@@ -88,13 +89,22 @@ interface AuthGateway {
 
     /** Forget the login (clears the WebView auth cookies). */
     fun clearLogin()
+
+    /**
+     * The current value of the iCloud auth-token cookie, or null. The sign-in
+     * screen uses it to wait for a *new* token after a session expired,
+     * instead of re-submitting the stale one straight away.
+     */
+    fun currentAuthToken(): String? = null
 }
 
 class CloudKitAuthGateway(
     private val httpClient: HttpClient,
     private val cookieReader: CookieReader,
 ) : AuthGateway {
-    override fun hasSavedLogin(): Boolean = "X-APPLE-WEBAUTH-TOKEN" in cookieReader.cookieMap()
+    override fun hasSavedLogin(): Boolean = AUTH_TOKEN_COOKIE in cookieReader.cookieMap()
+
+    override fun currentAuthToken(): String? = cookieReader.cookieMap()[AUTH_TOKEN_COOKIE]
 
     override suspend fun openSession(): NotesApi {
         val session = AppleNotesSession(httpClient, cookieReader).bootstrap().getOrThrow()

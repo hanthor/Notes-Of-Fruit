@@ -2,7 +2,7 @@ package com.example.applenotes.integrations
 
 import android.content.Context
 import android.content.Intent
-import android.util.Log
+import com.example.applenotes.log.AppLog
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import androidx.core.graphics.drawable.IconCompat
@@ -55,7 +55,7 @@ internal object NoteShortcuts {
             // Keep any pinned copy's title current.
             ShortcutManagerCompat.updateShortcuts(context, listOf(newest))
             ShortcutManagerCompat.reportShortcutUsed(context, newest.id)
-        }.onFailure { Log.w(TAG, "couldn't update recent-note shortcuts", it) }
+        }.onFailure { AppLog.w(TAG, "couldn't update recent-note shortcuts", it) }
     }
 
     /** Drop shortcuts for notes that no longer exist (deleted elsewhere / here). */
@@ -68,7 +68,7 @@ internal object NoteShortcuts {
                 ShortcutManagerCompat.removeDynamicShortcuts(context, stale)
                 ShortcutManagerCompat.disableShortcuts(context, stale, "This note was deleted")
             }
-        }.onFailure { Log.w(TAG, "couldn't prune shortcuts", it) }
+        }.onFailure { AppLog.w(TAG, "couldn't prune shortcuts", it) }
     }
 
     /** Sign-out: remove every note shortcut and invalidate pinned ones. */
@@ -79,7 +79,7 @@ internal object NoteShortcuts {
             ShortcutManagerCompat.removeAllDynamicShortcuts(context)
             val noteIds = ids.filter { it.startsWith(ID_PREFIX) }.distinct()
             if (noteIds.isNotEmpty()) ShortcutManagerCompat.disableShortcuts(context, noteIds, "Signed out")
-        }.onFailure { Log.w(TAG, "couldn't clear shortcuts", it) }
+        }.onFailure { AppLog.w(TAG, "couldn't clear shortcuts", it) }
         ShortcutToken.rotate(context)
     }
 

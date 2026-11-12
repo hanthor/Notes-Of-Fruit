@@ -1,7 +1,7 @@
 package com.example.applenotes.ui
 
 import android.content.Context
-import android.util.Log
+import com.example.applenotes.log.AppLog
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -17,6 +17,8 @@ import com.example.applenotes.data.AppGraph
 import com.example.applenotes.data.DEFAULT_FOLDER_RECORD_NAME
 import com.example.applenotes.data.DRAFT_RECORD_PREFIX
 import com.example.applenotes.data.NotesRepository
+import com.example.applenotes.client.NotesError
+import com.example.applenotes.data.errorDetails
 import com.example.applenotes.data.TRASH_RECORD_NAME
 import com.example.applenotes.integrations.IncomingRequest
 import com.example.applenotes.data.runCatchingCancellable
@@ -40,8 +42,11 @@ sealed interface AppScreen {
     data object Splash : AppScreen
     data object Login : AppScreen
     data class Loading(val msg: String) : AppScreen
-    /** Full-screen error. Reserved for bootstrap (sign-in) failures. */
-    data class Error(val msg: String) : AppScreen
+    /**
+     * Full-screen error. Reserved for bootstrap (sign-in) failures.
+     * [details] is the raw error text behind the "Details" button.
+     */
+    data class Error(val msg: String, val details: String? = null) : AppScreen
     data object NotesList : AppScreen
 
     /**
@@ -127,6 +132,19 @@ class AppViewModel(
      */
     val listMessage: StateFlow<UiMessage<ListAction>?> = _listMessage.asStateFlow()
 
+    /** Device connectivity, for the offline indicator. */
+    val online: StateFlow<Boolean> = repository.online
+
+    private val _loginStaleToken = MutableStateFlow<String?>(null)
+
+    /**
+     * When the sign-in screen is shown because a session expired: the auth
+     * token cookie that stopped working. The screen waits for a different
+     * one instead of handing the stale cookie straight back (which would
+     * loop). Null for a first sign-in.
+     */
+    val loginStaleToken: StateFlow<String?> = _loginStaleToken.asStateFlow()
+
     val listState: StateFlow<NotesListUiState> =
         combine(repository.notes, repository.folders, selectedFolder) { notes, folders, folder ->
             NotesListUiState(notes, folders, folder)
@@ -162,11 +180,18 @@ class AppViewModel(
         }
     }
 
-    private fun bootstrap(loadingMsg: String) {
+    /**
+     * [afterSignIn]: the user just signed in through the WebView. An
+     * AuthExpired then is final (full-screen error, "Sign in again" clears
+     * the cookies) instead of another trip to the sign-in screen, which
+     * could loop.
+     */
+    private fun bootstrap(loadingMsg: String, afterSignIn: Boolean = false) {
         _screen.value = AppScreen.Loading(loadingMsg)
         viewModelScope.launch {
             runCatchingCancellable { repository.signIn() }
                 .onSuccess {
+                    _loginStaleToken.value = null
                     // Process-death restore: reopen the note that was on
                     // screen. The detail ViewModel rebuilds it (and any
                     // unsaved draft) from its own saved state.
@@ -182,17 +207,42 @@ class AppViewModel(
                     }
                 }
                 .onFailure {
-                    Log.e(TAG, "bootstrap failed", it)
-                    _screen.value = AppScreen.Error(userMessage(it))
+                    AppLog.e(TAG, "bootstrap failed", it)
+                    if (it is NotesError.AuthExpired && !afterSignIn) {
+                        // Saved cookies no longer work: sign in again, and
+                        // come back to the open note (if any) afterwards.
+                        signInAgain()
+                    } else {
+                        _screen.value = AppScreen.Error(userMessage(it), errorDetails(it))
+                    }
                 }
         }
     }
 
-    fun onCookiesArrived() = bootstrap("Signing in…")
+    fun onCookiesArrived() = bootstrap("Signing in…", afterSignIn = true)
+
+    /**
+     * Send the user to the sign-in screen because the session expired,
+     * WITHOUT forgetting the open note: [KEY_DETAIL_OPEN_ID] stays, the
+     * detail ViewModel keeps its draft (also in its SavedStateHandle), and
+     * the bootstrap after sign-in reopens that note.
+     */
+    fun signInAgain() {
+        _loginStaleToken.value = repository.currentAuthToken()
+        _screen.value = AppScreen.Login
+    }
+
+    /**
+     * The session expired and a fresh bootstrap didn't fix it. From the list
+     * (nothing unsaved there) we go straight to sign-in; the detail screen
+     * instead offers "Sign in" next to the kept draft.
+     */
+    private fun needsSignIn(e: Throwable) = e is NotesError.AuthExpired && repository.sessionExpired.value
 
     fun retryBootstrap() = bootstrap("Retrying…")
 
     fun signOut() {
+        _loginStaleToken.value = null
         // Don't carry content shared before sign-out into another account.
         pendingIncoming = null
         repository.signOut()
@@ -206,12 +256,18 @@ class AppViewModel(
     }
 
     fun refresh() {
+        // Don't hit the network (or blank the list) while offline.
+        if (!online.value) {
+            postListMessage("You're offline. Check your connection and try again.", ListAction.RetryRefresh)
+            return
+        }
         _screen.value = AppScreen.Loading("Refreshing…")
         viewModelScope.launch {
             runCatchingCancellable { repository.refresh() }
                 .onFailure {
-                    Log.e(TAG, "refresh failed", it)
-                    postListMessage("Couldn't refresh: ${userMessage(it)}", ListAction.RetryRefresh)
+                    AppLog.e(TAG, "refresh failed", it)
+                    if (needsSignIn(it)) return@launch signInAgain()
+                    postListMessage("Couldn't refresh: ${userMessage(it)}", ListAction.RetryRefresh, errorDetails(it))
                 }
             // Either way the (possibly stale) cached list is still good.
             _screen.value = AppScreen.NotesList
@@ -224,9 +280,10 @@ class AppViewModel(
             runCatchingCancellable { repository.lookupNote(note.recordName) }
                 .onSuccess { showDetail(it, pendingFolderRef = null) }
                 .onFailure {
-                    Log.e(TAG, "lookupNote failed", it)
+                    AppLog.e(TAG, "lookupNote failed", it)
+                    if (needsSignIn(it)) return@onFailure signInAgain()
                     _screen.value = AppScreen.NotesList
-                    postListMessage("Couldn't open the note: ${userMessage(it)}", ListAction.RetryOpen(note))
+                    postListMessage("Couldn't open the note: ${userMessage(it)}", ListAction.RetryOpen(note), errorDetails(it))
                 }
         }
     }
@@ -267,11 +324,13 @@ class AppViewModel(
                     showDetail(draftRecord, pendingFolderRef = folderRef, prefill = prefill)
                 }
                 .onFailure {
-                    Log.e(TAG, "createNote (folder lookup) failed", it)
+                    AppLog.e(TAG, "createNote (folder lookup) failed", it)
+                    if (needsSignIn(it)) return@onFailure signInAgain()
                     _screen.value = AppScreen.NotesList
                     postListMessage(
                         "Couldn't create a note: ${userMessage(it)}",
                         if (prefill == null) ListAction.RetryCreate else ListAction.RetryCreatePrefilled(prefill),
+                        errorDetails(it),
                     )
                 }
         }
@@ -377,8 +436,8 @@ class AppViewModel(
         processPendingIncoming()
     }
 
-    private fun postListMessage(text: String, action: ListAction?) {
-        _listMessage.value = UiMessage(++messageCounter, text, action)
+    private fun postListMessage(text: String, action: ListAction?, details: String? = null) {
+        _listMessage.value = UiMessage(++messageCounter, text, action, details = details)
     }
 
     fun onListMessageAction(m: UiMessage<ListAction>) {

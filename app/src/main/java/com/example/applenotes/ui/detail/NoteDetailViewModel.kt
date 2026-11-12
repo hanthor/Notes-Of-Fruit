@@ -1,7 +1,7 @@
 package com.example.applenotes.ui.detail
 
 import android.content.Context
-import android.util.Log
+import com.example.applenotes.log.AppLog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -19,7 +19,13 @@ import com.example.applenotes.data.AppGraph
 import com.example.applenotes.data.NoteBody
 import com.example.applenotes.data.NotesRepository
 import com.example.applenotes.data.ReadOnlyReason
+import com.example.applenotes.client.NotesError
+import com.example.applenotes.data.EditConflictException
+import com.example.applenotes.data.NoteRebase
+import com.example.applenotes.data.TextMerge
 import com.example.applenotes.data.decodeNoteBody
+import com.example.applenotes.data.errorDetails
+import com.example.applenotes.data.retryHint
 import com.example.applenotes.data.runCatchingCancellable
 import com.example.applenotes.data.userMessage
 import com.example.applenotes.proto.NoteBodyEditor
@@ -73,16 +79,54 @@ class NoteDetailViewModel(
         val exitRequested: Boolean = false,
         /** Optional snackbar text for the list after [exitRequested]. */
         val exitMessage: String? = null,
+        /**
+         * The draft overlaps a change made on another device (issue #4).
+         * Nothing was written; the screen asks "Keep both" or "Discard my
+         * changes", and saving is blocked until the user picks one.
+         */
+        val conflict: EditConflict? = null,
     )
+
+    /** [fresh] is the server's current record, [remoteText] its visible text. */
+    data class EditConflict(val fresh: NoteRecord, val remoteText: String)
 
     /** Snackbar actions offered by the detail screen. */
     sealed interface DetailAction {
         data class RetrySave(val alsoExit: Boolean) : DetailAction
         data object RetryDelete : DetailAction
+
+        /**
+         * The session expired: go to sign-in. The screen routes this to
+         * AppViewModel.signInAgain(); the draft stays here meanwhile.
+         */
+        data object SignIn : DetailAction
     }
 
     private val _status = MutableStateFlow(Status())
     val status: StateFlow<Status> = _status.asStateFlow()
+
+    /** Device connectivity, for the offline indicator. */
+    val online: StateFlow<Boolean> = repository.online
+
+    /** Why the last save failed, when that decides what happens next. */
+    private enum class PendingRetry { NONE, WHEN_ONLINE, AFTER_SIGN_IN }
+
+    private var pendingRetry = PendingRetry.NONE
+
+    init {
+        // Back online after a save failed for lack of network: retry it
+        // once. No polling and nothing else while offline.
+        viewModelScope.launch {
+            var wasOnline = online.value
+            online.collect { now ->
+                if (now && !wasOnline && pendingRetry == PendingRetry.WHEN_ONLINE) {
+                    pendingRetry = PendingRetry.NONE
+                    if (_status.value.saveFailed && isModified) save(alsoExit = false)
+                }
+                wasOnline = now
+            }
+        }
+    }
 
     private val _attachments = MutableStateFlow<Map<String, AttachmentContent>>(emptyMap())
 
@@ -184,7 +228,18 @@ class NoteDetailViewModel(
         /** Initial content for a brand-new draft (share, import, …); ignored for saved notes. */
         prefill: DraftPrefill? = null,
     ) {
-        if (_status.value.openId == openId) return
+        if (_status.value.openId == openId) {
+            // Back from re-signing in after the session expired: the draft
+            // is still here; save it now.
+            if (pendingRetry == PendingRetry.AFTER_SIGN_IN && repository.isSignedIn &&
+                !repository.sessionExpired.value
+            ) {
+                pendingRetry = PendingRetry.NONE
+                if (_status.value.saveFailed && isModified) save(alsoExit = false)
+            }
+            return
+        }
+        pendingRetry = PendingRetry.NONE
         attachmentsJob?.cancel()
         _attachments.value = emptyMap()
         if (record == null) {
@@ -192,6 +247,7 @@ class NoteDetailViewModel(
             return
         }
         _status.value = Status(openId = openId)
+        savedState.remove<Boolean>(KEY_CONFLICT)
         val draft = prefill?.takeIf { record.recordChangeTag == null }?.toSnapshot()
         load(record, pendingFolderRef, draft = draft)
     }
@@ -222,13 +278,24 @@ class NoteDetailViewModel(
                 .onSuccess { rec ->
                     if (_status.value.openId != openId) return@onSuccess
                     _status.update { it.copy(loading = false) }
-                    // Only resurrect the draft against the exact version it
-                    // was typed on; otherwise the splice would silently
-                    // revert whatever changed in between.
-                    load(rec, null, draft.takeIf { rec.recordChangeTag == tag })
+                    val remote = decodeNoteBody(rec)
+                    if (savedState.get<Boolean>(KEY_CONFLICT) == true && draft != null &&
+                        remote is NoteBody.Editable
+                    ) {
+                        // Died with the conflict dialog up: ask again.
+                        load(rec, null, draft)
+                        showConflict(EditConflict(rec, remote.text))
+                    } else if (rec.recordChangeTag == tag || draft == null) {
+                        load(rec, null, draft)
+                    } else {
+                        // The note changed while we were gone. Applying the
+                        // draft as-is would revert the other change, so
+                        // re-apply it onto the new version instead.
+                        restoreOntoChangedRecord(rec, draft)
+                    }
                 }
                 .onFailure {
-                    Log.w(TAG, "restore: lookupNote failed", it)
+                    AppLog.w(TAG, "restore: lookupNote failed", it)
                     if (_status.value.openId == openId) {
                         _status.update { s ->
                             s.copy(
@@ -239,6 +306,44 @@ class NoteDetailViewModel(
                         }
                     }
                 }
+        }
+    }
+
+    /**
+     * Process-death restore when the record changed since the draft was
+     * typed: three-way merge (base = the text the draft started from, saved
+     * alongside it) onto the new version. Overlap, or no saved base → the
+     * conflict dialog, with the draft kept.
+     */
+    private fun restoreOntoChangedRecord(rec: NoteRecord, draft: DraftSnapshot) {
+        val base = DraftSnapshot.decodeOrNull(savedState.get<String>(KEY_BASE))
+        val remote = decodeNoteBody(rec)
+        val draftFull = assembleFullBody(draft.title, draft.body)
+        val draftSpans = draft.spans.map { it.toAttrSpan() }
+        val merged = if (base != null && remote is NoteBody.Editable) {
+            TextMerge.merge(base.body, draftFull, remote.text)
+        } else {
+            TextMerge.Conflict
+        }
+        if (merged is TextMerge.Clean && base != null && remote is NoteBody.Editable) {
+            load(rec, null, draft = null)
+            val spans = NoteRebase.mergeSpans(
+                merged,
+                baseText = base.body,
+                baseSpans = base.spans.map { it.toAttrSpan() },
+                localText = draftFull,
+                localSpans = draftSpans,
+                remoteText = remote.text,
+                remoteSpans = remote.spans,
+            )
+            setDraftFromFullText(merged.text, spans)
+            viewMode = draft.viewMode
+            persistDraft()
+        } else {
+            load(rec, null, draft)
+            if (remote is NoteBody.Editable && draftFull != remote.text) {
+                showConflict(EditConflict(rec, remote.text))
+            }
         }
     }
 
@@ -261,7 +366,7 @@ class NoteDetailViewModel(
         val body = decodeNoteBody(rec)
         readOnlyReason = (body as? NoteBody.ReadOnly)?.reason
         if (body is NoteBody.ReadOnly) {
-            Log.w(TAG, "opening ${rec.recordName} read-only: ${body.reason}")
+            AppLog.w(TAG, "opening ${rec.recordName} read-only: ${body.reason}")
         }
         val original = body.text.orEmpty()
         originalBody = original
@@ -305,6 +410,7 @@ class NoteDetailViewModel(
             viewMode = (hasRichFormatting && initialBody.isNotEmpty()) || body is NoteBody.ReadOnly
         }
         persistIdentity()
+        persistBase()
         persistDraft()
         fetchAttachments()
     }
@@ -322,7 +428,7 @@ class NoteDetailViewModel(
                 val rec = fetcher(rn) ?: continue
                 // Image bytes are downloaded (and cached) when shown, not here.
                 val content = runCatchingCancellable { decodeAttachment(rec, fetcher) }
-                    .onFailure { Log.w(TAG, "decodeAttachment failed for $rn", it) }
+                    .onFailure { AppLog.w(TAG, "decodeAttachment failed for $rn", it) }
                     .getOrNull()
                 if (content != null) {
                     _attachments.value = _attachments.value + (rn to content)
@@ -386,8 +492,8 @@ class NoteDetailViewModel(
     private var queuedSave: Pair<String, Boolean>? = null
     private var messageCounter = 0L
 
-    private fun message(text: String, action: DetailAction?) =
-        UiMessage(++messageCounter, text, action)
+    private fun message(text: String, action: DetailAction?, details: String? = null) =
+        UiMessage(++messageCounter, text, action, details = details)
 
     /** Update [status] only if [openId] is still the open note. */
     private inline fun updateIfOpen(openId: String, f: (Status) -> Status) {
@@ -413,6 +519,9 @@ class NoteDetailViewModel(
         val openId = _status.value.openId ?: return
         // Never write a body we couldn't decode back to iCloud.
         if (isReadOnly) return
+        // An unresolved conflict: the draft must not be written as-is
+        // (it would revert the other device's change). See keepBoth().
+        if (_status.value.conflict != null) return
         if (_status.value.saving) {
             val alreadyExits = queuedSave?.takeIf { it.first == openId }?.second ?: false
             queuedSave = openId to (alreadyExits || alsoExit)
@@ -439,18 +548,60 @@ class NoteDetailViewModel(
                 record?.recordName == rec.recordName
             result.onSuccess { updated ->
                 if (!stillHere) return@onSuccess
+                pendingRetry = PendingRetry.NONE
                 // createNote only writes plain text (NoteCreator has no
                 // attribute runs), so a draft that carries formatting (the
                 // toolbar used before the first save, or an imported
                 // Markdown file) needs one follow-up modify through the
-                // normal splice path to apply it.
+                // normal splice path (and its conflict merge) to apply it.
                 val formattingPending = rec.recordChangeTag == null && hasRichFormatting(newBody, spans)
                 // Did the user keep typing while the save was in flight?
-                val changedSince = fullBodyForSave != newBody || spansDraft != spans || formattingPending
-                load(updated, null, draft = null, keepCurrentDraft = changedSince)
+                var changedSince = fullBodyForSave != newBody || spansDraft != spans || formattingPending
+                // Did the save merge in a change from another device?
+                val saved = decodeNoteBody(updated)
+                val mergedRemote = saved is NoteBody.Editable && saved.text != newBody
+                var conflict: EditConflict? = null
+                if (changedSince && mergedRemote) {
+                    // Re-apply what was typed during the save onto the merged
+                    // text, or the next save would revert the remote change.
+                    val typed = fullBodyForSave
+                    val typedSpans = spansDraft
+                    val m = TextMerge.merge(newBody, typed, saved.text)
+                    if (m is TextMerge.Clean) {
+                        load(updated, null, draft = null)
+                        setDraftFromFullText(
+                            m.text,
+                            NoteRebase.mergeSpans(m, newBody, spans, typed, typedSpans, saved.text, saved.spans),
+                        )
+                        changedSince = m.text != saved.text || spansDraft != saved.spans || formattingPending
+                    } else {
+                        load(updated, null, draft = null, keepCurrentDraft = true)
+                        conflict = EditConflict(updated, saved.text)
+                    }
+                } else if (mergedRemote) {
+                    // Show the merged text, keeping the cursor in place.
+                    load(updated, null, draft = null, keepCurrentDraft = true)
+                    setDraftFromFullText(saved.text, saved.spans)
+                } else {
+                    load(updated, null, draft = null, keepCurrentDraft = changedSince)
+                }
+                if (conflict != null) {
+                    _status.update { it.copy(saving = false) }
+                    showConflict(conflict)
+                    return@onSuccess
+                }
                 val exit = alsoExit || queuedExit == true
                 _status.update {
-                    it.copy(saving = false, saveFailed = false, lastSavedAtMs = clock())
+                    it.copy(
+                        saving = false,
+                        saveFailed = false,
+                        lastSavedAtMs = clock(),
+                        message = if (mergedRemote) {
+                            message("Saved, together with changes made on another device.", null)
+                        } else {
+                            it.message
+                        },
+                    )
                 }
                 when {
                     exit && !changedSince -> _status.update { it.copy(exitRequested = true) }
@@ -458,24 +609,132 @@ class NoteDetailViewModel(
                     changedSince && (exit || queuedExit != null || formattingPending) -> save(alsoExit = exit)
                 }
             }.onFailure { e ->
-                Log.e(TAG, "save failed", e)
+                AppLog.e(TAG, "save failed", e)
                 if (!stillHere) return@onFailure
+                if (e is EditConflictException) {
+                    // Nothing written; the draft stays exactly as typed.
+                    pendingRetry = PendingRetry.NONE
+                    _status.update { it.copy(saving = false) }
+                    showConflict(EditConflict(e.fresh, e.remoteText))
+                    return@onFailure
+                }
+                val retry = DetailAction.RetrySave(alsoExit || queuedExit == true)
+                pendingRetry = when (e) {
+                    is NotesError.Offline -> PendingRetry.WHEN_ONLINE
+                    is NotesError.AuthExpired -> PendingRetry.AFTER_SIGN_IN
+                    else -> PendingRetry.NONE
+                }
                 _status.update {
                     it.copy(
                         saving = false,
                         saveFailed = true,
-                        message = message(
-                            "Couldn't save: ${userMessage(e)}",
-                            DetailAction.RetrySave(alsoExit || queuedExit == true),
-                        ),
+                        message = saveFailureMessage(e, retry),
                     )
                 }
             }
         }
     }
 
-    /** Lifecycle ON_PAUSE auto-save (best effort, not navigating). */
+    /**
+     * What to tell the user when a save failed. Every branch is true at that
+     * point: the draft is still in this ViewModel and its SavedStateHandle
+     * (on-disk drafts are not implemented yet, so "on this device" means
+     * "in the app", which survives rotation and process death).
+     */
+    private fun saveFailureMessage(e: Throwable, retry: DetailAction.RetrySave): UiMessage<DetailAction> =
+        when (e) {
+            is NotesError.Offline -> message(
+                "You're offline. Your changes are kept on this device until you retry.",
+                retry,
+                details = errorDetails(e),
+            )
+            is NotesError.AuthExpired -> UiMessage(
+                ++messageCounter,
+                "Your iCloud session expired. Your changes are kept; sign in again to save them.",
+                DetailAction.SignIn,
+                actionLabel = "Sign in",
+                details = errorDetails(e),
+            )
+            is NotesError.Conflict -> message(
+                "This note keeps changing on another device, so your changes weren't saved yet. " +
+                    "They're kept here; try again in a moment.",
+                retry,
+                details = errorDetails(e),
+            )
+            is NotesError.Throttled -> message(
+                "iCloud is busy, so your changes weren't saved yet. They're kept here." +
+                    retryHint(e.retryAfterMs),
+                retry,
+                details = errorDetails(e),
+            )
+            else -> message("Couldn't save: ${userMessage(e)}", retry, details = errorDetails(e))
+        }
+
+    /**
+     * Resolve [Status.conflict] by keeping both versions: the other device's
+     * text stays as it is and the user's whole draft is appended below it
+     * under [NoteRebase.KEEP_BOTH_SEPARATOR], then saved. Loses nothing.
+     */
+    fun keepBoth() {
+        val c = _status.value.conflict ?: return
+        val local = fullBodyForSave
+        val localSpans = spansDraft
+        val remote = decodeNoteBody(c.fresh)
+        val (text, spans) = NoteRebase.keepBoth(c.remoteText, remote.spans, local, localSpans)
+        _status.update { it.copy(conflict = null) }
+        savedState.remove<Boolean>(KEY_CONFLICT)
+        load(c.fresh, null, draft = null)
+        setDraftFromFullText(text, spans)
+        viewMode = false
+        persistDraft()
+        save(alsoExit = false)
+    }
+
+    /** Resolve [Status.conflict] by dropping the draft and showing the other device's version. */
+    fun discardLocalChanges() {
+        val c = _status.value.conflict ?: return
+        pendingRetry = PendingRetry.NONE
+        _status.update { it.copy(conflict = null, saveFailed = false, message = null) }
+        savedState.remove<Boolean>(KEY_CONFLICT)
+        load(c.fresh, null, draft = null)
+    }
+
+    /**
+     * Enter the conflict state. Marked in saved state too: after process
+     * death the record's tag may match again, and without the marker the
+     * draft would be restored as a normal edit and could revert the other
+     * device's change on the next save.
+     */
+    private fun showConflict(c: EditConflict) {
+        savedState[KEY_CONFLICT] = true
+        _status.update { it.copy(saveFailed = true, conflict = c, message = null) }
+    }
+
+    /**
+     * Replace the draft with [full] (title line + body) and [spans], keeping
+     * the cursor where it was relative to the end of the text when the
+     * change happened before it.
+     */
+    private fun setDraftFromFullText(full: String, spans: List<NoteBodyEditor.AttrSpan>) {
+        val firstNl = full.indexOf('\n')
+        val title = if (firstNl < 0) full else full.substring(0, firstNl)
+        val body = if (firstNl < 0) "" else full.substring(firstNl + 1)
+        val old = bodyDraft
+        val sel = old.selection
+        var lcp = 0
+        while (lcp < old.text.length && lcp < body.length && old.text[lcp] == body[lcp]) lcp++
+        val delta = body.length - old.text.length
+        fun map(i: Int) = (if (i <= lcp) i else i + delta).coerceIn(0, body.length)
+        titleDraft = title
+        bodyDraft = TextFieldValue(body, TextRange(map(sel.start), map(sel.end)))
+        spansDraft = spans
+        prevFullBody = full
+        persistDraft()
+    }
+
+    /** Lifecycle ON_PAUSE auto-save (best effort, not navigating). Skipped while offline. */
     fun autoSave() {
+        if (!online.value) return
         if (isModified && !isReadOnly && !_status.value.saving) save(alsoExit = false)
     }
 
@@ -495,12 +754,16 @@ class NoteDetailViewModel(
                     updateIfOpen(openId) { it.copy(deleting = false, exitRequested = true) }
                 }
                 .onFailure { e ->
-                    Log.e(TAG, "delete failed", e)
+                    AppLog.e(TAG, "delete failed", e)
                     // Stay on the note (draft intact) and offer a retry.
                     updateIfOpen(openId) {
                         it.copy(
                             deleting = false,
-                            message = message("Couldn't delete: ${userMessage(e)}", DetailAction.RetryDelete),
+                            message = message(
+                                "Couldn't delete: ${userMessage(e)}",
+                                DetailAction.RetryDelete,
+                                details = errorDetails(e),
+                            ),
                         )
                     }
                 }
@@ -512,6 +775,8 @@ class NoteDetailViewModel(
         when (val a = m.action) {
             is DetailAction.RetrySave -> save(alsoExit = a.alsoExit)
             DetailAction.RetryDelete -> delete()
+            // Navigation is the screen's job (see NoteDetailScreen's onSignIn).
+            DetailAction.SignIn -> Unit
             null -> Unit
         }
     }
@@ -524,6 +789,7 @@ class NoteDetailViewModel(
     fun close() {
         attachmentsJob?.cancel()
         queuedSave = null
+        pendingRetry = PendingRetry.NONE
         _status.value = Status()
         record = null
         pendingFolderRef = null
@@ -533,6 +799,8 @@ class NoteDetailViewModel(
         savedState.remove<String>(KEY_RECORD_TAG)
         savedState.remove<String>(KEY_FOLDER_REF)
         savedState.remove<String>(KEY_DRAFT)
+        savedState.remove<String>(KEY_BASE)
+        savedState.remove<Boolean>(KEY_CONFLICT)
     }
 
     // ----- Saved state -----
@@ -543,6 +811,27 @@ class NoteDetailViewModel(
         savedState[KEY_RECORD_NAME] = rec.recordName
         savedState[KEY_RECORD_TAG] = rec.recordChangeTag
         savedState[KEY_FOLDER_REF] = pendingFolderRef?.toString()
+    }
+
+    /**
+     * The text the draft is based on (the loaded record's), so a draft
+     * restored after process death onto a changed record can be merged
+     * rather than dropped or applied over the change.
+     */
+    private fun persistBase() {
+        if (record == null) return
+        if (originalBody.length > MAX_SAVED_DRAFT_CHARS) {
+            savedState.remove<String>(KEY_BASE)
+            return
+        }
+        savedState[KEY_BASE] = DraftSnapshot(
+            title = "",
+            body = originalBody,
+            selectionStart = 0,
+            selectionEnd = 0,
+            spans = attrSpans.map { SavedSpan.of(it) },
+            viewMode = false,
+        ).encode()
     }
 
     private fun persistDraft() {
@@ -570,6 +859,8 @@ class NoteDetailViewModel(
         internal const val KEY_RECORD_TAG = "detail.recordChangeTag"
         internal const val KEY_FOLDER_REF = "detail.pendingFolderRef"
         internal const val KEY_DRAFT = "detail.draft"
+        internal const val KEY_BASE = "detail.base"
+        internal const val KEY_CONFLICT = "detail.conflict"
         private const val MAX_SAVED_DRAFT_CHARS = 100_000
 
         fun factory(context: Context): ViewModelProvider.Factory {

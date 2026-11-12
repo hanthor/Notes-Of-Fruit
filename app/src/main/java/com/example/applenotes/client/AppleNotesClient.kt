@@ -1,6 +1,6 @@
 package com.example.applenotes.client
 
-import android.util.Log
+import com.example.applenotes.log.AppLog
 import com.example.applenotes.auth.ICloudSession
 import com.example.applenotes.auth.LENIENT_JSON
 import com.example.applenotes.auth.USER_AGENT
@@ -115,16 +115,12 @@ class AppleNotesClient(
                         .forEach { add(JsonPrimitive(it)) }
                 }
             }
-            Log.i(TAG, "fetchRecents page=$page: requesting up to $remaining (have ${all.size}/$limit)")
+            AppLog.i(TAG) { "fetchRecents page=$page: requesting up to $remaining (have ${all.size}/$limit)" }
             val t0 = System.currentTimeMillis()
             val (status, raw) = postJson("/records/query", payload)
             val elapsed = System.currentTimeMillis() - t0
-            Log.i(TAG, "fetchRecents page=$page response: HTTP $status, ${raw.length}B in ${elapsed}ms")
-            if (status !in 200..299) {
-                Log.e(TAG, "fetchRecents page=$page FAILED body=${raw.take(800)}")
-                error("CloudKit records/query HTTP $status: ${raw.take(800)}")
-            }
-            val parsed = LENIENT_JSON.decodeFromString(QueryResponse.serializer(), raw)
+            AppLog.i(TAG) { "fetchRecents page=$page response: HTTP $status, ${raw.length}B in ${elapsed}ms" }
+            val parsed = parseResponse(raw, "records/query")
             val pageResults = (parsed.records ?: emptyList()).map { rec ->
                 NoteSummary(
                     recordName = rec.recordName ?: "",
@@ -145,14 +141,13 @@ class AppleNotesClient(
             if (continuation == null || pageResults.isEmpty()) break
         }
         val totalElapsed = System.currentTimeMillis() - tStart
-        Log.i(TAG, "fetchRecents: returning ${all.size} records across $page pages in ${totalElapsed}ms")
+        AppLog.i(TAG) { "fetchRecents: returning ${all.size} records across $page pages in ${totalElapsed}ms" }
         for ((i, n) in all.withIndex()) {
-            Log.i(
-                TAG,
+            AppLog.v(TAG) {
                 "  [$i] ${n.recordName} title='${n.title?.take(40)}' " +
                     "snippet='${n.snippet?.take(40)}' " +
-                    "mod=${n.modificationTimestampMs} deleted=${n.deleted}",
-            )
+                    "mod=${n.modificationTimestampMs} deleted=${n.deleted}"
+            }
         }
         return all
     }
@@ -183,19 +178,15 @@ class AppleNotesClient(
                 }
             }
         }
-        Log.i(TAG, "lookupFolders: ${recordNames.size} ids")
-        val (status, raw) = postJson("/records/lookup", payload)
-        if (status !in 200..299) {
-            Log.e(TAG, "lookupFolders FAILED body=${raw.take(800)}")
-            error("CloudKit folder lookup HTTP $status: ${raw.take(800)}")
-        }
-        val parsed = LENIENT_JSON.decodeFromString(QueryResponse.serializer(), raw)
+        AppLog.i(TAG) { "lookupFolders: ${recordNames.size} ids" }
+        val (_, raw) = postJson("/records/lookup", payload)
+        val parsed = parseResponse(raw, "folder lookup")
         val out = (parsed.records ?: emptyList()).mapNotNull { rec ->
             val rn = rec.recordName ?: return@mapNotNull null
             // A record can come back with serverErrorCode=NOT_FOUND if the
             // ref points at a folder we can't see (rare). Skip those.
             if (rec.serverErrorCode != null) {
-                Log.w(TAG, "lookupFolders: skipping $rn (${rec.serverErrorCode})")
+                AppLog.w(TAG, "lookupFolders: skipping $rn (${rec.serverErrorCode})")
                 return@mapNotNull null
             }
             FolderSummary(
@@ -205,9 +196,9 @@ class AppleNotesClient(
                 isDefault = rn == "DefaultFolder-CloudKit",
             )
         }
-        Log.i(TAG, "lookupFolders: ${out.size} resolved")
+        AppLog.i(TAG) { "lookupFolders: ${out.size} resolved" }
         for ((i, f) in out.withIndex()) {
-            Log.i(TAG, "  [$i] ${f.recordName} display='${f.displayName}' trash=${f.isTrash} default=${f.isDefault}")
+            AppLog.v(TAG) { "  [$i] ${f.recordName} display='${f.displayName}' trash=${f.isTrash} default=${f.isDefault}" }
         }
         return out
     }
@@ -220,39 +211,30 @@ class AppleNotesClient(
                 add(buildJsonObject { put("recordName", recordName) })
             }
         }
-        Log.i(TAG, "lookupNote: $recordName")
+        AppLog.i(TAG) { "lookupNote: $recordName" }
         val t0 = System.currentTimeMillis()
         val (status, raw) = postJson("/records/lookup", payload)
         val elapsed = System.currentTimeMillis() - t0
-        Log.i(TAG, "lookupNote response: HTTP $status, ${raw.length}B in ${elapsed}ms")
-        if (status !in 200..299) {
-            Log.e(TAG, "lookupNote FAILED body=${raw.take(800)}")
-            error("CloudKit records/lookup HTTP $status: ${raw.take(800)}")
-        }
-        val parsed = LENIENT_JSON.decodeFromString(QueryResponse.serializer(), raw)
-        val rec = parsed.records?.firstOrNull()
-            ?: error("records/lookup returned no record for $recordName")
-        rec.serverErrorCode?.let { code ->
-            Log.e(TAG, "lookupNote per-record error: $code reason=${rec.reason}")
-            error("lookup per-record error: $code reason=${rec.reason ?: "?"}")
-        }
+        AppLog.i(TAG) { "lookupNote response: HTTP $status, ${raw.length}B in ${elapsed}ms" }
+        val rec = firstRecord(parseResponse(raw, "records/lookup"), "records/lookup")
+        throwIfRecordError("lookupNote", rec)
         val record = NoteRecord(
             recordName = rec.recordName ?: recordName,
             recordType = rec.recordType,
             recordChangeTag = rec.recordChangeTag,
             rawFields = rec.fields ?: emptyMap(),
         )
-        Log.i(TAG, "lookupNote: tag=${record.recordChangeTag} fields=${record.rawFields.keys}")
+        AppLog.i(TAG) { "lookupNote: tag=${record.recordChangeTag} fields=${record.rawFields.keys}" }
         record.stringField("TitleEncrypted")?.let {
             val decoded = runCatching { kotlin.io.encoding.Base64.decode(it).decodeToString() }.getOrNull()
-            Log.i(TAG, "lookupNote TitleEncrypted decoded='${decoded?.take(60)}'")
+            AppLog.v(TAG) { "lookupNote TitleEncrypted decoded='${decoded?.take(60)}'" }
         }
         record.stringField("SnippetEncrypted")?.let {
             val decoded = runCatching { kotlin.io.encoding.Base64.decode(it).decodeToString() }.getOrNull()
-            Log.i(TAG, "lookupNote SnippetEncrypted decoded='${decoded?.take(60)}'")
+            AppLog.v(TAG) { "lookupNote SnippetEncrypted decoded='${decoded?.take(60)}'" }
         }
         record.stringField("ModificationDate")?.let {
-            Log.i(TAG, "lookupNote ModificationDate=$it")
+            AppLog.i(TAG) { "lookupNote ModificationDate=$it" }
         }
         logRecordSummary("lookupNote", record)
         return record
@@ -289,22 +271,18 @@ class AppleNotesClient(
                 })
             }
         }
-        Log.i(TAG, "modifyFields: $recordName tag=$recordChangeTag fields=${fields.keys}")
+        AppLog.i(TAG) { "modifyFields: $recordName tag=$recordChangeTag fields=${fields.keys}" }
         val (status, raw) = postJson("/records/modify", payload)
-        Log.i(TAG, "modifyFields response: HTTP $status, body[0..400]=${raw.take(400)}")
-        if (status !in 200..299) error("CloudKit records/modify HTTP $status: ${raw.take(800)}")
-        val parsed = LENIENT_JSON.decodeFromString(QueryResponse.serializer(), raw)
-        val rec = parsed.records?.firstOrNull() ?: error("records/modify returned no record")
-        rec.serverErrorCode?.let { code ->
-            error("modifyFields per-record error: $code reason=${rec.reason ?: "?"}")
-        }
+        AppLog.v(TAG) { "modifyFields response: HTTP $status, body[0..400]=${raw.take(400)}" }
+        val rec = firstRecord(parseResponse(raw, "records/modify"), "records/modify")
+        throwIfRecordError("modifyFields", rec)
         val record = NoteRecord(
             recordName = rec.recordName ?: recordName,
             recordType = rec.recordType,
             recordChangeTag = rec.recordChangeTag,
             rawFields = rec.fields ?: emptyMap(),
         )
-        Log.i(TAG, "modifyFields returned tag=${record.recordChangeTag} fieldKeys=${record.rawFields.keys}")
+        AppLog.i(TAG) { "modifyFields returned tag=${record.recordChangeTag} fieldKeys=${record.rawFields.keys}" }
         return record
     }
 
@@ -317,6 +295,12 @@ class AppleNotesClient(
      * URL with the session's auth so we just GET it with our cookie jar.
      */
     suspend fun fetchAssetBytes(downloadUrl: String): ByteArray? = runCatching {
+        // The URL comes from record data. Never send the session cookies
+        // anywhere but Apple's own asset hosts over https (issue #6).
+        if (!isTrustedAssetUrl(downloadUrl)) {
+            AppLog.w(TAG, "fetchAssetBytes: refusing a download URL outside Apple's asset hosts")
+            return@runCatching null
+        }
         val response: HttpResponse = httpClient.get(downloadUrl) {
             headers {
                 append(HttpHeaders.UserAgent, USER_AGENT)
@@ -324,7 +308,7 @@ class AppleNotesClient(
             }
         }
         if (response.status.value !in 200..299) {
-            Log.w(TAG, "fetchAssetBytes HTTP ${response.status.value} for $downloadUrl")
+            AppLog.w(TAG, "fetchAssetBytes HTTP ${response.status.value}")
             return@runCatching null
         }
         response.body<ByteArray>()
@@ -344,10 +328,11 @@ class AppleNotesClient(
                 })
             }
         }
-        Log.i(TAG, "deleteNote: $recordName tag=$recordChangeTag")
+        AppLog.i(TAG) { "deleteNote: $recordName tag=$recordChangeTag" }
         val (status, raw) = postJson("/records/modify", payload)
-        Log.i(TAG, "deleteNote response: HTTP $status, ${raw.length}B body[0..400]=${raw.take(400)}")
-        if (status !in 200..299) error("CloudKit deleteNote HTTP $status: ${raw.take(800)}")
+        AppLog.v(TAG) { "deleteNote response: HTTP $status, ${raw.length}B body[0..400]=${raw.take(400)}" }
+        // A per-record error (e.g. the tag is stale) must not look like success.
+        parseResponse(raw, "deleteNote").records?.firstOrNull()?.let { throwIfRecordError("deleteNote", it) }
         return raw
     }
 
@@ -424,22 +409,18 @@ class AppleNotesClient(
                 })
             }
         }
-        Log.i(TAG, "createNote: $recordName title='${title.take(40)}' body.len=${body.length}")
+        AppLog.v(TAG) { "createNote: $recordName title='${title.take(40)}' body.len=${body.length}" }
         val (status, raw) = postJson("/records/modify", payload)
-        Log.i(TAG, "createNote response: HTTP $status, ${raw.length}B body[0..400]=${raw.take(400)}")
-        if (status !in 200..299) error("CloudKit createNote HTTP $status: ${raw.take(800)}")
-        val parsed = LENIENT_JSON.decodeFromString(QueryResponse.serializer(), raw)
-        val rec = parsed.records?.firstOrNull() ?: error("createNote returned no record")
-        rec.serverErrorCode?.let { code ->
-            error("createNote per-record error: $code reason=${rec.reason ?: "?"}")
-        }
+        AppLog.v(TAG) { "createNote response: HTTP $status, ${raw.length}B body[0..400]=${raw.take(400)}" }
+        val rec = firstRecord(parseResponse(raw, "createNote"), "createNote")
+        throwIfRecordError("createNote", rec)
         val record = NoteRecord(
             recordName = rec.recordName ?: recordName,
             recordType = rec.recordType,
             recordChangeTag = rec.recordChangeTag,
             rawFields = rec.fields ?: emptyMap(),
         )
-        Log.i(TAG, "createNote returned tag=${record.recordChangeTag} fields=${record.rawFields.keys}")
+        AppLog.i(TAG) { "createNote returned tag=${record.recordChangeTag} fields=${record.rawFields.keys}" }
         return record
     }
 
@@ -466,99 +447,65 @@ class AppleNotesClient(
         // duplication after Android append on multi-substring typed notes).
         replicaVersionPassThroughB64: String? = null,
     ): NoteRecord {
-        // Try once with the caller's tag; on CONFLICT (oplock — Mac's
-        // notesync silently bumped the tag after merging the previous
-        // op) re-lookup to get a fresh tag + replicaVersion, then retry
-        // once more. Two attempts max so we never loop on a real bug.
-        //
-        // KNOWN LIMITATION: this retry refreshes only the tag, not the
-        // base body. If a real concurrent edit happened between the
-        // caller's base lookup and this retry, we'll overwrite it with
-        // bytes computed against the stale base (last-writer-wins).
-        // The dominant case we hit is post-create housekeeping where
-        // Mac bumps the tag without changing user-visible text, which
-        // is safe. A proper fix is to bubble the conflict to the
-        // splice caller so it can re-splice against the fresh base.
-        var attempt = 0
-        var tag = recordChangeTag
-        var replicaB64 = replicaVersionPassThroughB64
-        while (true) {
-            attempt++
-            val payload: JsonObject = buildJsonObject {
-                put("zoneID", buildJsonObject { put("zoneName", "Notes") })
-                putJsonArray("operations") {
-                    add(buildJsonObject {
-                        put("operationType", "update")
-                        put("record", buildJsonObject {
-                            put("recordName", recordName)
-                            put("recordType", "Note")
-                            put("recordChangeTag", tag)
-                            put("fields", buildJsonObject {
-                                put("TextDataEncrypted", buildJsonObject {
-                                    put("type", "ENCRYPTED_BYTES")
-                                    put("value", newTextDataEncryptedB64)
-                                })
-                                if (newTitle != null) {
-                                    put("TitleEncrypted", buildJsonObject {
-                                        put("type", "ENCRYPTED_STRING")
-                                        put("value", kotlin.io.encoding.Base64.encode(newTitle.encodeToByteArray()))
-                                    })
-                                }
-                                if (newSnippet != null) {
-                                    put("SnippetEncrypted", buildJsonObject {
-                                        put("type", "ENCRYPTED_STRING")
-                                        put("value", kotlin.io.encoding.Base64.encode(newSnippet.encodeToByteArray()))
-                                    })
-                                }
-                                if (replicaB64 != null) {
-                                    put("ReplicaIDToNotesVersionDataEncrypted", buildJsonObject {
-                                        put("type", "ENCRYPTED_BYTES")
-                                        put("value", replicaB64)
-                                    })
-                                }
+        // One attempt. On CONFLICT (oplock: the record changed since
+        // [recordChangeTag], whether a real edit on another device or Mac's
+        // notesync bumping the tag after merging our previous write) this
+        // throws NotesError.Conflict. Re-sending these bytes with a fresh
+        // tag would overwrite whatever changed with a body computed against
+        // the stale base (last writer wins), so the caller re-applies its
+        // edit to the fresh record instead: NotesRepository.saveNote does a
+        // three-way merge and splices onto the fresh proto (issue #4).
+        val payload: JsonObject = buildJsonObject {
+            put("zoneID", buildJsonObject { put("zoneName", "Notes") })
+            putJsonArray("operations") {
+                add(buildJsonObject {
+                    put("operationType", "update")
+                    put("record", buildJsonObject {
+                        put("recordName", recordName)
+                        put("recordType", "Note")
+                        put("recordChangeTag", recordChangeTag)
+                        put("fields", buildJsonObject {
+                            put("TextDataEncrypted", buildJsonObject {
+                                put("type", "ENCRYPTED_BYTES")
+                                put("value", newTextDataEncryptedB64)
                             })
+                            if (newTitle != null) {
+                                put("TitleEncrypted", buildJsonObject {
+                                    put("type", "ENCRYPTED_STRING")
+                                    put("value", kotlin.io.encoding.Base64.encode(newTitle.encodeToByteArray()))
+                                })
+                            }
+                            if (newSnippet != null) {
+                                put("SnippetEncrypted", buildJsonObject {
+                                    put("type", "ENCRYPTED_STRING")
+                                    put("value", kotlin.io.encoding.Base64.encode(newSnippet.encodeToByteArray()))
+                                })
+                            }
+                            if (replicaVersionPassThroughB64 != null) {
+                                put("ReplicaIDToNotesVersionDataEncrypted", buildJsonObject {
+                                    put("type", "ENCRYPTED_BYTES")
+                                    put("value", replicaVersionPassThroughB64)
+                                })
+                            }
                         })
                     })
-                }
+                })
             }
-            Log.i(
-                TAG,
-                "modifyNoteBody[a$attempt]: rec=$recordName tag=$tag b64.len=${newTextDataEncryptedB64.length} " +
-                    "title=${newTitle?.let { "'${it.take(40)}'" } ?: "<unchanged>"} " +
-                    "snippet=${newSnippet?.let { "'${it.take(40)}'" } ?: "<unchanged>"}",
-            )
-            Log.i(TAG, "modifyNoteBody SENT proto: ${NoteBodyEditor.summarizeBase64(newTextDataEncryptedB64)}")
-            val t0 = System.currentTimeMillis()
-            val (status, raw) = postJson("/records/modify", payload)
-            val elapsed = System.currentTimeMillis() - t0
-            Log.i(TAG, "modifyNoteBody response: HTTP $status, ${raw.length}B in ${elapsed}ms")
-            Log.i(TAG, "modifyNoteBody response body[0..600]=${raw.take(600)}")
-            if (status !in 200..299) {
-                Log.e(TAG, "modifyNoteBody FAILED body=${raw.take(800)}")
-                error("CloudKit records/modify HTTP $status: ${raw.take(800)}")
-            }
-            val parsed = LENIENT_JSON.decodeFromString(QueryResponse.serializer(), raw)
-            val rec = parsed.records?.firstOrNull() ?: error("records/modify returned no record")
-            val serverErr = rec.serverErrorCode
-            if (serverErr != null) {
-                val isConflict = serverErr == "CONFLICT" ||
-                    (rec.reason?.contains("oplock", ignoreCase = true) == true)
-                if (isConflict && attempt == 1) {
-                    Log.w(TAG, "modifyNoteBody CONFLICT (oplock) — refetching tag and retrying. reason=${rec.reason}")
-                    val fresh = lookupNote(recordName)
-                    val newTag = fresh.recordChangeTag
-                        ?: error("modifyNoteBody refetch returned no recordChangeTag for $recordName")
-                    tag = newTag
-                    replicaB64 = fresh.stringField("ReplicaIDToNotesVersionDataEncrypted") ?: replicaB64
-                    Log.i(TAG, "modifyNoteBody retry with fresh tag=$tag")
-                    continue
-                }
-                Log.e(TAG, "modifyNoteBody per-record error: $serverErr reason=${rec.reason}")
-                error("modifyNoteBody per-record error: $serverErr reason=${rec.reason ?: "?"}")
-            }
-            // Success — fall through to record handling below.
-            return finishModifyNoteBody(recordName, rec, newTextDataEncryptedB64)
         }
+        AppLog.v(TAG) {
+            "modifyNoteBody: rec=$recordName tag=$recordChangeTag b64.len=${newTextDataEncryptedB64.length} " +
+                "title=${newTitle?.let { "'${it.take(40)}'" } ?: "<unchanged>"} " +
+                "snippet=${newSnippet?.let { "'${it.take(40)}'" } ?: "<unchanged>"}"
+        }
+        AppLog.v(TAG) { "modifyNoteBody SENT proto: ${NoteBodyEditor.summarizeBase64(newTextDataEncryptedB64)}" }
+        val t0 = System.currentTimeMillis()
+        val (status, raw) = postJson("/records/modify", payload)
+        val elapsed = System.currentTimeMillis() - t0
+        AppLog.i(TAG) { "modifyNoteBody response: HTTP $status, ${raw.length}B in ${elapsed}ms" }
+        AppLog.v(TAG) { "modifyNoteBody response body[0..600]=${raw.take(600)}" }
+        val rec = firstRecord(parseResponse(raw, "records/modify"), "records/modify")
+        throwIfRecordError("modifyNoteBody", rec)
+        return finishModifyNoteBody(recordName, rec, newTextDataEncryptedB64)
     }
 
     @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
@@ -573,36 +520,38 @@ class AppleNotesClient(
             recordChangeTag = rec.recordChangeTag,
             rawFields = rec.fields ?: emptyMap(),
         )
-        Log.i(TAG, "modifyNoteBody returned tag=${record.recordChangeTag} fieldKeys=${record.rawFields.keys}")
+        AppLog.i(TAG) { "modifyNoteBody returned tag=${record.recordChangeTag} fieldKeys=${record.rawFields.keys}" }
         // Decoded values for the human-readable fields if echoed.
         record.stringField("TitleEncrypted")?.let {
             val decoded = runCatching { kotlin.io.encoding.Base64.decode(it).decodeToString() }.getOrNull()
-            Log.i(TAG, "modifyNoteBody returned TitleEncrypted.b64='${it.take(60)}' decoded='${decoded?.take(40)}'")
+            AppLog.v(TAG) { "modifyNoteBody returned TitleEncrypted.b64='${it.take(60)}' decoded='${decoded?.take(40)}'" }
         }
         record.stringField("SnippetEncrypted")?.let {
             val decoded = runCatching { kotlin.io.encoding.Base64.decode(it).decodeToString() }.getOrNull()
-            Log.i(TAG, "modifyNoteBody returned SnippetEncrypted.b64='${it.take(60)}' decoded='${decoded?.take(40)}'")
+            AppLog.v(TAG) { "modifyNoteBody returned SnippetEncrypted.b64='${it.take(60)}' decoded='${decoded?.take(40)}'" }
         }
         logRecordSummary("modifyNoteBody", record, sentB64 = newTextDataEncryptedB64)
 
         // Verify-after-save: re-fetch and compare.
         val verified = runCatching { lookupNote(recordName) }.getOrElse {
-            Log.w(TAG, "verify-after-save lookup failed", it)
+            AppLog.w(TAG, "verify-after-save lookup failed", it)
             return record
         }
         val verifiedB64 = verified.stringField("TextDataEncrypted")
         if (verifiedB64 != null) {
             val matchesSent = verifiedB64 == newTextDataEncryptedB64
-            Log.i(TAG, "verify-after-save: tag=${verified.recordChangeTag} text.b64.len=${verifiedB64.length} matchesSent=$matchesSent")
+            AppLog.i(TAG) { "verify-after-save: tag=${verified.recordChangeTag} text.b64.len=${verifiedB64.length} matchesSent=$matchesSent" }
         }
         return verified
     }
 
     private fun logRecordSummary(label: String, record: NoteRecord, sentB64: String? = null) {
+        // Everything below is a wire-shape dump (and decoding it isn't free).
+        if (!AppLog.verboseEnabled) return
         val textB64 = record.stringField("TextDataEncrypted")
         if (textB64 != null) {
             val tag = if (sentB64 != null) " matchesSent=${textB64 == sentB64}" else ""
-            Log.i(TAG, "$label TextDataEncrypted.b64.len=${textB64.length}$tag")
+            AppLog.v(TAG) { "$label TextDataEncrypted.b64.len=${textB64.length}$tag" }
             // Log first 32 raw bytes so we can identify the encoding (gzip
             // magic 1f 8b, raw proto, encrypted, etc.) when summarize fails.
             runCatching {
@@ -611,40 +560,44 @@ class AppleNotesClient(
                 val prefix = raw.take(32).joinToString("") {
                     ((it.toInt() and 0xFF) + 0x100).toString(16).substring(1)
                 }
-                Log.i(TAG, "$label TextDataEncrypted raw[0..32] hex=$prefix (totalRaw=${raw.size})")
+                AppLog.v(TAG) { "$label TextDataEncrypted raw[0..32] hex=$prefix (totalRaw=${raw.size})" }
             }
-            Log.i(TAG, "$label TextDataEncrypted proto: ${NoteBodyEditor.summarizeBase64(textB64)}")
+            AppLog.v(TAG) { "$label TextDataEncrypted proto: ${NoteBodyEditor.summarizeBase64(textB64)}" }
             if (label == "lookupNote") {
-                Log.i(TAG, "$label replicas dump:\n${NoteBodyEditor.dumpReplicasBase64(textB64)}")
-                Log.i(TAG, "$label attribute_runs dump:\n${NoteBodyEditor.dumpAttributeRunsBase64(textB64)}")
+                AppLog.v(TAG) { "$label replicas dump:\n${NoteBodyEditor.dumpReplicasBase64(textB64)}" }
+                AppLog.v(TAG) { "$label attribute_runs dump:\n${NoteBodyEditor.dumpAttributeRunsBase64(textB64)}" }
                 // Compare bag (insertion-order String.string) with visible-text walk.
                 // Mismatch => tombstoned content exists, or our walk is wrong.
                 val bag = NoteBodyEditor.readTextFromBase64(textB64)
                 val visible = NoteBodyEditor.readVisibleTextFromBase64(textB64)
-                Log.i(
-                    TAG,
+                AppLog.v(TAG) {
                     "$label bag.len=${bag?.length ?: -1} visible.len=${visible?.length ?: -1} " +
-                        "match=${bag != null && bag == visible}",
-                )
+                        "match=${bag != null && bag == visible}"
+                }
                 // Escape \n so each value fits on one logcat line — makes shell
                 // parsing in test harnesses ergonomic.
                 val esc = { s: String? ->
                     s?.take(200)?.replace("\\", "\\\\")?.replace("\n", "\\n") ?: "<null>"
                 }
-                Log.i(TAG, "$label bag='${esc(bag)}'")
-                Log.i(TAG, "$label visible='${esc(visible)}'")
-                Log.i(TAG, "$label substring tree:\n${NoteBodyEditor.dumpSubstringTreeBase64(textB64)}")
+                AppLog.v(TAG) { "$label bag='${esc(bag)}'" }
+                AppLog.v(TAG) { "$label visible='${esc(visible)}'" }
+                AppLog.v(TAG) { "$label substring tree:\n${NoteBodyEditor.dumpSubstringTreeBase64(textB64)}" }
             }
         } else {
-            Log.i(TAG, "$label has no TextDataEncrypted in returned fields (keys=${record.rawFields.keys})")
+            AppLog.v(TAG) { "$label has no TextDataEncrypted in returned fields (keys=${record.rawFields.keys})" }
         }
         val replicaRegistryB64 = record.stringField("ReplicaIDToNotesVersionDataEncrypted")
         if (replicaRegistryB64 != null) {
-            Log.i(TAG, "$label ReplicaIDToNotesVersionDataEncrypted.b64.len=${replicaRegistryB64.length}")
-            Log.i(TAG, "$label ReplicaIDToNotesVersion structure:\n${NoteBodyEditor.dumpRawBase64(replicaRegistryB64)}")
+            AppLog.v(TAG) { "$label ReplicaIDToNotesVersionDataEncrypted.b64.len=${replicaRegistryB64.length}" }
+            AppLog.v(TAG) { "$label ReplicaIDToNotesVersion structure:\n${NoteBodyEditor.dumpRawBase64(replicaRegistryB64)}" }
         }
     }
 
+    /**
+     * POST to the private Notes database. Returns (status, body) for a 2xx
+     * answer; anything else is thrown as a [NotesError] (non-2xx status via
+     * [CloudKitErrors.fromHttp], I/O failures as [NotesError.Offline]).
+     */
     private suspend fun postJson(relPath: String, payload: JsonObject): Pair<Int, String> {
         val url = buildString {
             append(session.ckdatabasewsUrl)
@@ -657,18 +610,87 @@ class AppleNotesClient(
             append("&clientId=").append(session.clientId)
             append("&dsid=").append(session.dsid)
         }
-        val response = httpClient.post(url) {
-            headers {
-                append(HttpHeaders.Cookie, session.cookieHeader)
-                append(HttpHeaders.Origin, "https://www.icloud.com")
-                append(HttpHeaders.Referrer, "https://www.icloud.com/")
-                append(HttpHeaders.UserAgent, USER_AGENT)
+        val (status, raw, retryAfter) = try {
+            val response = httpClient.post(url) {
+                headers {
+                    append(HttpHeaders.Cookie, session.cookieHeader)
+                    append(HttpHeaders.Origin, "https://www.icloud.com")
+                    append(HttpHeaders.Referrer, "https://www.icloud.com/")
+                    append(HttpHeaders.UserAgent, USER_AGENT)
+                }
+                contentType(ContentType.Application.Json)
+                setBody(LENIENT_JSON.encodeToString(JsonObject.serializer(), payload))
             }
-            contentType(ContentType.Application.Json)
-            setBody(LENIENT_JSON.encodeToString(JsonObject.serializer(), payload))
+            Triple(response.status.value, response.body<String>(), response.headers[HttpHeaders.RetryAfter])
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            val mapped = CloudKitErrors.fromThrowable(e)
+            AppLog.w(TAG, "$relPath failed before an HTTP answer", mapped)
+            throw mapped
         }
-        return response.status.value to response.body<String>()
+        CloudKitErrors.fromHttp(status, raw, retryAfter)?.let { err ->
+            AppLog.e(TAG, "$relPath FAILED: HTTP $status -> ${err.javaClass.simpleName}")
+            AppLog.v(TAG) { "$relPath FAILED body=${raw.take(800)}" }
+            throw err
+        }
+        return status to raw
     }
+
+    private fun parseResponse(raw: String, what: String): QueryResponse = try {
+        LENIENT_JSON.decodeFromString(QueryResponse.serializer(), raw)
+    } catch (e: kotlinx.serialization.SerializationException) {
+        throw NotesError.Decode("$what: malformed JSON", details = raw.take(4000), cause = e)
+    } catch (e: IllegalArgumentException) {
+        throw NotesError.Decode("$what: malformed JSON", details = raw.take(4000), cause = e)
+    }
+
+    private fun firstRecord(parsed: QueryResponse, what: String): RecordSummary =
+        parsed.records?.firstOrNull() ?: throw NotesError.Decode("$what returned no record")
+
+    /** Throw the typed error for a per-record `serverErrorCode`, if there is one. */
+    private fun throwIfRecordError(label: String, rec: RecordSummary) {
+        val code = rec.serverErrorCode ?: return
+        val err = CloudKitErrors.fromRecord(code, rec.reason, rec.retryAfter)
+        AppLog.e(TAG, "$label per-record error: $code -> ${err.javaClass.simpleName}")
+        throw err
+    }
+}
+
+/**
+ * Host suffixes CloudKit serves asset downloads from (`cvws.icloud-content.com`
+ * and friends, plus the China-mainland mirrors). Matched on a label boundary,
+ * so `noticloud.com` or `icloud.com.example.net` don't pass.
+ */
+private val TRUSTED_ASSET_HOST_SUFFIXES = listOf(
+    "icloud.com",
+    "icloud-content.com",
+    "apple.com",
+    "icloud.com.cn",
+    "icloud-content.com.cn",
+)
+
+/**
+ * True when [url] is an https URL on one of Apple's asset hosts: the only
+ * places [AppleNotesClient.fetchAssetBytes] sends the session cookies to.
+ * Rejects other schemes, URLs with userinfo, explicit non-443 ports and
+ * anything without a plain host name.
+ *
+ * Parsed by hand rather than with java.net.URI: real CloudKit asset URLs
+ * contain a literal `${f}` placeholder in the path, which URI rejects.
+ */
+internal fun isTrustedAssetUrl(url: String): Boolean {
+    if (!url.startsWith("https://", ignoreCase = true)) return false
+    val rest = url.substring("https://".length)
+    val authority = rest.substring(0, rest.indexOfAny(charArrayOf('/', '?', '#')).let { if (it < 0) rest.length else it })
+    // Userinfo ("user@host") and backslashes (which some parsers treat as
+    // path separators) make the effective host ambiguous.
+    if ('@' in authority || '\\' in authority) return false
+    val colon = authority.lastIndexOf(':')
+    val host = (if (colon >= 0) authority.substring(0, colon) else authority).lowercase().trimEnd('.')
+    if (colon >= 0 && authority.substring(colon + 1) != "443") return false
+    if (host.isEmpty() || !host.all { it.isLetterOrDigit() || it == '-' || it == '.' }) return false
+    return TRUSTED_ASSET_HOST_SUFFIXES.any { host == it || host.endsWith(".$it") }
 }
 
 internal fun extractStringValue(field: JsonElement): String? {
@@ -723,4 +745,6 @@ private data class RecordSummary(
     val modified: JsonElement? = null,
     val serverErrorCode: String? = null,
     val reason: String? = null,
+    /** Seconds; CloudKit sets it on THROTTLED / TRY_AGAIN_LATER errors. */
+    val retryAfter: Long? = null,
 )

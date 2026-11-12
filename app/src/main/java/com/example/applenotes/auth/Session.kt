@@ -1,6 +1,8 @@
 package com.example.applenotes.auth
 
-import android.util.Log
+import com.example.applenotes.client.CloudKitErrors
+import com.example.applenotes.client.NotesError
+import com.example.applenotes.log.AppLog
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.headers
@@ -35,8 +37,9 @@ data class ICloudSession(
     val ckdatabasewsUrl: String,
     val cookieHeader: String,
     val clientId: String,
-    val locale: String = "en_US",
-    val timezone: String = "US/Pacific",
+    /** Falls back to the device's locale / time zone, not a hardcoded US default. */
+    val locale: String = defaultLocale(),
+    val timezone: String = defaultTimeZone(),
 )
 
 class AppleNotesSession(
@@ -52,45 +55,64 @@ class AppleNotesSession(
      */
     suspend fun bootstrap(): Result<ICloudSession> = runCatching {
         val cookieMap = cookieReader.cookieMap()
+        // No cookies / no auth token: nothing to refresh from, the user has
+        // to sign in (again). Cookie *names* only ever go to the details.
         val cookieHeader = cookieReader.cookieHeader()
-            ?: throw IllegalStateException("No icloud.com cookies in WebView jar.")
-
-        if ("X-APPLE-WEBAUTH-TOKEN" !in cookieMap) {
-            throw IllegalStateException(
-                "X-APPLE-WEBAUTH-TOKEN cookie missing — user hasn't finished " +
-                    "logging in to iCloud. Cookies seen: ${cookieMap.keys}"
+            ?: throw NotesError.AuthExpired("No icloud.com cookies in the WebView jar.")
+        if (AUTH_TOKEN_COOKIE !in cookieMap) {
+            throw NotesError.AuthExpired(
+                "$AUTH_TOKEN_COOKIE cookie missing; sign-in didn't finish. Cookie names: ${cookieMap.keys}",
             )
         }
 
         val clientId = UUID.randomUUID().toString().uppercase()
 
-        val response = httpClient.post("https://setup.icloud.com/setup/ws/1/validate") {
-            url {
-                parameters.append("clientBuildNumber", "2612Build21")
-                parameters.append("clientMasteringNumber", "2612Build21")
-                parameters.append("clientId", clientId)
+        val response = try {
+            httpClient.post("https://setup.icloud.com/setup/ws/1/validate") {
+                url {
+                    parameters.append("clientBuildNumber", "2612Build21")
+                    parameters.append("clientMasteringNumber", "2612Build21")
+                    parameters.append("clientId", clientId)
+                }
+                headers {
+                    append(HttpHeaders.Cookie, cookieHeader)
+                    append(HttpHeaders.Origin, "https://www.icloud.com")
+                    append(HttpHeaders.Referrer, "https://www.icloud.com/")
+                    append(HttpHeaders.UserAgent, USER_AGENT)
+                }
+                contentType(ContentType.Application.Json)
+                setBody("null")
             }
-            headers {
-                append(HttpHeaders.Cookie, cookieHeader)
-                append(HttpHeaders.Origin, "https://www.icloud.com")
-                append(HttpHeaders.Referrer, "https://www.icloud.com/")
-                append(HttpHeaders.UserAgent, USER_AGENT)
-            }
-            contentType(ContentType.Application.Json)
-            setBody("null")
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            throw CloudKitErrors.fromThrowable(e)
         }
 
+        val status = response.status.value
         val raw = response.body<String>()
-        Log.i(TAG, "validate response: HTTP ${response.status.value}, body[0..400]=${raw.take(400)}")
-        val parsed = LENIENT_JSON.decodeFromString(AccountLoginResponse.serializer(), raw)
+        // The body carries the Apple ID, full name and dsid: never log it.
+        AppLog.i(TAG) { "validate response: HTTP $status, ${raw.length}B" }
+        CloudKitErrors.fromHttp(status, raw, response.headers[HttpHeaders.RetryAfter])?.let { throw it }
 
+        // Like a browser, keep whatever refreshed cookies the server sent, so
+        // the next bootstrap (and the WebView) sees them.
+        cookieReader.storeSetCookies(response.headers.getAll(HttpHeaders.SetCookie).orEmpty())
+
+        val parsed = try {
+            LENIENT_JSON.decodeFromString(AccountLoginResponse.serializer(), raw)
+        } catch (e: IllegalArgumentException) {
+            // SerializationException is an IllegalArgumentException.
+            throw NotesError.Decode("validate: malformed JSON", details = "HTTP $status, ${raw.length} bytes", cause = e)
+        }
+        // A 2xx without dsInfo is what an expired-but-not-rejected session
+        // looks like: treat it as needing a sign-in rather than a crash.
         val dsid = parsed.dsInfo?.dsid
-            ?: throw IllegalStateException(
-                "setup.icloud.com /validate missing dsInfo.dsid (HTTP ${response.status.value}): ${raw.take(800)}"
-            )
+            ?: throw NotesError.AuthExpired("setup.icloud.com /validate returned no dsInfo.dsid (HTTP $status)")
         val ckUrl = parsed.webservices?.ckdatabasews?.url
-            ?: throw IllegalStateException(
-                "setup.icloud.com /validate missing webservices.ckdatabasews (HTTP ${response.status.value}): ${raw.take(800)}"
+            ?: throw NotesError.Decode(
+                "validate: no ckdatabasews endpoint",
+                details = "setup.icloud.com /validate returned no webservices.ckdatabasews (HTTP $status)",
             )
 
         val refreshedHeader = cookieReader.cookieHeader() ?: cookieHeader
@@ -100,11 +122,20 @@ class AppleNotesSession(
             ckdatabasewsUrl = ckUrl.trimEnd('/'),
             cookieHeader = refreshedHeader,
             clientId = clientId,
-            locale = parsed.dsInfo.locale ?: "en_US",
-            timezone = parsed.dsInfo.timezone ?: "US/Pacific",
+            locale = parsed.dsInfo.locale ?: defaultLocale(),
+            timezone = parsed.dsInfo.timezone ?: defaultTimeZone(),
         )
     }
 }
+
+/** The WebView cookie that marks a signed-in iCloud web session. */
+const val AUTH_TOKEN_COOKIE = "X-APPLE-WEBAUTH-TOKEN"
+
+/** Device locale in the `en_US` form iCloud uses. */
+internal fun defaultLocale(): String = java.util.Locale.getDefault().toString().ifEmpty { "en_US" }
+
+/** Device time zone id (e.g. `Europe/Berlin`). */
+internal fun defaultTimeZone(): String = java.util.TimeZone.getDefault().id
 
 @Serializable
 internal data class AccountLoginResponse(

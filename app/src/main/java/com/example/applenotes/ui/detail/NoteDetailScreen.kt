@@ -25,7 +25,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -46,6 +45,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -57,7 +57,9 @@ import com.example.applenotes.integrations.NoteShortcuts
 import com.example.applenotes.ui.common.CenteredSpinner
 import androidx.compose.material3.Surface
 import androidx.compose.material.icons.filled.Lock
+import com.example.applenotes.ui.common.AppSnackbarHost
 import com.example.applenotes.ui.common.MessageSnackbarEffect
+import com.example.applenotes.ui.common.OfflineBanner
 import com.example.applenotes.ui.common.humanRelative
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -66,6 +68,8 @@ internal fun NoteDetailScreen(
     vm: NoteDetailViewModel,
     /** Leave to the list without saving (nothing to save, or the user chose to discard). */
     onBack: () -> Unit,
+    /** Go to sign-in after the session expired, keeping this note and its draft open. */
+    onSignIn: () -> Unit = {},
 ) {
     val status by vm.status.collectAsStateWithLifecycle()
     val record = vm.record
@@ -133,7 +137,16 @@ internal fun NoteDetailScreen(
     }
 
     // Save / delete failures: snackbar with Retry, the draft stays put.
-    MessageSnackbarEffect(status.message, snackbarHostState, vm::onMessageAction, vm::onMessageDismissed)
+    MessageSnackbarEffect(
+        status.message,
+        snackbarHostState,
+        onAction = { m ->
+            vm.onMessageAction(m)
+            if (m.action == NoteDetailViewModel.DetailAction.SignIn) onSignIn()
+        },
+        onDismiss = vm::onMessageDismissed,
+    )
+    val online by vm.online.collectAsStateWithLifecycle()
     var showUnsavedDialog by rememberSaveable { mutableStateOf(false) }
 
     val onBackOrSave: () -> Unit = {
@@ -161,7 +174,7 @@ internal fun NoteDetailScreen(
 
     Scaffold(
         modifier = Modifier.imePadding(),
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = { AppSnackbarHost(snackbarHostState) },
         topBar = {
             Column {
                 TopAppBar(
@@ -262,6 +275,7 @@ internal fun NoteDetailScreen(
                 if (saving) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
+                if (!online) OfflineBanner()
                 vm.readOnlyReason?.let { ReadOnlyBanner(it) }
             }
         },
@@ -375,6 +389,31 @@ internal fun NoteDetailScreen(
                     }
                     TextButton(onClick = { showUnsavedDialog = false }) { Text("Keep editing") }
                 }
+            },
+        )
+    }
+
+    // Issue #4: the draft overlaps a change made on another device.
+    // Nothing was written; the user has to pick (no dismiss), because
+    // saving the draft as-is would revert the other change.
+    status.conflict?.let {
+        AlertDialog(
+            onDismissRequest = {},
+            properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+            title = { Text("This note changed on another device") },
+            text = {
+                Text(
+                    "Your edits overlap a change made elsewhere, so nothing was saved. " +
+                        "Keep both adds your version below the other device's text, " +
+                        "clearly marked, so nothing is lost. Discard my changes shows " +
+                        "the other device's version instead.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { vm.keepBoth() }) { Text("Keep both") }
+            },
+            dismissButton = {
+                TextButton(onClick = { vm.discardLocalChanges() }) { Text("Discard my changes") }
             },
         )
     }

@@ -6,7 +6,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
-import android.util.Log
+import com.example.applenotes.log.AppLog
 import com.example.applenotes.data.AppGraph
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -91,6 +91,6 @@ internal fun deliver(context: Context, replyTo: PendingIntent?, result: Automati
     try {
         replyTo.send(context, if (result.success) Activity.RESULT_OK else Activity.RESULT_CANCELED, fillIn)
     } catch (e: PendingIntent.CanceledException) {
-        Log.w(TAG, "caller's result PendingIntent was cancelled")
+        AppLog.w(TAG, "caller's result PendingIntent was cancelled")
     }
 }

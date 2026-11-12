@@ -9,6 +9,7 @@ import com.example.applenotes.data.NotesRepository
 import com.example.applenotes.data.TRASH_RECORD_NAME
 import com.example.applenotes.data.decodeNoteBody
 import com.example.applenotes.data.runCatchingCancellable
+import com.example.applenotes.data.userMessage
 import com.example.applenotes.proto.NoteBodyEditor
 import com.example.applenotes.ui.detail.assembleFullBody
 
@@ -38,7 +39,9 @@ internal class AutomationProcessor(
             is Parsed.Ok -> p.request
         }
         return runCatchingCancellable { execute(request) }
-            .getOrElse { AutomationResult.fail(it.message ?: it.javaClass.simpleName) }
+            // Typed iCloud errors get the same friendly text as the UI (raw
+            // server bodies never go back to the calling app).
+            .getOrElse { AutomationResult.fail(userMessage(it)) }
     }
 
     private suspend fun execute(request: AutomationRequest): AutomationResult {

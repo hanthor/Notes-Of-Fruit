@@ -263,7 +263,11 @@ class NoteDetailViewModelTest {
     }
 
     @Test
-    fun restoredDraftIsDroppedIfTheNoteChangedMeanwhile() {
+    fun restoredDraftIsNotAppliedOverAChangedNote() {
+        // Before issue #4 the draft was silently dropped here. It must still
+        // never be written over the other change, but it is now kept and the
+        // user is asked (the overlapping case; a non-overlapping change is
+        // merged, see NoteDetailConflictTest).
         val vm = newVm()
         vm.openExisting("NOTE-A")
         vm.type("milk\neggs\nunsaved")
@@ -271,6 +275,12 @@ class NoteDetailViewModelTest {
 
         val restored = newVm(savedState)
         restored.open("open-1", record = null, pendingFolderRef = null)
+        assertNotNull(restored.status.value.conflict)
+        assertEquals("milk\neggs\nunsaved", restored.bodyDraft.text)
+        restored.save(alsoExit = false)
+        assertTrue(api.modifies.isEmpty())
+
+        restored.discardLocalChanges()
         assertEquals("changed on Mac", restored.bodyDraft.text)
         assertFalse(restored.isModified)
     }

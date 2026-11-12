@@ -83,12 +83,16 @@ fun AppleNotesApp() {
     val screen by appVm.screen.collectAsStateWithLifecycle()
     when (val s = screen) {
         AppScreen.Splash -> CenteredSpinner("Starting up…")
-        AppScreen.Login -> LoginScreen(onCookiesArrived = appVm::onCookiesArrived)
+        AppScreen.Login -> {
+            val staleToken by appVm.loginStaleToken.collectAsStateWithLifecycle()
+            LoginScreen(onCookiesArrived = appVm::onCookiesArrived, staleToken = staleToken)
+        }
         is AppScreen.Loading -> CenteredSpinner(s.msg)
         is AppScreen.Error -> ErrorScreen(
             message = s.msg,
             onRetry = appVm::retryBootstrap,
             onSignOut = signOut,
+            details = s.details,
         )
         AppScreen.NotesList -> ListRoute(appVm, signOut)
         AppScreen.Settings -> SettingsScreen(onBack = { appVm.showList() })
@@ -103,6 +107,7 @@ private fun ListRoute(appVm: AppViewModel, signOut: () -> Unit) {
     val exportVm: BulkExportViewModel = viewModel(factory = BulkExportViewModel.factory(context))
     val list by appVm.listState.collectAsStateWithLifecycle()
     val message by appVm.listMessage.collectAsStateWithLifecycle()
+    val online by appVm.online.collectAsStateWithLifecycle()
     val exportState by exportVm.state.collectAsStateWithLifecycle()
 
     // Launcher shortcuts for notes that no longer exist are removed.
@@ -149,6 +154,7 @@ private fun ListRoute(appVm: AppViewModel, signOut: () -> Unit) {
         message = message,
         onMessageAction = appVm::onListMessageAction,
         onMessageDismissed = appVm::onListMessageDismissed,
+        offline = !online,
         drawerActions = listOf(
             DrawerAction("Import .txt / .md file…", Icons.Default.FileOpen) {
                 importLauncher.launch(IMPORT_MIME_TYPES)
@@ -199,5 +205,5 @@ private fun DetailRoute(
     LaunchedEffect(status.exitRequested) {
         if (status.exitRequested) leave(status.exitMessage)
     }
-    NoteDetailScreen(vm = detailVm, onBack = { leave(null) })
+    NoteDetailScreen(vm = detailVm, onBack = { leave(null) }, onSignIn = appVm::signInAgain)
 }

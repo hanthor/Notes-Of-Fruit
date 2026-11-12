@@ -3,7 +3,8 @@ package com.example.applenotes.export
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
-import android.util.Log
+import com.example.applenotes.data.userMessage
+import com.example.applenotes.log.AppLog
 import android.webkit.WebView
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -84,8 +85,8 @@ internal fun rememberNoteExportActions(snapshot: () -> NoteSnapshot): NoteExport
                     SafIo.writeText(context.contentResolver, uri, renderNoteForExport(format, s.title, s.text, s.spans, refs))
                 }
             }
-            result.onFailure { Log.w(TAG, "export failed", it) }
-            toast(if (result.isSuccess) "Exported" else "Export failed: ${result.exceptionOrNull()?.message}")
+            result.onFailure { AppLog.w(TAG, "export failed", it) }
+            toast(if (result.isSuccess) "Exported" else "Export failed: ${result.exceptionOrNull()?.let(::userMessage)}")
         }
     }
 
@@ -102,8 +103,8 @@ internal fun rememberNoteExportActions(snapshot: () -> NoteSnapshot): NoteExport
             val result = runCatching {
                 withContext(Dispatchers.IO) { writeWithImages(context, tree, s, images(s)) }
             }
-            result.onFailure { Log.w(TAG, "export with images failed", it) }
-            toast(if (result.isSuccess) "Exported" else "Export failed: ${result.exceptionOrNull()?.message}")
+            result.onFailure { AppLog.w(TAG, "export with images failed", it) }
+            toast(if (result.isSuccess) "Exported" else "Export failed: ${result.exceptionOrNull()?.let(::userMessage)}")
         }
     }
 

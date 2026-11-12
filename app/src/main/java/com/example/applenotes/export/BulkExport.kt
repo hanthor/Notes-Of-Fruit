@@ -2,7 +2,7 @@ package com.example.applenotes.export
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
+import com.example.applenotes.log.AppLog
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -14,6 +14,7 @@ import com.example.applenotes.data.AppGraph
 import com.example.applenotes.data.NotesRepository
 import com.example.applenotes.data.decodeNoteBody
 import com.example.applenotes.data.runCatchingCancellable
+import com.example.applenotes.data.userMessage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,7 +54,7 @@ internal suspend fun bulkExport(
             val title = exportTitleOf(text).ifEmpty { summary.title.orEmpty() }
             val content = renderNoteForExport(format, title, text, body.spans)
             write(names.next(title, format.extension), format.mimeType, content.toByteArray())
-        }.onFailure { Log.w(TAG, "skipping a note in bulk export", it) }.isSuccess
+        }.onFailure { AppLog.w(TAG, "skipping a note in bulk export", it) }.isSuccess
         if (ok) written++ else failed++
         onProgress(i + 1, notes.size)
     }
@@ -97,8 +98,8 @@ class BulkExportViewModel(private val repository: NotesRepository) : ViewModel()
                 _state.value = State(message = "Export cancelled")
                 throw e
             } catch (e: Exception) {
-                Log.w(TAG, "bulk export failed", e)
-                "Export failed: ${e.message}"
+                AppLog.w(TAG, "bulk export failed", e)
+                "Export failed: ${userMessage(e)}"
             }
             _state.value = State(message = message)
         }
