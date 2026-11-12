@@ -2,6 +2,7 @@ plugins {
   alias(libs.plugins.android.application)
   alias(libs.plugins.compose.compiler)
   alias(libs.plugins.kotlin.serialization)
+  alias(libs.plugins.ksp)
 }
 
 // Version comes from Gradle properties so the release workflow can derive it
@@ -115,6 +116,12 @@ kotlin {
     jvmToolchain(17)
 }
 
+// Room writes its schema here so a future version can be migrated without
+// wiping the local cache or, more importantly, unsent drafts.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+}
+
 dependencies {
   val composeBom = platform(libs.androidx.compose.bom)
   implementation(composeBom)
@@ -142,6 +149,12 @@ dependencies {
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.androidx.datastore.preferences)
   implementation(libs.androidx.core.splashscreen)
+  // Local note cache + unsent-draft outbox (issues #12, #13)
+  implementation(libs.androidx.room.runtime)
+  implementation(libs.androidx.room.ktx)
+  ksp(libs.androidx.room.compiler)
+  // Background saves of unsent drafts (issue #13)
+  implementation(libs.androidx.work.runtime.ktx)
   // Tooling
   debugImplementation(libs.androidx.compose.ui.tooling)
   // Instrumented tests

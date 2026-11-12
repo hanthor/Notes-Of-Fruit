@@ -9,6 +9,10 @@ import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -110,6 +114,16 @@ private fun ListRoute(appVm: AppViewModel, signOut: () -> Unit) {
     val online by appVm.online.collectAsStateWithLifecycle()
     val exportState by exportVm.state.collectAsStateWithLifecycle()
 
+    // Refresh when the list comes back to the foreground (throttled in the ViewModel; issue #12).
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) appVm.onAppResumed()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     // Launcher shortcuts for notes that no longer exist are removed.
     LaunchedEffect(list.notes) {
         if (list.notes.isNotEmpty()) NoteShortcuts.prune(context, list.notes.map { it.recordName }.toSet())
@@ -155,6 +169,11 @@ private fun ListRoute(appVm: AppViewModel, signOut: () -> Unit) {
         onMessageAction = appVm::onListMessageAction,
         onMessageDismissed = appVm::onListMessageDismissed,
         offline = !online,
+        syncing = list.syncing,
+        refreshing = list.refreshing,
+        unsentCount = list.unsentCount,
+        onRetryUnsent = appVm::retryUnsent,
+        searchBodies = appVm::searchCachedBodies,
         drawerActions = listOf(
             DrawerAction("Import .txt / .md file…", Icons.Default.FileOpen) {
                 importLauncher.launch(IMPORT_MIME_TYPES)
@@ -183,7 +202,7 @@ private fun DetailRoute(
 ) {
     val context = LocalContext.current
     LaunchedEffect(screen.openId) {
-        detailVm.open(screen.openId, screen.record, screen.pendingFolderRef, screen.prefill)
+        detailVm.open(screen.openId, screen.record, screen.pendingFolderRef, screen.prefill, screen.offlineCopy)
     }
     val status by detailVm.status.collectAsStateWithLifecycle()
     if (status.openId != screen.openId) {

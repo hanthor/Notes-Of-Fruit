@@ -7,6 +7,8 @@ import com.example.applenotes.client.AppleNotesClient
 import com.example.applenotes.client.FolderSummary
 import com.example.applenotes.client.NoteRecord
 import com.example.applenotes.client.NoteSummary
+import com.example.applenotes.client.RecentsPage
+import com.example.applenotes.client.ZoneChanges
 import io.ktor.client.HttpClient
 import kotlinx.serialization.json.JsonElement
 
@@ -39,6 +41,27 @@ interface NotesApi {
         newSnippet: String?,
         replicaVersionPassThroughB64: String?,
     ): NoteRecord
+
+    /**
+     * One page of the recents index (issue #12). The default serves the
+     * whole [fetchRecents] answer as a single page, for fakes that don't page.
+     */
+    suspend fun fetchRecentsPage(continuationMarker: String?, resultsLimit: Int): RecentsPage =
+        RecentsPage(if (continuationMarker == null) fetchRecents(resultsLimit) else emptyList(), null)
+
+    /**
+     * Zone changes since [syncToken] (issue #12). The default reports the
+     * endpoint as unsupported, which the repository treats like any other
+     * failure of the incremental path: it does a full refetch instead.
+     */
+    suspend fun fetchZoneChanges(syncToken: String?, resultsLimit: Int): ZoneChanges =
+        throw UnsupportedOperationException("changes/zone not supported")
+
+    /**
+     * Who the session belongs to (the iCloud dsid), so a cache written for
+     * one account is never shown to, or synced into, another. Null = unknown.
+     */
+    val accountId: String? get() = null
 }
 
 /** [NotesApi] backed by the real CloudKit client. One instance per session. */
@@ -77,6 +100,14 @@ class CloudKitNotesApi(private val client: AppleNotesClient) : NotesApi {
         newSnippet = newSnippet,
         replicaVersionPassThroughB64 = replicaVersionPassThroughB64,
     )
+
+    override suspend fun fetchRecentsPage(continuationMarker: String?, resultsLimit: Int) =
+        client.fetchRecentsPage(continuationMarker, resultsLimit)
+
+    override suspend fun fetchZoneChanges(syncToken: String?, resultsLimit: Int) =
+        client.fetchZoneChanges(syncToken, resultsLimit)
+
+    override val accountId: String? get() = client.accountId
 }
 
 /** Sign-in plumbing: the WebView cookie jar and the CloudKit session bootstrap. */

@@ -3,6 +3,9 @@ package com.example.applenotes.testing
 import com.example.applenotes.client.FolderSummary
 import com.example.applenotes.client.NoteRecord
 import com.example.applenotes.client.NoteSummary
+import com.example.applenotes.client.RecentsPage
+import com.example.applenotes.client.ZoneChanges
+import com.example.applenotes.data.DraftScheduler
 import com.example.applenotes.data.AlphaGate
 import com.example.applenotes.data.AuthGateway
 import com.example.applenotes.data.NotesApi
@@ -138,7 +141,11 @@ class FakeNotesApi : NotesApi {
 
     override suspend fun fetchRecents(limit: Int): List<NoteSummary> {
         enter("fetchRecents")
-        return records.values.mapIndexed { i, r ->
+        return summaries()
+    }
+
+    private fun summaries(): List<NoteSummary> =
+        records.values.mapIndexed { i, r ->
             val text = r.visibleText().orEmpty()
             val (title, snippet) = com.example.applenotes.data.computeTitleAndSnippet(text)
             NoteSummary(
@@ -152,7 +159,38 @@ class FakeNotesApi : NotesApi {
                 },
             )
         }
+
+    /**
+     * When set, [fetchRecentsPage] serves [fetchRecents]' answer this many
+     * notes at a time with continuation markers, like CloudKit's ~13/page.
+     */
+    var recentsPageSize: Int? = null
+
+    /** Extra summaries served by the recents index (to test big libraries without records). */
+    val extraSummaries = mutableListOf<NoteSummary>()
+
+    override suspend fun fetchRecentsPage(continuationMarker: String?, resultsLimit: Int): RecentsPage {
+        val size = recentsPageSize
+            ?: return RecentsPage(if (continuationMarker == null) fetchRecents(resultsLimit) else emptyList(), null)
+        enter("fetchRecentsPage")
+        val all = summaries() + extraSummaries
+        val from = continuationMarker?.removePrefix("page@")?.toInt() ?: 0
+        val to = minOf(all.size, from + size)
+        return RecentsPage(all.subList(from, to), if (to < all.size) "page@$to" else null)
     }
+
+    /** Answers [fetchZoneChanges]; null = the endpoint isn't supported (the default). */
+    var zoneChanges: ((syncToken: String?) -> ZoneChanges)? = null
+    val zoneTokens = mutableListOf<String?>()
+
+    override suspend fun fetchZoneChanges(syncToken: String?, resultsLimit: Int): ZoneChanges {
+        val answer = zoneChanges ?: return super.fetchZoneChanges(syncToken, resultsLimit)
+        enter("fetchZoneChanges")
+        zoneTokens += syncToken
+        return answer(syncToken)
+    }
+
+    override var accountId: String? = "dsid-1"
 
     override suspend fun lookupFolders(recordNames: Collection<String>): List<FolderSummary> {
         enter("lookupFolders")
@@ -266,4 +304,23 @@ class MainDispatcherRule(val dispatcher: TestDispatcher = UnconfinedTestDispatch
 /** Connectivity the test flips by hand. */
 class FakeConnectivity(initial: Boolean = true) : com.example.applenotes.data.ConnectivityMonitor {
     override val online = kotlinx.coroutines.flow.MutableStateFlow(initial)
+}
+
+/** Records what would have been handed to WorkManager. */
+class FakeDraftScheduler : DraftScheduler {
+    val enqueued = mutableListOf<String>()
+    val cancelled = mutableListOf<String>()
+    var cancelledAll = 0
+
+    override fun enqueue(key: String) {
+        enqueued += key
+    }
+
+    override fun cancel(key: String) {
+        cancelled += key
+    }
+
+    override fun cancelAll() {
+        cancelledAll++
+    }
 }

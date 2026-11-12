@@ -5,13 +5,25 @@ import com.example.applenotes.auth.DeviceIdentity
 import com.example.applenotes.client.FolderSummary
 import com.example.applenotes.client.NoteRecord
 import com.example.applenotes.client.NoteSummary
+import com.example.applenotes.client.ZoneChanges
 import com.example.applenotes.client.NotesError
 import com.example.applenotes.client.extractReferenceRecordName
 import com.example.applenotes.proto.NoteAppender
 import com.example.applenotes.proto.NoteBodyEditor
+import com.example.applenotes.data.local.InMemoryNotesStore
+import com.example.applenotes.data.local.NotesStore
+import com.example.applenotes.data.local.PendingDraft
+import com.example.applenotes.data.local.StoreMeta
+import com.example.applenotes.data.local.spansSignature
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.coroutines.cancellation.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -53,6 +65,10 @@ class NotesRepository(
     connectivity: ConnectivityMonitor = AlwaysOnline,
     /** Backoff between retries of a throttled read; a parameter so tests can skip it. */
     private val backoff: suspend (Long) -> Unit = { delay(it) },
+    /** On-device cache and unsent-draft outbox (issues #12, #13). */
+    private val store: NotesStore = InMemoryNotesStore(),
+    /** Runs background saves of unsent drafts (WorkManager in the app). */
+    private val draftScheduler: DraftScheduler = DraftScheduler.None,
 ) {
     /** Device connectivity (see [ConnectivityMonitor]); drives the offline indicator. */
     val online: StateFlow<Boolean> = connectivity.online
@@ -80,6 +96,59 @@ class NotesRepository(
     private val _folders = MutableStateFlow<List<FolderSummary>>(emptyList())
     val folders: StateFlow<List<FolderSummary>> = _folders.asStateFlow()
 
+    private val _syncing = MutableStateFlow(false)
+
+    /** True while the list is being refreshed from iCloud (the "Updating…" indicator). */
+    val syncing: StateFlow<Boolean> = _syncing.asStateFlow()
+
+    private val _pendingDrafts = MutableStateFlow<List<PendingDraft>>(emptyList())
+
+    /** Edits not yet confirmed by iCloud (the outbox), oldest first. */
+    val pendingDrafts: StateFlow<List<PendingDraft>> = _pendingDrafts.asStateFlow()
+
+    /** When the last sync finished successfully (epoch ms), for throttling refresh-on-resume. */
+    @Volatile
+    var lastSyncAtMs: Long? = null
+        private set
+
+    /**
+     * Bumped on sign-out, so a sync or draft write still in flight for the
+     * previous session can tell it must not touch the (cleared) cache.
+     */
+    @Volatile
+    private var generation = 0
+
+    @Volatile
+    private var cacheLoaded = false
+
+    /**
+     * The app was launched with a saved login and is showing the cached list
+     * before the session is up: requests may open the session lazily (see
+     * [currentApi]). Cleared by [signOut].
+     */
+    @Volatile
+    private var sessionRestorable = false
+
+    private val syncLock = Any()
+    private var syncJob: Job? = null
+    private var syncReady: CompletableDeferred<Unit>? = null
+
+    /** Notes the app created or saved while a full sync was running: never pruned by it. */
+    private val touchedDuringSync: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /** One save at a time per note (the editor, the background worker and automation share it). */
+    private val saveLocks = ConcurrentHashMap<String, Mutex>()
+
+    /** Serialises draft-row writes with the "clear it once saved" check. */
+    private val draftLock = Mutex()
+
+    init {
+        externalScope.launch {
+            runCatchingCancellable { store.observeDrafts().collect { _pendingDrafts.value = it } }
+                .onFailure { AppLog.e(TAG, "observing unsent drafts failed", it) }
+        }
+    }
+
     @Volatile
     private var api: NotesApi? = null
 
@@ -102,7 +171,27 @@ class NotesRepository(
         }
     }
 
-    private fun requireApi(): NotesApi = api ?: throw NotesError.AuthExpired("Not signed in.")
+    /**
+     * The session to use. After a launch from the cache the session is
+     * opened lazily here (the background sign-in may have failed offline);
+     * otherwise "not signed in" is [NotesError.AuthExpired].
+     */
+    private suspend fun currentApi(): NotesApi = api ?: sessionLock.withLock {
+        api ?: run {
+            if (!sessionRestorable) throw NotesError.AuthExpired("Not signed in.")
+            AppLog.i(TAG) { "opening the session on demand" }
+            val opened = try {
+                auth.openSession()
+            } catch (e: NotesError.AuthExpired) {
+                _sessionExpired.value = true
+                throw e
+            }
+            adoptAccount(opened)
+            api = opened
+            _sessionExpired.value = false
+            opened
+        }
+    }
 
     /** See [AuthGateway.currentAuthToken]. */
     fun currentAuthToken(): String? = auth.currentAuthToken()
@@ -121,7 +210,7 @@ class NotesRepository(
      *   Writes surface it to the user with a Retry action instead.
      */
     private suspend fun <T> withApi(idempotent: Boolean, block: suspend (NotesApi) -> T): T {
-        var current = requireApi()
+        var current = currentApi()
         var reauthed = false
         var throttled = 0
         while (true) {
@@ -161,19 +250,221 @@ class NotesRepository(
         fresh
     }
 
-    private suspend fun fetchNoteList(api: NotesApi): List<NoteSummary> =
-        api.fetchRecents(limit = 1000)
-            .filter { !it.deleted }
-            .sortedByDescending { it.modificationTimestampMs ?: 0L }
+    // ----- Local cache and sync (issue #12) -----
 
-    /** Bootstrap the CloudKit session from the cookie jar and load the list. Throws on failure. */
+    /**
+     * Load the cached note list and folders into [notes] / [folders] (once
+     * per process). Returns true when there is a cached list to show while
+     * the session and the sync start in the background. Never touches the
+     * network.
+     */
+    suspend fun loadCache(): Boolean {
+        if (!cacheLoaded) {
+            val gen = generation
+            val notes = runCatchingCancellable { store.loadSummaries() }
+                .onFailure { AppLog.e(TAG, "reading the note cache failed", it) }
+                .getOrDefault(emptyList())
+            val folders = runCatchingCancellable { store.loadFolders() }.getOrDefault(emptyList())
+            if (gen == generation) {
+                if (_notes.value.isEmpty()) _notes.value = sortNotes(notes.filter { !it.deleted })
+                if (_folders.value.isEmpty()) _folders.value = folders
+                cacheLoaded = true
+                if (auth.hasSavedLogin()) sessionRestorable = true
+            }
+            AppLog.i(TAG) { "cache: ${notes.size} notes, ${folders.size} folders" }
+        }
+        return _notes.value.isNotEmpty()
+    }
+
+    /**
+     * Bootstrap the CloudKit session from the cookie jar and sync the list.
+     * Returns once the list is usable: the incremental sync is done, or the
+     * first page of a full refetch is in (the rest keeps paging into the
+     * cache in the background; see [syncing]). Throws on failure.
+     */
     suspend fun signIn() {
         val newApi = auth.openSession()
-        val notes = fetchNoteList(newApi)
-        val folderIds = notes.mapNotNull { it.folderRecordName }.toSet()
-        val folders = runCatching { newApi.lookupFolders(folderIds) }.getOrElse {
-            AppLog.w(TAG, "lookupFolders failed; falling back to ID-only list", it)
-            folderIds.map { rn ->
+        adoptAccount(newApi)
+        api = newApi
+        sessionRestorable = true
+        _sessionExpired.value = false
+        loadCache()
+        awaitSync()
+    }
+
+    /**
+     * Sync the list with iCloud (see [signIn] for when it returns). A sync
+     * already running is joined rather than started twice.
+     */
+    suspend fun refresh() {
+        awaitSync()
+    }
+
+    private suspend fun awaitSync() {
+        val ready = synchronized(syncLock) {
+            syncReady?.takeIf { syncJob?.isActive == true } ?: startSync()
+        }
+        ready.await()
+    }
+
+    private fun startSync(): CompletableDeferred<Unit> {
+        val ready = CompletableDeferred<Unit>()
+        val gen = generation
+        syncReady = ready
+        syncJob = externalScope.launch {
+            _syncing.value = true
+            try {
+                runSync(gen, ready)
+                if (gen == generation) lastSyncAtMs = clock()
+                ready.complete(Unit)
+            } catch (e: CancellationException) {
+                ready.completeExceptionally(e)
+                throw e
+            } catch (e: Throwable) {
+                // Before "ready" the caller gets the error; after it (paging
+                // in the background) the next refresh simply tries again.
+                if (!ready.completeExceptionally(e)) AppLog.w(TAG, "background sync stopped", e)
+            } finally {
+                if (gen == generation) _syncing.value = false
+            }
+        }
+        return ready
+    }
+
+    /**
+     * Incremental sync with the stored zone token when we have one; a full
+     * refetch of the recents index otherwise, when the token is rejected or
+     * the changes endpoint answers anything unexpected, and at least once a
+     * day as a safety net. The incremental path is not yet confirmed against
+     * a real account, so the full refetch is the default that always works.
+     */
+    private suspend fun runSync(gen: Int, ready: CompletableDeferred<Unit>) {
+        val token = runCatchingCancellable { store.getMeta(StoreMeta.SYNC_TOKEN) }.getOrNull()
+        val lastFull = runCatchingCancellable { store.getMeta(StoreMeta.LAST_FULL_SYNC_MS) }.getOrNull()?.toLongOrNull()
+        val fullDue = lastFull == null || clock() - lastFull > FULL_SYNC_INTERVAL_MS
+        if (token != null && !fullDue) {
+            val applied = try {
+                applyZoneChanges(gen, fetchAllZoneChanges(token))
+                true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: NotesError.Offline) {
+                throw e
+            } catch (e: NotesError.AuthExpired) {
+                throw e
+            } catch (e: NotesError.Throttled) {
+                throw e
+            } catch (e: Throwable) {
+                AppLog.w(TAG, "incremental sync failed; dropping the token and refetching everything", e)
+                safeStore("drop sync token") { store.setMeta(StoreMeta.SYNC_TOKEN, null) }
+                false
+            }
+            if (applied) return
+        }
+        fullSync(gen, ready)
+        primeSyncToken(gen)
+    }
+
+    /** Every page of zone changes since [token] (null = from the start), merged. */
+    private suspend fun fetchAllZoneChanges(token: String?): MergedChanges {
+        val merged = MergedChanges()
+        var t = token
+        var pages = 0
+        while (true) {
+            val page = withApi(idempotent = true) { it.fetchZoneChanges(t, ZONE_PAGE_LIMIT) }
+            merged.add(page)
+            t = page.syncToken
+            pages++
+            if (!page.moreComing) break
+            if (pages >= MAX_ZONE_PAGES) throw IllegalStateException("changes/zone: still more after $pages pages")
+        }
+        merged.syncToken = t
+        return merged
+    }
+
+    /**
+     * Apply zone changes to the cache, then store the new token. Refuses
+     * (throws, so the caller falls back to a full refetch) a batch that would
+     * remove most of the cached notes: more likely a misread response than
+     * a real mass deletion, and a full refetch settles it either way.
+     */
+    private suspend fun applyZoneChanges(gen: Int, changes: MergedChanges) {
+        val cachedNames = _notes.value.mapTo(HashSet()) { it.recordName }
+        val cached = cachedNames.size
+        val removingCached = changes.removed.count { it in cachedNames }
+        if (cached >= 10 && removingCached > cached / 2) {
+            throw IllegalStateException("changes/zone would remove $removingCached of $cached notes")
+        }
+        applyNotes(gen, changes.notes.values, changes.removed)
+        applyFolders(gen, changes.folders.values, changes.removed)
+        if (gen != generation) return
+        safeStore("store sync token") { store.setMeta(StoreMeta.SYNC_TOKEN, changes.syncToken) }
+        AppLog.i(TAG) {
+            "incremental sync: ${changes.notes.size} changed, ${changes.removed.size} removed, " +
+                "${changes.folders.size} folders"
+        }
+    }
+
+    /**
+     * Page through the whole recents index into the cache, with no overall
+     * cap (issue #12: notes beyond 1,000 used to be invisible). Signals
+     * [ready] after the first page so the UI can show the list while the
+     * rest arrives. Only a complete pass prunes cached notes the server no
+     * longer lists.
+     */
+    private suspend fun fullSync(gen: Int, ready: CompletableDeferred<Unit>) {
+        touchedDuringSync.clear()
+        val seen = HashSet<String>()
+        var continuation: String? = null
+        var pages = 0
+        var complete = false
+        while (true) {
+            val marker = continuation
+            val page = withApi(idempotent = true) { it.fetchRecentsPage(marker, RECENTS_PAGE_LIMIT) }
+            if (gen != generation) return
+            pages++
+            page.notes.forEach { seen += it.recordName }
+            applyNotes(gen, page.notes.filter { !it.deleted }, page.notes.filter { it.deleted }.map { it.recordName })
+            continuation = page.continuationMarker
+            if (continuation == null) {
+                complete = true
+                break
+            }
+            if (page.notes.isEmpty() || pages >= MAX_RECENTS_PAGES) {
+                AppLog.w(TAG, "full sync: stopping after $pages pages (empty page or page cap); not pruning")
+                break
+            }
+            // The list is usable now; keep paging in the background.
+            ready.complete(Unit)
+        }
+        if (complete) {
+            val stale = _notes.value.map { it.recordName }.filter { it !in seen && it !in touchedDuringSync }
+            if (stale.isNotEmpty()) applyNotes(gen, emptyList(), stale)
+            safeStore("store full sync time") { store.setMeta(StoreMeta.LAST_FULL_SYNC_MS, clock().toString()) }
+        }
+        refreshFolderNames(gen)
+        AppLog.i(TAG) { "full sync: ${seen.size} notes in $pages pages (complete=$complete)" }
+    }
+
+    /**
+     * Look up every folder the notes reference plus every folder already
+     * known (so empty folders keep their names). A folder the lookup no
+     * longer returns is gone. When the lookup fails, keep what we had and
+     * show unknown ones by ID.
+     */
+    private suspend fun refreshFolderNames(gen: Int) {
+        val known = _folders.value.associateBy { it.recordName }
+        val ids = _notes.value.mapNotNull { it.folderRecordName }.toSet() + known.keys
+        if (ids.isEmpty()) return
+        val looked = runCatchingCancellable { withApi(idempotent = true) { it.lookupFolders(ids) } }
+        if (gen != generation) return
+        looked.onSuccess { found ->
+            if (found.isEmpty()) return@onSuccess
+            val gone = known.keys - found.map { it.recordName }.toSet()
+            applyFolders(gen, found, gone)
+        }.onFailure {
+            AppLog.w(TAG, "lookupFolders failed; keeping cached folder names", it)
+            val unknown = ids.filter { it !in known }.map { rn ->
                 FolderSummary(
                     recordName = rn,
                     displayName = null,
@@ -181,32 +472,161 @@ class NotesRepository(
                     isDefault = rn == DEFAULT_FOLDER_RECORD_NAME,
                 )
             }
+            applyFolders(gen, unknown, emptyList())
         }
-        api = newApi
-        _sessionExpired.value = false
-        _notes.value = notes
-        _folders.value = folders
     }
 
-    /** Refetch the note list (and folder names, keeping the old ones if that lookup fails). */
-    suspend fun refresh() {
-        val notes = withApi(idempotent = true) { fetchNoteList(it) }
-        val folderIds = notes.mapNotNull { it.folderRecordName }.toSet()
-        val folders = runCatchingCancellable { withApi(idempotent = true) { it.lookupFolders(folderIds) } }
-            .getOrElse { _folders.value }
-        _notes.value = notes
-        _folders.value = folders
+    /**
+     * After a full refetch, try to get a zone sync token so the next refresh
+     * is incremental. Best effort: any failure just leaves no token. The
+     * enumeration also brings in Folder records, which is how empty folders
+     * appear at all (notes only reference folders that hold something).
+     */
+    private suspend fun primeSyncToken(gen: Int) {
+        val existing = runCatchingCancellable { store.getMeta(StoreMeta.SYNC_TOKEN) }.getOrNull()
+        if (existing != null || gen != generation) return
+        runCatchingCancellable { applyZoneChanges(gen, fetchAllZoneChanges(null)) }
+            .onFailure {
+                if (it is UnsupportedOperationException) return@onFailure
+                AppLog.i(TAG) { "no zone sync token (${it.javaClass.simpleName}); refreshes stay full refetches" }
+            }
+    }
+
+    private suspend fun applyNotes(gen: Int, upserts: Collection<NoteSummary>, removed: Collection<String>) {
+        if (gen != generation || (upserts.isEmpty() && removed.isEmpty())) return
+        val removedSet = removed.toSet()
+        _notes.update { list ->
+            val byName = LinkedHashMap<String, NoteSummary>(list.size + upserts.size)
+            list.forEach { byName[it.recordName] = it }
+            removedSet.forEach { byName.remove(it) }
+            upserts.forEach { byName[it.recordName] = it }
+            sortNotes(byName.values)
+        }
+        safeStore("cache notes") {
+            if (gen != generation) return@safeStore
+            if (upserts.isNotEmpty()) store.upsertSummaries(upserts)
+            if (removedSet.isNotEmpty()) {
+                store.deleteSummaries(removedSet)
+                store.deleteBodies(removedSet)
+            }
+        }
+    }
+
+    private suspend fun applyFolders(gen: Int, upserts: Collection<FolderSummary>, removed: Collection<String>) {
+        if (gen != generation || (upserts.isEmpty() && removed.isEmpty())) return
+        val removedSet = removed.toSet()
+        _folders.update { list ->
+            val byName = LinkedHashMap<String, FolderSummary>()
+            list.forEach { byName[it.recordName] = it }
+            removedSet.forEach { byName.remove(it) }
+            upserts.forEach { byName[it.recordName] = it }
+            byName.values.toList()
+        }
+        safeStore("cache folders") {
+            if (gen != generation) return@safeStore
+            if (upserts.isNotEmpty()) store.upsertFolders(upserts)
+            if (removedSet.isNotEmpty()) store.deleteFolders(removedSet)
+        }
+    }
+
+    private fun sortNotes(notes: Collection<NoteSummary>): List<NoteSummary> =
+        notes.sortedByDescending { it.modificationTimestampMs ?: 0L }
+
+    /**
+     * The cache belongs to one iCloud account. If the session that just
+     * opened is a different account (the session expired and someone signed
+     * in with another Apple ID), drop the previous account's cache and
+     * drafts rather than showing them, or saving them into this account.
+     */
+    private suspend fun adoptAccount(newApi: NotesApi) {
+        val account = newApi.accountId?.let(::accountFingerprint) ?: return
+        val previous = runCatchingCancellable { store.getMeta(StoreMeta.ACCOUNT) }.getOrNull()
+        if (previous != null && previous != account) {
+            AppLog.w(TAG, "signed in to a different account; clearing the previous account's cache and drafts")
+            clearLocalData()
+        }
+        safeStore("store account") { store.setMeta(StoreMeta.ACCOUNT, account) }
+    }
+
+    /** Search the visible text of cached (previously opened) note bodies. */
+    suspend fun searchCachedBodies(query: String): Set<String> {
+        if (query.isBlank()) return emptySet()
+        return runCatchingCancellable { store.searchBodies(query.trim(), MAX_BODY_SEARCH_RESULTS).toSet() }
+            .getOrDefault(emptySet())
     }
 
     fun signOut() {
         auth.clearLogin()
         api = null
+        sessionRestorable = false
+        lastSyncAtMs = null
+        clearLocalData()
+    }
+
+    /** Forget the cache, sync state and unsent drafts (sign-out: they're this account's). */
+    private fun clearLocalData() {
+        generation++
+        synchronized(syncLock) {
+            syncJob?.cancel()
+            syncJob = null
+            syncReady = null
+        }
+        _syncing.value = false
         _notes.value = emptyList()
         _folders.value = emptyList()
+        _pendingDrafts.value = emptyList()
+        cacheLoaded = false
+        draftScheduler.cancelAll()
+        externalScope.launch { safeStore("clear local data") { store.clearAll() } }
+    }
+
+    /** Run a store operation; a storage failure is logged, never fatal (the cache is rebuildable). */
+    private suspend inline fun safeStore(what: String, block: () -> Unit) {
+        try {
+            block()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            AppLog.e(TAG, "local store: $what failed", e)
+        }
     }
 
     suspend fun lookupNote(recordName: String): NoteRecord =
-        withApi(idempotent = true) { it.lookupNote(recordName) }
+        withApi(idempotent = true) { it.lookupNote(recordName) }.also { cacheBody(it) }
+
+    /**
+     * Open a note for the editor: from iCloud when possible, otherwise (no
+     * network, or the request failed for lack of one) from the copy cached
+     * the last time it was opened. [OpenedNote.fromCache] drives the
+     * "Offline — showing saved copy" banner.
+     */
+    suspend fun openNote(recordName: String): OpenedNote {
+        if (!online.value) {
+            cachedBody(recordName)?.let { return OpenedNote(it, fromCache = true) }
+            throw NotesError.Offline()
+        }
+        return try {
+            OpenedNote(lookupNote(recordName), fromCache = false)
+        } catch (e: NotesError.Offline) {
+            cachedBody(recordName)?.let { OpenedNote(it, fromCache = true) } ?: throw e
+        }
+    }
+
+    private suspend fun cachedBody(recordName: String): NoteRecord? =
+        runCatchingCancellable { store.getBody(recordName) }
+            .onFailure { AppLog.w(TAG, "reading the cached note failed", it) }
+            .getOrNull()
+
+    /** Keep the full record of an opened / saved note for offline reading (Note records only). */
+    private suspend fun cacheBody(record: NoteRecord) {
+        if (record.recordType != "Note" || record.recordChangeTag == null) return
+        if (record.stringField("TextDataEncrypted") == null) return
+        val gen = generation
+        val text = runCatching { decodeNoteBody(record).text }.getOrNull()
+        safeStore("cache note body") {
+            if (gen == generation) store.putBody(record, text, clock())
+        }
+    }
 
     suspend fun fetchAssetBytes(downloadUrl: String): ByteArray? =
         withApi(idempotent = true) { it.fetchAssetBytes(downloadUrl) }
@@ -241,11 +661,57 @@ class NotesRepository(
         newBody: String,
         isPureAppend: Boolean,
         newSpans: List<NoteBodyEditor.AttrSpan>?,
+        /**
+         * Background draft saves (issue #13): only write if the outbox still
+         * holds exactly this edit under this key when the save gets its turn;
+         * otherwise throw [DraftSupersededException] without writing.
+         */
+        requirePendingDraft: String? = null,
     ): NoteRecord = externalScope.async {
-        withApi(idempotent = false) { client ->
-            doSaveNote(client, record, pendingFolderRef, newBody, isPureAppend, newSpans)
+        saveLock(record.recordName).withLock {
+            if (requirePendingDraft != null) {
+                val row = runCatchingCancellable { store.getDraft(requirePendingDraft) }.getOrNull()
+                if (row == null || row.conflict || row.fullText != newBody ||
+                    row.spansSignature != spansSignature(newSpans)
+                ) {
+                    throw DraftSupersededException()
+                }
+            }
+            // A local draft that was already created (by the editor or the
+            // background worker; the mapping is written the moment
+            // createNote returns): modify that note, never create it twice.
+            val createdName = if (record.recordChangeTag == null) {
+                runCatchingCancellable { store.createdRecordName(record.recordName) }.getOrNull()
+            } else {
+                null
+            }
+            val updated = if (createdName != null) {
+                AppLog.i(TAG) { "save: draft ${record.recordName} was already created; modifying it" }
+                saveLock(createdName).withLock {
+                    val created = withApi(idempotent = true) { it.lookupNote(createdName) }
+                    val createdBody = decodeNoteBody(created)
+                    if (createdBody is NoteBody.Editable && createdBody.text == newBody &&
+                        (newSpans == null || newSpans == createdBody.spans)
+                    ) {
+                        created
+                    } else {
+                        withApi(idempotent = false) { client ->
+                            doSaveNote(client, created, null, newBody, isPureAppend = false, newSpans)
+                        }
+                    }
+                }
+            } else {
+                withApi(idempotent = false) { client ->
+                    doSaveNote(client, record, pendingFolderRef, newBody, isPureAppend, newSpans)
+                }
+            }
+            cacheBody(updated)
+            clearDraftIfSaved(record.recordName, newBody, newSpans)
+            updated
         }
     }.await()
+
+    private fun saveLock(key: String): Mutex = saveLocks.getOrPut(key) { Mutex() }
 
     private suspend fun doSaveNote(
         client: NotesApi,
@@ -291,6 +757,10 @@ class NotesRepository(
                 folderRef = folderRef,
                 ourReplicaUuid = uuid,
             )
+            // Remember the created note at once: a second save of this
+            // draft (worker vs. editor, or a retry) must modify it, not
+            // create another one.
+            safeStore("record created draft") { store.putCreatedRecordName(record.recordName, updated.recordName) }
             // Pre-pend a fresh summary into the cache so back-nav
             // shows the new note immediately without a refetch.
             val folderRecordName = extractReferenceRecordName(folderRef)
@@ -302,7 +772,10 @@ class NotesRepository(
                 deleted = false,
                 folderRecordName = folderRecordName,
             )
-            _notes.update { listOf(newSummary) + it }
+            touchedDuringSync += updated.recordName
+            _notes.update { listOf(newSummary) + it.filter { n -> n.recordName != updated.recordName } }
+            val gen = generation
+            safeStore("cache created note") { if (gen == generation) store.upsertSummaries(listOf(newSummary)) }
         } else {
             // EXISTING NOTE: incremental modify path.
             updated = modifyWithRebase(client, uuid, record, newBody, isPureAppend, newSpans)
@@ -441,16 +914,20 @@ class NotesRepository(
      * Patch the cached list summary so back-navigation shows the updated
      * title / snippet without a refetch.
      */
-    private fun patchSummary(recordName: String, title: String, snippet: String) {
+    private suspend fun patchSummary(recordName: String, title: String, snippet: String) {
+        touchedDuringSync += recordName
+        var patched: NoteSummary? = null
         _notes.update { list ->
             list.map { note ->
                 if (note.recordName == recordName) {
-                    note.copy(title = title, snippet = snippet, modificationTimestampMs = clock())
+                    note.copy(title = title, snippet = snippet, modificationTimestampMs = clock()).also { patched = it }
                 } else {
                     note
                 }
-            }
+            }.sortedByDescending { it.modificationTimestampMs ?: 0L }
         }
+        val gen = generation
+        patched?.let { p -> safeStore("cache saved note") { if (gen == generation) store.upsertSummaries(listOf(p)) } }
     }
 
     /**
@@ -464,5 +941,147 @@ class NotesRepository(
             withApi(idempotent = false) { it.deleteNote(record.recordName, tag) }
         }.await()
         _notes.update { list -> list.filter { it.recordName != record.recordName } }
+        safeStore("forget deleted note") {
+            store.deleteSummaries(listOf(record.recordName))
+            store.deleteBodies(listOf(record.recordName))
+        }
+        discardDraft(record.recordName)
+    }
+
+    // ----- Unsent drafts / outbox (issue #13) -----
+
+    /** The outbox entry for [key] (a recordName or a local "draft-<uuid>"), if any. */
+    suspend fun pendingDraft(key: String): PendingDraft? =
+        runCatchingCancellable { store.getDraft(key) }
+            .onFailure { AppLog.e(TAG, "reading an unsent draft failed", it) }
+            .getOrNull()
+
+    /**
+     * Write [draft] to the outbox. Runs in [externalScope] so it completes
+     * even if the editor that asked for it goes away (e.g. on ON_PAUSE).
+     */
+    fun persistDraft(draft: PendingDraft): Job {
+        val gen = generation
+        return externalScope.launch {
+            draftLock.withLock {
+                if (gen != generation) return@withLock
+                runCatchingCancellable { store.putDraft(draft) }
+                    .onFailure { AppLog.e(TAG, "saving an unsent draft to disk failed", it) }
+            }
+        }
+    }
+
+    /** Drop the outbox entry for [key] (the user discarded it, or the editor knows it's saved). */
+    suspend fun discardDraft(key: String) {
+        draftLock.withLock {
+            runCatchingCancellable { store.deleteDraft(key) }
+                .onFailure { AppLog.e(TAG, "deleting an unsent draft failed", it) }
+        }
+        draftScheduler.cancel(key)
+    }
+
+    /** A background save found overlapping edits: keep the draft for the editor to resolve. */
+    suspend fun markDraftConflict(key: String) {
+        draftLock.withLock {
+            val row = runCatchingCancellable { store.getDraft(key) }.getOrNull() ?: return@withLock
+            runCatchingCancellable { store.putDraft(row.copy(conflict = true)) }
+        }
+    }
+
+    /** Ask the background worker to save [key]'s draft (network-constrained, retried with backoff). */
+    fun scheduleDraftSync(key: String) = draftScheduler.enqueue(key)
+
+    /** "N unsent changes" tapped: retry every draft that isn't waiting on a conflict decision. */
+    fun retryPendingDrafts() {
+        _pendingDrafts.value.filter { !it.conflict }.forEach { draftScheduler.enqueue(it.key) }
+    }
+
+    /**
+     * For the background worker in a fresh process: load the cache and allow
+     * the session to be opened on demand from the saved cookies.
+     */
+    suspend fun prepareForBackgroundWork() {
+        loadCache()
+        if (auth.hasSavedLogin()) sessionRestorable = true
+    }
+
+    /**
+     * After a confirmed save of [savedText]/[savedSpans] under [key]: drop
+     * the outbox row if it still holds exactly that edit. A row with newer
+     * text (typed while the save was in flight) stays.
+     */
+    private suspend fun clearDraftIfSaved(
+        key: String,
+        savedText: String,
+        savedSpans: List<NoteBodyEditor.AttrSpan>?,
+    ) {
+        draftLock.withLock {
+            val row = runCatchingCancellable { store.getDraft(key) }.getOrNull() ?: return@withLock
+            if (row.fullText == savedText && row.spansSignature == spansSignature(savedSpans)) {
+                runCatchingCancellable { store.deleteDraft(key) }
+            }
+        }
     }
 }
+
+/** A note opened for the editor; [fromCache] = the saved offline copy, not a fresh lookup. */
+data class OpenedNote(val record: NoteRecord, val fromCache: Boolean)
+
+/** A background save found the outbox entry changed or gone by the time it ran; nothing was written. */
+class DraftSupersededException : Exception("The unsent draft changed or was already saved")
+
+/** Starts background saves of unsent drafts; see the WorkManager implementation in `sync/`. */
+interface DraftScheduler {
+    /** Save [key]'s draft when there is a network; unique per key, so one run per note at a time. */
+    fun enqueue(key: String)
+    fun cancel(key: String)
+    fun cancelAll()
+
+    /** Tests and previews: nothing runs in the background. */
+    object None : DraftScheduler {
+        override fun enqueue(key: String) = Unit
+        override fun cancel(key: String) = Unit
+        override fun cancelAll() = Unit
+    }
+}
+
+/** Zone-change pages folded together (later pages win). */
+private class MergedChanges {
+    val notes = LinkedHashMap<String, NoteSummary>()
+    val folders = LinkedHashMap<String, FolderSummary>()
+    val removed = LinkedHashSet<String>()
+    var syncToken: String? = null
+
+    fun add(page: ZoneChanges) {
+        for (n in page.notes) {
+            removed -= n.recordName
+            notes[n.recordName] = n
+        }
+        for (f in page.folders) {
+            removed -= f.recordName
+            folders[f.recordName] = f
+        }
+        for (rn in page.removedRecordNames) {
+            notes -= rn
+            folders -= rn
+            removed += rn
+        }
+    }
+}
+
+/** Store a one-way fingerprint of the account id rather than the id itself. */
+private fun accountFingerprint(accountId: String): String =
+    MessageDigest.getInstance("SHA-256").digest(accountId.toByteArray())
+        .joinToString("") { ((it.toInt() and 0xFF) + 0x100).toString(16).substring(1) }
+
+/** Recents-index page size we ask for (CloudKit answers ~13 per page regardless). */
+private const val RECENTS_PAGE_LIMIT = 200
+
+/** Safety cap on one full refetch: ~13 notes/page, so roughly 65,000 notes. */
+private const val MAX_RECENTS_PAGES = 5_000
+private const val ZONE_PAGE_LIMIT = 200
+private const val MAX_ZONE_PAGES = 2_000
+
+/** Even with a working zone token, refetch everything this often, in case changes were missed. */
+private const val FULL_SYNC_INTERVAL_MS = 24L * 60 * 60 * 1000
+private const val MAX_BODY_SEARCH_RESULTS = 500

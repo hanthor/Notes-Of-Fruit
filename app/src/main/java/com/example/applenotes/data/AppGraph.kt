@@ -4,6 +4,9 @@ import android.content.Context
 import com.example.applenotes.AlphaWarning
 import com.example.applenotes.auth.CookieReader
 import com.example.applenotes.auth.DeviceIdentity
+import com.example.applenotes.data.local.NotesDatabase
+import com.example.applenotes.data.local.RoomNotesStore
+import com.example.applenotes.sync.WorkManagerDraftScheduler
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import kotlinx.coroutines.CoroutineScope
@@ -48,6 +51,8 @@ object AppGraph {
             auth = CloudKitAuthGateway(httpClient, CookieReader()),
             replicaUuidLoader = { DeviceIdentity.getOrCreate(app) },
             connectivity = AndroidConnectivityMonitor(app),
+            store = RoomNotesStore(NotesDatabase.open(app)),
+            draftScheduler = WorkManagerDraftScheduler(app),
             // Main.immediate matches where these writes ran before the
             // refactor (the composable's scope): the proto builders are not
             // audited for thread-safety, and Ktor suspends off-thread anyway.

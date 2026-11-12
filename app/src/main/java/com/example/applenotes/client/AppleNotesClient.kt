@@ -76,6 +76,9 @@ class AppleNotesClient(
     private val httpClient: HttpClient,
     private val session: ICloudSession,
 ) {
+    /** The account this session belongs to (see NotesApi.accountId). */
+    val accountId: String get() = session.dsid
+
     suspend fun fetchRecents(limit: Int = 50): List<NoteSummary> {
         // CloudKit's "recents" SearchIndex paginates aggressively (returns ~13
         // records per page even when we ask for more). It hands back a
@@ -150,6 +153,79 @@ class AppleNotesClient(
             }
         }
         return all
+    }
+
+    /**
+     * One page of the "recents" SearchIndex (issue #12): the same query as
+     * [fetchRecents], but a single request, so the caller can store each page
+     * as it arrives and keep paging in the background with no overall cap.
+     */
+    suspend fun fetchRecentsPage(continuationMarker: String?, resultsLimit: Int): RecentsPage {
+        val payload: JsonObject = buildJsonObject {
+            put("zoneID", buildJsonObject { put("zoneName", "Notes") })
+            put("resultsLimit", resultsLimit)
+            if (continuationMarker != null) put("continuationMarker", continuationMarker)
+            put("query", buildJsonObject {
+                put("recordType", "SearchIndexes")
+                putJsonArray("filterBy") {
+                    add(buildJsonObject {
+                        put("comparator", "EQUALS")
+                        put("fieldName", "indexName")
+                        put("fieldValue", buildJsonObject {
+                            put("type", "STRING")
+                            put("value", "recents")
+                        })
+                    })
+                }
+                putJsonArray("sortBy") {
+                    add(buildJsonObject {
+                        put("fieldName", "modTime")
+                        put("ascending", false)
+                    })
+                }
+            })
+            putJsonArray("desiredKeys") { SUMMARY_KEYS.forEach { add(JsonPrimitive(it)) } }
+        }
+        val t0 = System.currentTimeMillis()
+        val (status, raw) = postJson("/records/query", payload)
+        val parsed = parseResponse(raw, "records/query")
+        val notes = (parsed.records ?: emptyList()).mapNotNull { rec ->
+            val rn = rec.recordName ?: return@mapNotNull null
+            noteSummaryOf(rn, rec.fields)
+        }
+        AppLog.i(TAG) {
+            "fetchRecentsPage: HTTP $status, ${notes.size} records in ${System.currentTimeMillis() - t0}ms " +
+                "more=${parsed.continuationMarker != null}"
+        }
+        return RecentsPage(notes, parsed.continuationMarker)
+    }
+
+    /**
+     * What changed in the Notes zone since [syncToken] (everything, when
+     * null): CloudKit Web Services `POST [path]/changes/zone` with `zoneID`,
+     * `syncToken`, `resultsLimit` and `desiredKeys`, answering `records`,
+     * `syncToken` and `moreComing` (issue #12).
+     *
+     * Read-only. NOT yet confirmed against a real account: the caller treats
+     * any failure (typed [NotesError]) as "fall back to a full refetch". See
+     * [ZoneChangesParser] for how records are classified.
+     */
+    suspend fun fetchZoneChanges(syncToken: String?, resultsLimit: Int): ZoneChanges {
+        val payload: JsonObject = buildJsonObject {
+            put("zoneID", buildJsonObject { put("zoneName", "Notes") })
+            if (syncToken != null) put("syncToken", syncToken)
+            put("resultsLimit", resultsLimit)
+            putJsonArray("desiredKeys") { SUMMARY_KEYS.forEach { add(JsonPrimitive(it)) } }
+        }
+        val t0 = System.currentTimeMillis()
+        val (status, raw) = postJson("/changes/zone", payload)
+        val changes = ZoneChangesParser.parse(raw)
+        AppLog.i(TAG) {
+            "fetchZoneChanges(token=${syncToken != null}): HTTP $status in ${System.currentTimeMillis() - t0}ms " +
+                "notes=${changes.notes.size} folders=${changes.folders.size} removed=${changes.removedRecordNames.size} " +
+                "ignored=${changes.ignored} more=${changes.moreComing}"
+        }
+        return changes
     }
 
     /**

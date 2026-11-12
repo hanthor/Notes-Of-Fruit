@@ -35,6 +35,11 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberDrawerState
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.LaunchedEffect
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -77,8 +82,24 @@ internal fun NotesListScreen(
     onMessageDismissed: (UiMessage<ListAction>) -> Unit = {},
     offline: Boolean = false,
     drawerActions: List<DrawerAction> = emptyList(),
+    /** Background sync running ("Updating…"; issue #12). */
+    syncing: Boolean = false,
+    /** Pull-to-refresh in progress. */
+    refreshing: Boolean = false,
+    /** Unsent drafts in the outbox (issue #13); tapping the chip retries them. */
+    unsentCount: Int = 0,
+    onRetryUnsent: () -> Unit = {},
+    /** Notes whose cached body matches a query (search beyond titles and snippets). */
+    searchBodies: suspend (String) -> Set<String> = { emptySet() },
 ) {
     var query by rememberSaveable { mutableStateOf("") }
+    var bodyMatches by remember { mutableStateOf<Set<String>>(emptySet()) }
+    LaunchedEffect(query) {
+        bodyMatches = emptySet()
+        if (query.isBlank()) return@LaunchedEffect
+        delay(250)
+        bodyMatches = searchBodies(query)
+    }
     val snackbarHostState = remember { SnackbarHostState() }
     MessageSnackbarEffect(message, snackbarHostState, onMessageAction, onMessageDismissed)
     // Notes filtered to the currently-selected folder. null = "All notes"
@@ -89,11 +110,14 @@ internal fun NotesListScreen(
             else -> allNotes.filter { it.folderRecordName == selectedFolder }
         }
     }
-    val filtered = remember(notesInFolder, query) {
+    // Searches every cached note (the whole account once synced, not just a
+    // first page), plus the bodies of notes opened before.
+    val filtered = remember(notesInFolder, query, bodyMatches) {
         if (query.isBlank()) notesInFolder
         else notesInFolder.filter {
             (it.title?.contains(query, ignoreCase = true) == true) ||
-                (it.snippet?.contains(query, ignoreCase = true) == true)
+                (it.snippet?.contains(query, ignoreCase = true) == true) ||
+                it.recordName in bodyMatches
         }
     }
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
@@ -179,6 +203,7 @@ internal fun NotesListScreen(
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             if (offline) OfflineBanner()
+            SyncStatusRow(syncing = syncing && !refreshing, unsentCount = unsentCount, onRetryUnsent = onRetryUnsent)
             // Search bar
             OutlinedTextField(
                 value = query,
@@ -202,8 +227,16 @@ internal fun NotesListScreen(
                 ),
                 shape = MaterialTheme.shapes.large,
             )
+            PullToRefreshBox(
+                isRefreshing = refreshing,
+                onRefresh = onRefresh,
+                modifier = Modifier.fillMaxSize(),
+            ) {
             if (filtered.isEmpty()) {
-                EmptyNotesState(query.isNotBlank())
+                // Scrollable so the pull gesture also works on an empty list.
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    EmptyNotesState(query.isNotBlank())
+                }
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
@@ -216,6 +249,7 @@ internal fun NotesListScreen(
                     item { Spacer(Modifier.height(80.dp)) } // FAB clearance
                 }
             }
+            }  // PullToRefreshBox
         }
     }
     }  // ModalNavigationDrawer

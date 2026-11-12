@@ -73,6 +73,8 @@ sealed interface AppScreen {
         val pendingFolderRef: JsonElement? = null,
         /** Initial (unsaved) content for a new draft opened from outside the app. */
         val prefill: DraftPrefill? = null,
+        /** [record] is the copy cached on this device, opened without a network (issue #12). */
+        val offlineCopy: Boolean = false,
     ) : AppScreen
 
     /** The minimal settings screen (automation toggle). */
@@ -84,6 +86,9 @@ sealed interface ListAction {
     data object RetryRefresh : ListAction
     data class RetryOpen(val note: NoteSummary) : ListAction
     data object RetryCreate : ListAction
+
+    /** Retry the background saves of unsent drafts (issue #13). */
+    data object RetryUnsent : ListAction
     data class RetryCreatePrefilled(val prefill: DraftPrefill) : ListAction
 }
 
@@ -96,6 +101,12 @@ data class NotesListUiState(
      * show Recently Deleted explicitly.
      */
     val selectedFolder: String? = DEFAULT_FOLDER_RECORD_NAME,
+    /** A sync with iCloud is running (the subtle "Updating…" indicator; issue #12). */
+    val syncing: Boolean = false,
+    /** A pull-to-refresh is waiting for its first results. */
+    val refreshing: Boolean = false,
+    /** Edits not yet confirmed by iCloud ("N unsent changes"; issue #13). */
+    val unsentCount: Int = 0,
 )
 
 /**
@@ -145,12 +156,33 @@ class AppViewModel(
      */
     val loginStaleToken: StateFlow<String?> = _loginStaleToken.asStateFlow()
 
+    private val _refreshing = MutableStateFlow(false)
+
     val listState: StateFlow<NotesListUiState> =
-        combine(repository.notes, repository.folders, selectedFolder) { notes, folders, folder ->
-            NotesListUiState(notes, folders, folder)
+        combine(
+            combine(repository.notes, repository.folders, selectedFolder) { notes, folders, folder ->
+                NotesListUiState(notes, folders, folder)
+            },
+            repository.syncing,
+            _refreshing,
+            repository.pendingDrafts,
+        ) { base, syncing, refreshing, drafts ->
+            base.copy(syncing = syncing, refreshing = refreshing, unsentCount = drafts.size)
         }.stateIn(viewModelScope, SharingStarted.Eagerly, NotesListUiState())
 
+    /** Last automatic (resume / reconnect) refresh attempt, for throttling. */
+    private var lastAutoRefreshMs: Long? = null
+
     init {
+        // Back online: catch up (throttled), e.g. after a launch from the
+        // cache with no network.
+        viewModelScope.launch {
+            var wasOnline = online.value
+            online.collect { now ->
+                if (now && !wasOnline) onAppResumed()
+                wasOnline = now
+            }
+        }
         // First-launch alpha disclaimer. Block all app behaviour behind this —
         // we don't even start the auth bootstrap until the user has acknowledged.
         viewModelScope.launch {
@@ -189,6 +221,14 @@ class AppViewModel(
     private fun bootstrap(loadingMsg: String, afterSignIn: Boolean = false) {
         _screen.value = AppScreen.Loading(loadingMsg)
         viewModelScope.launch {
+            // Issue #12: with a cached list, show it at once and sign in /
+            // sync in the background. (Not right after a WebView sign-in:
+            // that one should surface its own failure.)
+            if (!afterSignIn && runCatchingCancellable { repository.loadCache() }.getOrDefault(false)) {
+                showSignedInScreen()
+                syncInBackground()
+                return@launch
+            }
             runCatchingCancellable { repository.signIn() }
                 .onSuccess {
                     _loginStaleToken.value = null
@@ -214,6 +254,38 @@ class AppViewModel(
                         signInAgain()
                     } else {
                         _screen.value = AppScreen.Error(userMessage(it), errorDetails(it))
+                    }
+                }
+        }
+    }
+
+    /** After sign-in (or with the cache shown): the note that was open before process death, else the list. */
+    private fun showSignedInScreen() {
+        val openId = savedState.get<String>(KEY_DETAIL_OPEN_ID)
+        if (openId != null) {
+            _screen.value = AppScreen.Detail(openId, record = null)
+        } else {
+            _screen.value = AppScreen.NotesList
+            if (repository.isSignedIn) processPendingIncoming()
+        }
+    }
+
+    /** The cached list is on screen; open the session and sync behind it. */
+    private fun syncInBackground() {
+        lastAutoRefreshMs = System.currentTimeMillis()
+        viewModelScope.launch {
+            runCatchingCancellable { repository.signIn() }
+                .onSuccess {
+                    _loginStaleToken.value = null
+                    if (_screen.value == AppScreen.NotesList) processPendingIncoming()
+                }
+                .onFailure {
+                    AppLog.w(TAG, "background sign-in failed; showing the cached list", it)
+                    when (it) {
+                        is NotesError.AuthExpired -> signInAgain()
+                        // The offline banner already says so; reconnecting retries.
+                        is NotesError.Offline -> Unit
+                        else -> postListMessage("Couldn't update: ${userMessage(it)}", ListAction.RetryRefresh, errorDetails(it))
                     }
                 }
         }
@@ -261,24 +333,52 @@ class AppViewModel(
             postListMessage("You're offline. Check your connection and try again.", ListAction.RetryRefresh)
             return
         }
-        _screen.value = AppScreen.Loading("Refreshing…")
+        // The cached list stays on screen (pull-to-refresh indicator; issue #12).
+        _refreshing.value = true
+        lastAutoRefreshMs = System.currentTimeMillis()
         viewModelScope.launch {
             runCatchingCancellable { repository.refresh() }
                 .onFailure {
                     AppLog.e(TAG, "refresh failed", it)
+                    _refreshing.value = false
                     if (needsSignIn(it)) return@launch signInAgain()
                     postListMessage("Couldn't refresh: ${userMessage(it)}", ListAction.RetryRefresh, errorDetails(it))
                 }
-            // Either way the (possibly stale) cached list is still good.
-            _screen.value = AppScreen.NotesList
+            _refreshing.value = false
         }
     }
+
+    /**
+     * The list came to the foreground (or the network came back): refresh
+     * quietly, at most once a minute, never offline, never before sign-in.
+     */
+    fun onAppResumed() {
+        if (!online.value || _screen.value != AppScreen.NotesList) return
+        if (repository.sessionExpired.value) return
+        val now = System.currentTimeMillis()
+        val last = maxOf(lastAutoRefreshMs ?: 0L, repository.lastSyncAtMs ?: 0L)
+        if (now - last < AUTO_REFRESH_INTERVAL_MS) return
+        lastAutoRefreshMs = now
+        viewModelScope.launch {
+            runCatchingCancellable { repository.refresh() }
+                .onFailure {
+                    AppLog.w(TAG, "automatic refresh failed", it)
+                    if (needsSignIn(it)) signInAgain()
+                }
+        }
+    }
+
+    /** "N unsent changes" tapped: send them again now (issue #13). */
+    fun retryUnsent() = repository.retryPendingDrafts()
+
+    /** recordNames of notes whose cached (previously opened) body contains [query]. */
+    suspend fun searchCachedBodies(query: String): Set<String> = repository.searchCachedBodies(query)
 
     fun openNote(note: NoteSummary) {
         _screen.value = AppScreen.Loading("Loading note…")
         viewModelScope.launch {
-            runCatchingCancellable { repository.lookupNote(note.recordName) }
-                .onSuccess { showDetail(it, pendingFolderRef = null) }
+            runCatchingCancellable { repository.openNote(note.recordName) }
+                .onSuccess { showDetail(it.record, pendingFolderRef = null, offlineCopy = it.fromCache) }
                 .onFailure {
                     AppLog.e(TAG, "lookupNote failed", it)
                     if (needsSignIn(it)) return@onFailure signInAgain()
@@ -336,10 +436,15 @@ class AppViewModel(
         }
     }
 
-    private fun showDetail(record: NoteRecord, pendingFolderRef: JsonElement?, prefill: DraftPrefill? = null) {
+    private fun showDetail(
+        record: NoteRecord,
+        pendingFolderRef: JsonElement?,
+        prefill: DraftPrefill? = null,
+        offlineCopy: Boolean = false,
+    ) {
         val openId = java.util.UUID.randomUUID().toString()
         savedState[KEY_DETAIL_OPEN_ID] = openId
-        _screen.value = AppScreen.Detail(openId, record, pendingFolderRef, prefill)
+        _screen.value = AppScreen.Detail(openId, record, pendingFolderRef, prefill, offlineCopy)
     }
 
     // ----- Requests from outside the app (share, shortcuts, tile, import) -----
@@ -447,6 +552,7 @@ class AppViewModel(
             is ListAction.RetryOpen -> openNote(a.note)
             ListAction.RetryCreate -> createNote()
             is ListAction.RetryCreatePrefilled -> createNote(a.prefill)
+            ListAction.RetryUnsent -> retryUnsent()
             null -> Unit
         }
     }
@@ -460,6 +566,9 @@ class AppViewModel(
         internal const val KEY_DETAIL_OPEN_ID = "detailOpenId"
         internal const val KEY_PENDING_INCOMING = "pendingIncoming"
         private const val MAX_SAVED_INCOMING_CHARS = 100_000
+
+        /** Refresh-on-resume throttle (issue #12). */
+        internal const val AUTO_REFRESH_INTERVAL_MS = 60_000L
 
         /** Saved-state stand-in for the null "All notes" folder. */
         private const val ALL_NOTES = "\u0000all-notes"
