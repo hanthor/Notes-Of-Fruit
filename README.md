@@ -94,7 +94,7 @@ you can't say you weren't warned.
 | Note-taking role (`CREATE_NOTE`, Android 14+) | Declared; opens a new draft after unlock. Never shown over the lock screen |
 | Export (Markdown / HTML) and Print / PDF | One note from the editor menu; a whole folder from the drawer (read-only, progress + cancel) |
 | Import `.txt` / `.md` | Opens a draft; Markdown headings/lists/checkboxes/bold/italic become native formatting |
-| Automation intent API (Tasker etc.) | Create / append / open; off by default, permission-protected — see [docs/automation.md](docs/automation.md) |
+| Automation intent API (Tasker etc.) | Create / append / open; off by default, plus a per-app allow-list (Settings → Allowed apps; apps identified by package and signing certificate). Tasker / MacroDroid work on Android 11+, Automate on every version; see [docs/automation.md](docs/automation.md). Not yet tried on a device |
 | Home-screen widget | "Recent notes" (Jetpack Glance): up to 8 titles from the local cache (never the network) and a New note button; a title opens the note. Shows "Locked" and only the button while the app lock is on, nothing after sign-out. Not yet tried on a device |
 | On-device search (AppSearch) | Skipped on purpose: it would copy titles into a platform-wide index, see [docs/advice.md](docs/advice.md#entry-points-from-outside-the-app) |
 | Files app / document picker | Read-only "Notes of Fruit" location (DocumentsProvider): folders → notes as Markdown (`.md`), generated on demand from the cache or one lookup; no write, delete or rename. Hidden while the app lock is on or signed out. Not yet tried on a device |

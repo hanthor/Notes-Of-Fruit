@@ -5,6 +5,16 @@
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!--
+        Lets `adb shell am start` reach the automation activity in debug
+        builds: adb runs as com.android.shell, which has no launcher entry, so
+        without this the system hides it as the referrer and it can't be
+        approved under Allowed apps (docs/automation.md "From adb").
+    -->
+    <queries>
+        <package android:name="com.android.shell" />
+    </queries>
+
     <application>
         <!--
             ADB-driven DebugReceiver: lets `adb shell am broadcast` run iCloud

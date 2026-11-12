@@ -1,6 +1,12 @@
 package com.example.applenotes.ui.settings
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -39,13 +45,16 @@ import com.example.applenotes.automation.AutomationSettings
 import com.example.applenotes.diagnostics.copyDiagnosticReport
 import com.example.applenotes.update.PrefsUpdateStore
 
-/** Minimal settings: the automation API toggle and the app lock (both off by default). */
+/** Minimal settings: the automation API toggle (+ allowed apps) and the app lock (both off by default). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun SettingsScreen(onBack: () -> Unit) {
+internal fun SettingsScreen(onBack: () -> Unit, onOpenAllowedApps: () -> Unit) {
     val context = LocalContext.current
     val settings = remember { AutomationSettings(context) }
     var automationEnabled by remember { mutableStateOf(settings.isEnabled()) }
+    // Android 13+: needed for the "‹App› wants to add notes" notification.
+    // Declining is fine: requests still show up under Allowed apps.
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val updateStore = remember { PrefsUpdateStore(context) }
     var updateCheckEnabled by remember { mutableStateOf(updateStore.enabled) }
     BackHandler(onBack = onBack)
@@ -75,8 +84,17 @@ internal fun SettingsScreen(onBack: () -> Unit) {
                 onCheckedChange = {
                     settings.setEnabled(it)
                     automationEnabled = it
+                    if (it && Build.VERSION.SDK_INT >= 33 &&
+                        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+                        PackageManager.PERMISSION_GRANTED
+                    ) {
+                        notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                    }
                 },
             )
+            OutlinedButton(onClick = onOpenAllowedApps, modifier = Modifier.padding(top = 8.dp)) {
+                Text(stringResource(R.string.settings_allowed_apps))
+            }
             Spacer(Modifier.padding(top = 16.dp))
             Text(
                 stringResource(R.string.settings_automation_details),

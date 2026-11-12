@@ -32,6 +32,11 @@ internal sealed interface IncomingRequest {
     @SerialName("open_note_by_title")
     data class OpenNoteByTitle(val title: String) : IncomingRequest
 
+    /** Show Settings → Allowed apps (from the "‹App› wants to add notes" notification). */
+    @Serializable
+    @SerialName("review_automation_apps")
+    data object ReviewAutomationApps : IncomingRequest
+
     companion object {
         private val JSON = Json { ignoreUnknownKeys = true }
 

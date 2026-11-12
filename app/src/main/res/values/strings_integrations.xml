@@ -4,6 +4,23 @@
     <string name="share_target_label">New note</string>
     <string name="process_text_label">Add to Notes</string>
     <string name="tile_new_note_label">New note</string>
-    <string name="permission_automate_label">Automate Notes of Fruit</string>
-    <string name="permission_automate_description">create notes, add text to existing notes and open notes in Notes of Fruit, which writes to your iCloud Notes</string>
+    <!-- Automation allow-list (issue #21). %1$s = an app's name. -->
+    <string name="automation_channel_name">Automation requests</string>
+    <string name="automation_channel_description">An app asked to create or add to notes through the automation API</string>
+    <string name="automation_request_title">%1$s wants to add notes</string>
+    <string name="automation_request_text">Nothing was saved. Review it in Settings → Allowed apps.</string>
+    <string name="automation_request_review">Review</string>
+    <string name="settings_allowed_apps">Allowed apps</string>
+    <string name="allowed_apps_title">Allowed apps</string>
+    <string name="allowed_apps_intro">Only apps you allow here can use automation. An app that asks shows up under \"Waiting for approval\"; what it asked for is not kept, so run its task again after allowing it. An app is trusted by its package name and signing certificate: if a different app is installed under the same name later, it has to ask again.</string>
+    <string name="allowed_apps_pending">Waiting for approval</string>
+    <string name="allowed_apps_approved">Allowed</string>
+    <string name="allowed_apps_none">No apps allowed yet.</string>
+    <string name="allowed_apps_asked">Asked %1$s</string>
+    <string name="allowed_apps_certificate">Certificate SHA-256 %1$s…</string>
+    <string name="allowed_apps_allow">Allow</string>
+    <string name="allowed_apps_dismiss">Dismiss</string>
+    <string name="allowed_apps_remove">Remove</string>
+    <string name="allowed_apps_confirm_title">Allow %1$s?</string>
+    <string name="allowed_apps_confirm_text">%1$s (%2$s) will be able to create notes, add text to any note and open notes in your iCloud account without showing you the editor. It can never delete or replace a note. Only allow apps you trust.</string>
 </resources>
