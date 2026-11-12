@@ -231,6 +231,22 @@ records (`REFERENCE_LIST`) hasn't been recorded, so
 accepts both (for references it reads the referenced record's `Asset` /
 `Media` fields). If you capture a real record, write down its shape here.
 
+### Locked (password-protected) notes
+
+**Not observed by this project.** Public reverse-engineering of the Notes
+database (apple_cloud_notes_parser) shows locked notes carrying
+`ZCRYPTOINITIALIZATIONVECTOR`, `ZCRYPTOTAG`, `ZCRYPTOSALT`,
+`ZCRYPTOITERATIONCOUNT`, `ZCRYPTOWRAPPEDKEY` and a password hint, with the
+body encrypted under a key derived from the note's password. The app
+assumes the CloudKit Note record uses the matching names
+(`CryptoInitializationVector`, `CryptoTag`, …, and `PasswordHint` /
+`PasswordHintEncrypted` for the hint) and opens any note with one of them
+read-only, without touching the body (`isLockedNote` in
+[`data/NoteBody.kt`](../app/src/main/java/com/example/applenotes/data/NoteBody.kt)).
+Nothing is ever decrypted. The list fetch requests only a few `desiredKeys`,
+so the list can't mark locked notes yet. If you have a locked note, dump its
+record with `DUMP_RECORD` and write the real field names here.
+
 ## A note on "ENCRYPTED" field names
 
 CloudKit serializes `TitleEncrypted`, `SnippetEncrypted`, and `TextDataEncrypted`
