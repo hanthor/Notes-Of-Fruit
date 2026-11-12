@@ -50,10 +50,10 @@ internal fun FormattedNoteBody(
     fullBody: String,
     titlePrefixLength: Int,
     attrSpans: List<NoteBodyEditor.AttrSpan>,
-    attachmentContent: Map<String, AttachmentContent> = emptyMap(),
     onTap: (() -> Unit)?,
-    onToggleCheckbox: ((paragraphCharStart: Int) -> Unit)? = null,
     modifier: Modifier = Modifier,
+    attachmentContent: Map<String, AttachmentContent> = emptyMap(),
+    onToggleCheckbox: ((paragraphCharStart: Int) -> Unit)? = null,
     emptyPlaceholder: String = "Start typing…",
 ) {
     // Map each char index -> (style, checked). Walk attrSpans in order and

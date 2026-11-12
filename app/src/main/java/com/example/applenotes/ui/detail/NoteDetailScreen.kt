@@ -35,6 +35,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -108,7 +109,7 @@ internal fun NoteDetailScreen(
     }
 
     // "Saved Xs ago" pill — recompute every 10s.
-    var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    var nowMs by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(lastSavedAtMs) {
         while (lastSavedAtMs != null) {
             nowMs = System.currentTimeMillis()
