@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release (e.g. v0.0.1)'
+        description: 'Tag to release (vX.Y.Z, e.g. v0.0.3)'
         required: true
         default: 'v0.0.1'
 
@@ -27,29 +27,126 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Resolve tag
+      # Tag vX.Y.Z -> versionName X.Y.Z, versionCode X*10000 + Y*100 + Z.
+      # Anything else fails the release.
+      - name: Resolve tag and version
         id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "name=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            TAG="$INPUT_TAG"
           else
-            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          if [[ ! "$TAG" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            echo "::error::Tag '$TAG' is not of the form vX.Y.Z"
+            exit 1
+          fi
+          MAJOR=$((10#${BASH_REMATCH[1]}))
+          MINOR=$((10#${BASH_REMATCH[2]}))
+          PATCH=$((10#${BASH_REMATCH[3]}))
+          if [ "$MINOR" -gt 99 ] || [ "$PATCH" -gt 99 ]; then
+            echo "::error::Minor and patch must be 0-99 for the versionCode scheme (got $TAG)"
+            exit 1
+          fi
+          CODE=$((MAJOR * 10000 + MINOR * 100 + PATCH))
+          if [ "$CODE" -lt 1 ]; then
+            echo "::error::versionCode must be positive (got $CODE from $TAG)"
+            exit 1
+          fi
+          {
+            echo "name=$TAG"
+            echo "version_name=$MAJOR.$MINOR.$PATCH"
+            echo "version_code=$CODE"
+          } >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG as versionName=$MAJOR.$MINOR.$PATCH versionCode=$CODE"
+
+      # Same checks as the PR workflow; a release never ships with failing
+      # tests or lint errors.
+      - name: Unit tests and lint
+        run: ./gradlew :core:test :cli:test :app:testDebugUnitTest :app:lintDebug --no-daemon --continue
+
+      - name: Upload test and lint reports
+        if: ${{ !cancelled() && steps.tag.outputs.name != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-reports-${{ steps.tag.outputs.name }}
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+            core/build/reports/tests/
+            core/build/test-results/
+            cli/build/reports/tests/
+            cli/build/test-results/
+            app/build/reports/lint-results-debug.*
+          if-no-files-found: warn
+
+      # Optional: sign with a private key held in Actions secrets. Without the
+      # NOF_KEYSTORE_BASE64 secret the build falls back to the committed
+      # app/keystore/release.keystore. See docs/signing.md.
+      - name: Set up signing key from secrets (if configured)
+        env:
+          KEYSTORE_B64: ${{ secrets.NOF_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "NOF_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+            echo "Signing with the keystore from Actions secrets"
+          else
+            echo "Signing with the committed app/keystore/release.keystore"
           fi
 
       - name: Build release APK
-        run: ./gradlew :app:assembleRelease --no-daemon
+        env:
+          NOF_KEYSTORE_PASSWORD: ${{ secrets.NOF_KEYSTORE_PASSWORD }}
+          NOF_KEY_ALIAS: ${{ secrets.NOF_KEY_ALIAS }}
+          NOF_KEY_PASSWORD: ${{ secrets.NOF_KEY_PASSWORD }}
+        run: >-
+          ./gradlew :app:assembleRelease --no-daemon
+          -PversionName=${{ steps.tag.outputs.version_name }}
+          -PversionCode=${{ steps.tag.outputs.version_code }}
 
-      - name: Rename APK
+      - name: Verify APK version and signature
+        id: verify
+        env:
+          APK: app/build/outputs/apk/release/app-release.apk
+          WANT_NAME: ${{ steps.tag.outputs.version_name }}
+          WANT_CODE: ${{ steps.tag.outputs.version_code }}
+        run: |
+          BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
+          BADGING="$("$BT/aapt2" dump badging "$APK" | head -n 1)"
+          echo "$BADGING"
+          GOT_NAME="$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<< "$BADGING")"
+          GOT_CODE="$(sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" <<< "$BADGING")"
+          if [ "$GOT_NAME" != "$WANT_NAME" ] || [ "$GOT_CODE" != "$WANT_CODE" ]; then
+            echo "::error::APK is $GOT_NAME ($GOT_CODE) but the tag says $WANT_NAME ($WANT_CODE)"
+            exit 1
+          fi
+          CERT="$("$BT/apksigner" verify --print-certs "$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')"
+          if [ -z "$CERT" ]; then
+            echo "::error::APK signature did not verify"
+            exit 1
+          fi
+          echo "cert_sha256=$CERT" >> "$GITHUB_OUTPUT"
+
+      - name: Rename APK and write checksum
+        env:
+          TAG: ${{ steps.tag.outputs.name }}
         run: |
           mkdir -p out
-          cp app/build/outputs/apk/release/app-release.apk \
-             out/notes-of-fruit-${{ steps.tag.outputs.name }}.apk
+          cp app/build/outputs/apk/release/app-release.apk "out/notes-of-fruit-$TAG.apk"
+          cd out
+          sha256sum "notes-of-fruit-$TAG.apk" > "notes-of-fruit-$TAG.apk.sha256"
+          cat "notes-of-fruit-$TAG.apk.sha256"
 
       - name: Upload as workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: notes-of-fruit-${{ steps.tag.outputs.name }}
-          path: out/notes-of-fruit-${{ steps.tag.outputs.name }}.apk
+          path: |
+            out/notes-of-fruit-${{ steps.tag.outputs.name }}.apk
+            out/notes-of-fruit-${{ steps.tag.outputs.name }}.apk.sha256
           if-no-files-found: error
 
       - name: Create / update GitHub release
@@ -59,7 +156,9 @@ jobs:
           name: ${{ steps.tag.outputs.name }}
           generate_release_notes: true
           fail_on_unmatched_files: true
-          files: out/notes-of-fruit-${{ steps.tag.outputs.name }}.apk
+          files: |
+            out/notes-of-fruit-${{ steps.tag.outputs.name }}.apk
+            out/notes-of-fruit-${{ steps.tag.outputs.name }}.apk.sha256
           body: |
             ## ⚠️ Alpha — install at your own risk
 
@@ -72,8 +171,18 @@ jobs:
             **Install:** download `notes-of-fruit-${{ steps.tag.outputs.name }}.apk`
             below, transfer to your Android device, and install (you may need
             to enable "Install unknown apps" for your file manager / browser).
-            Min Android version: 8.0 (API 26).
+            Min Android version: 8.0 (API 26). To check the download, compare
+            `sha256sum notes-of-fruit-${{ steps.tag.outputs.name }}.apk` with
+            the attached `.sha256` file.
 
-            The APK is signed with the project's debug keystore — Play Store
-            distribution will require a real keystore rotation in a future
-            release.
+            **Upgrading from v0.0.2 or earlier:** the application ID changed
+            from `com.example.applenotes` to `io.github.hanthor.notesoffruit`,
+            so this release installs as a *separate* app. Uninstall the old
+            "Notes of Fruit" first, then install this APK and sign in again.
+            Your notes live in iCloud, so nothing is lost.
+
+            The APK is signed with the project's alpha release keystore
+            (`app/keystore/release.keystore`, committed to the repository so
+            anyone can reproduce a signed build) unless a private key has been
+            configured; see [docs/signing.md](https://github.com/${{ github.repository }}/blob/main/docs/signing.md).
+            Signing certificate SHA-256: `${{ steps.verify.outputs.cert_sha256 }}`

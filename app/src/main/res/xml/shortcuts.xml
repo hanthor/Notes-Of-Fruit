@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Static launcher shortcuts. targetPackage must be the installed application
+    ID, which differs per build type, so src/debug/res/xml/shortcuts.xml
+    overrides this file with the ".debug" ID. Keep the two in sync.
+    The intent opens an empty, unsaved draft (IntegrationEntryActivity).
+-->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="new_note"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_new_note"
+        android:shortcutShortLabel="@string/shortcut_new_note_short">
+        <intent
+            android:action="io.github.hanthor.notesoffruit.action.NEW_NOTE"
+            android:targetPackage="io.github.hanthor.notesoffruit"
+            android:targetClass="com.example.applenotes.integrations.IntegrationEntryActivity" />
+    </shortcut>
+</shortcuts>

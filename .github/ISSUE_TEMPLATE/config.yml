@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Read the risk warning and known limitations
+    url: https://github.com/hanthor/Notes-Of-Fruit#%EF%B8%8F-use-at-your-own-risk
+    about: Notes of Fruit is alpha software; some problems are already known.
+  - name: Protocol notes and contributing guide
+    url: https://github.com/hanthor/Notes-Of-Fruit/blob/main/CONTRIBUTING.md
+    about: How to investigate a note-format problem and capture a fixture.

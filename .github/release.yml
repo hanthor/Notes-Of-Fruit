@@ -1,0 +1,19 @@
+# Categories for GitHub's auto-generated release notes
+# (softprops/action-gh-release runs with generate_release_notes: true).
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+  categories:
+    - title: Features
+      labels:
+        - enhancement
+    - title: Fixes
+      labels:
+        - bug
+    - title: Docs
+      labels:
+        - documentation
+    - title: Other changes
+      labels:
+        - "*"

@@ -4,14 +4,51 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!--
+        Automation API permission (docs/automation.md). protectionLevel
+        "dangerous": an automation app must declare
+        <uses-permission android:name="io.github.hanthor.notesoffruit.permission.AUTOMATE"/>
+        and the user must grant it at runtime. It guards AutomationReceiver and
+        AutomationActivity, which can create notes and append text WITHOUT the
+        editor being shown. The name uses ${applicationId} so the debug build
+        (".debug") defines its own permission: two differently-signed packages
+        can't define the same permission name.
+    -->
+    <permission
+        android:name="${applicationId}.permission.AUTOMATE"
+        android:description="@string/permission_automate_description"
+        android:label="@string/permission_automate_label"
+        android:protectionLevel="dangerous" />
+
+    <!--
+        Backup is OFF, on purpose. The app's private data holds:
+          * files/datastore/device_identity.preferences_pb: this install's
+            CRDT replica UUID. Restoring it onto another device would make two
+            installs write as the same replica and corrupt notes.
+          * app_webview/: the WebView cookie jar with the iCloud session.
+        allowBackup="false" covers Auto Backup and adb backup on API 30 and
+        below (fullBackupContent excludes everything as a second guard). On
+        API 31+ allowBackup does NOT stop device-to-device transfer, so
+        dataExtractionRules excludes every domain for both cloud backup and
+        device transfer. A new device signs in again and creates a fresh
+        replica UUID.
+    -->
     <application
-        android:allowBackup="true"
+        android:name=".NotesOfFruitApp"
+        android:allowBackup="false"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:windowSoftInputMode="adjustResize"
-        android:theme="@style/Theme.MyApplication">
+        android:theme="@style/Theme.NotesOfFruit">
+        <!--
+            MainActivity: exported="true" because it is the launcher entry.
+            It reads no extras from its intent; requests from other entry
+            points arrive through the in-process PendingIncoming holder.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -20,27 +57,162 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Static "New note" launcher shortcut (targets IntegrationEntryActivity). -->
+            <meta-data
+                android:name="android.app.shortcuts"
+                android:resource="@xml/shortcuts" />
         </activity>
 
-        <!-- Debug-driven receiver. Lets `adb shell am broadcast` invoke iCloud
-             Notes operations (list / lookup / append) without going through
-             the UI. Enables closed-loop testing alongside the `memo` CLI. -->
-        <receiver
-            android:name=".debug.DebugReceiver"
-            android:exported="true">
+        <!--
+            IntegrationEntryActivity: invisible trampoline for share-in,
+            "Add to Notes" (text selection), launcher shortcuts, the QS tile
+            and the note-taking role.
+
+            exported="true" with no permission, on purpose: the share sheet,
+            the text-selection menu, the launcher and the notes role all start
+            it on behalf of other apps. Its input is untrusted, so it can only:
+              * open a NEW, UNSAVED draft prefilled with the shared text (the
+                user sees the editor; nothing reaches iCloud until they save);
+              * open an existing note, and only with the per-install shortcut
+                token that our own shortcuts carry (ShortcutToken), so other
+                apps can't open notes through it.
+            It never saves and never returns note content (PROCESS_TEXT is
+            read-only: it finishes without a result). It starts MainActivity,
+            which never reads request extras itself.
+
+            Not showWhenLocked: launching it from the lock screen (notes role)
+            asks for an unlock first, so notes are never shown over the
+            keyguard. Text MIME types only: attachments can't be written yet.
+        -->
+        <activity
+            android:name=".integrations.IntegrationEntryActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter android:label="@string/share_target_label">
+                <action android:name="android.intent.action.SEND" />
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter android:label="@string/process_text_label">
+                <action android:name="android.intent.action.PROCESS_TEXT" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <!-- Note-taking role (RoleManager.ROLE_NOTES, API 34+). -->
             <intent-filter>
-                <action android:name="com.example.applenotes.LIST" />
-                <action android:name="com.example.applenotes.LOOKUP" />
-                <action android:name="com.example.applenotes.LOOKUP_BY_TITLE" />
-                <action android:name="com.example.applenotes.APPEND" />
-                <action android:name="com.example.applenotes.APPEND_BY_TITLE" />
-                <action android:name="com.example.applenotes.SET_BODY_BY_TITLE" />
-                <action android:name="com.example.applenotes.DELETE_BY_TITLE" />
-                <action android:name="com.example.applenotes.DUMP_BY_TITLE" />
-                <action android:name="com.example.applenotes.DUMP_RECORD" />
-                <action android:name="com.example.applenotes.CREATE" />
+                <action android:name="android.intent.action.CREATE_NOTE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            Quick Settings "New note" tile. exported="true" is required for
+            System UI to bind it; BIND_QUICK_SETTINGS_TILE is a signature
+            permission only System UI holds. A tap opens an empty draft via
+            IntegrationEntryActivity (after unlocking, if locked).
+        -->
+        <service
+            android:name=".integrations.NewNoteTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_shortcut_new_note"
+            android:label="@string/tile_new_note_label"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.service.quicksettings.ACTIVE_TILE"
+                android:value="false" />
+        </service>
+
+        <!--
+            Automation API, headless writes (CREATE_NOTE, APPEND_TO_NOTE).
+            exported="true" so automation apps can reach it, but only senders
+            holding the dangerous AUTOMATE permission (user-granted) get
+            through, and the receiver also refuses everything while the in-app
+            "Allow automation apps" toggle is off (the default). No delete or
+            overwrite actions exist.
+        -->
+        <receiver
+            android:name=".automation.AutomationReceiver"
+            android:exported="true"
+            android:permission="${applicationId}.permission.AUTOMATE">
+            <intent-filter>
+                <action android:name="io.github.hanthor.notesoffruit.action.CREATE_NOTE" />
+                <action android:name="io.github.hanthor.notesoffruit.action.APPEND_TO_NOTE" />
             </intent-filter>
         </receiver>
+
+        <!--
+            Automation API, OPEN_NOTE (shows the note in the app). An activity
+            because receivers can't start activities from the background. Same
+            protection as AutomationReceiver: AUTOMATE permission + toggle.
+        -->
+        <activity
+            android:name=".automation.AutomationActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:noHistory="true"
+            android:permission="${applicationId}.permission.AUTOMATE"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="io.github.hanthor.notesoffruit.action.OPEN_NOTE" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            "Recent notes" home-screen widget (Glance). exported="true" is
+            required: the system's AppWidgetService delivers APPWIDGET_UPDATE
+            (and the other appwidget broadcasts) to it. Guarded by
+            BIND_APPWIDGET, a signature/privileged permission only the system
+            holds, so other apps can't send it broadcasts. It reads the local
+            cache only, never the network; while the app lock is on it shows
+            no titles, and after sign-out no content. Taps go through
+            IntegrationEntryActivity (new draft, or a note with the
+            per-install shortcut token).
+        -->
+        <receiver
+            android:name=".widget.RecentNotesWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_label"
+            android:permission="android.permission.BIND_APPWIDGET">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/recent_notes_widget_info" />
+        </receiver>
+
+        <!--
+            Read-only documents provider: folders -> notes as Markdown in the
+            system file picker. exported="true" because the documents UI
+            (another app) binds it; MANAGE_DOCUMENTS (signature|privileged,
+            held by the system documents UI only) guards it, as every
+            DocumentsProvider must. Apps reach a document only through the
+            picker's per-URI grant (grantUriPermissions). No write, delete,
+            rename or create. No roots while the app lock is on or nobody is
+            signed in.
+        -->
+        <provider
+            android:name=".documents.NotesDocumentsProvider"
+            android:authorities="${applicationId}.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+
+        <!-- The adb DebugReceiver is declared in src/debug/AndroidManifest.xml
+             so it never ships in release builds. -->
     </application>
 
 </manifest>

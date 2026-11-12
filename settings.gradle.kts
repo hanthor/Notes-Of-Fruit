@@ -19,3 +19,7 @@ plugins {
 
 rootProject.name = "Apple Notes"
 include(":app")
+// Pure-Kotlin protocol code (proto + CloudKit client), no Android dependencies.
+include(":core")
+// nof-cli: offline inspector for captured note protos (docs/cli.md).
+include(":cli")

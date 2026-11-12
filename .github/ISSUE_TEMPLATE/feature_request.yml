@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest something the app should do.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check the roadmap issue (#23) and
+        [docs/design-decisions.md](https://github.com/hanthor/Notes-Of-Fruit/blob/main/docs/design-decisions.md)
+        first; some things were deliberately left out. PRs are very welcome; see
+        [CONTRIBUTING.md](https://github.com/hanthor/Notes-Of-Fruit/blob/main/CONTRIBUTING.md).
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      placeholder: When I …, I can't …
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: apple
+    attributes:
+      label: How do Apple's own apps handle it?
+      description: How it works on Mac / iPhone / iCloud.com, if it's about note content or sync. Matching Apple keeps notes round-tripping cleanly.
+  - type: checkboxes
+    id: contribute
+    attributes:
+      label: Contribution
+      options:
+        - label: I'd like to work on this myself

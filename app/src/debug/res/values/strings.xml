@@ -1,0 +1,5 @@
+<resources>
+    <!-- Debug builds install next to a release build (applicationIdSuffix
+         ".debug"); a distinct launcher label tells them apart. -->
+    <string name="app_name">Notes of Fruit (debug)</string>
+</resources>
