@@ -160,10 +160,12 @@ app/src/main/java/com/example/applenotes/           (:app)
 │   ├── AttachmentAssets.kt   CKAsset / PreviewImages JSON → download URL + cache key
 │   └── NoteBody.kt           decodeNoteBody(): Editable vs ReadOnly(reason)
 ├── export/                   Attribute runs → HTML / Markdown, Markdown → spans (import), SAF export, print
-├── integrations/             Share-in / PROCESS_TEXT / shortcuts / QS tile / notes-role entry (IntegrationEntryActivity)
+├── integrations/             Share-in / PROCESS_TEXT / shortcuts / QS tile / notes-role entry (IntegrationEntryActivity);
+│                             LocalSurfaces: refreshes the widget when the cache / sign-in / app lock change
 ├── log/AppLog.kt              The only logcat access; release builds log no note content (CoreLogBridge feeds :core into it)
 ├── security/                 Optional app lock: policy (timeout), DataStore toggle, BiometricPrompt, lock screen
 ├── sync/                     DraftSyncer (+ WorkManager DraftSyncWorker): background saves of unsent drafts
+├── widget/                   "Recent notes" home-screen widget (Glance); WidgetContent decides what it may show
 └── ui/
     ├── AppleNotesApp.kt      Screen switch
     ├── AppViewModel.kt       Navigation, sign-in, list, folder selection
@@ -204,6 +206,22 @@ Because `createNote` writes plain text only, a draft that carries formatting
 (toolbar before the first save, or an imported Markdown file) gets one
 follow-up modify after the create to apply its attribute runs
 (`NoteDetailViewModel.save`, `formattingPending`).
+
+The home-screen widget (`widget/RecentNotesWidget`, Jetpack Glance) uses the
+same entry activity: "New note" sends `NEW_NOTE`, a title sends the token-
+checked "open note" request the shortcuts use. What it shows is decided by
+`WidgetContent.of` (unit-tested): nothing but "Locked" while the app lock is
+on, nothing after sign-out, otherwise up to 8 titles from the local cache;
+it never touches the network. `integrations/LocalSurfaces` refreshes it when
+`NotesRepository.notes` (every sync, save, delete and sign-out) or the app
+lock setting changes; that observer is the only hook.
+
+**On-device search (AppSearch) is skipped on purpose.** Putting note titles
+into AppSearch's platform storage would make them visible to system search
+surfaces outside the app, which conflicts with the app lock (titles would
+have to be removed from the index whenever the lock is turned on, and the
+index can't tell whether the app is unlocked) and with keeping note text
+inside the app. Search inside the app covers the cache already.
 
 ## Reaching Reminders (not implemented)
 

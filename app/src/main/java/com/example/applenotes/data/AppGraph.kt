@@ -5,6 +5,7 @@ import com.example.applenotes.AlphaWarning
 import com.example.applenotes.auth.CookieReader
 import com.example.applenotes.auth.DeviceIdentity
 import com.example.applenotes.data.local.NotesDatabase
+import com.example.applenotes.integrations.LocalSurfaces
 import com.example.applenotes.data.local.RoomNotesStore
 import com.example.applenotes.sync.WorkManagerDraftScheduler
 import io.ktor.client.HttpClient
@@ -34,7 +35,11 @@ object AppGraph {
 
     fun notesRepository(context: Context): NotesRepository =
         repository ?: synchronized(this) {
-            repository ?: createRepository(context.applicationContext).also { repository = it }
+            repository ?: createRepository(context.applicationContext).also {
+                repository = it
+                // Surfaces outside the app (home-screen widget, …) follow the cache.
+                LocalSurfaces.attach(context.applicationContext, it)
+            }
         }
 
     fun alphaGate(context: Context): AlphaGate {

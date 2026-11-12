@@ -166,6 +166,30 @@
             </intent-filter>
         </activity>
 
+        <!--
+            "Recent notes" home-screen widget (Glance). exported="true" is
+            required: the system's AppWidgetService delivers APPWIDGET_UPDATE
+            (and the other appwidget broadcasts) to it. Guarded by
+            BIND_APPWIDGET, a signature/privileged permission only the system
+            holds, so other apps can't send it broadcasts. It reads the local
+            cache only, never the network; while the app lock is on it shows
+            no titles, and after sign-out no content. Taps go through
+            IntegrationEntryActivity (new draft, or a note with the
+            per-install shortcut token).
+        -->
+        <receiver
+            android:name=".widget.RecentNotesWidgetReceiver"
+            android:exported="true"
+            android:label="@string/widget_label"
+            android:permission="android.permission.BIND_APPWIDGET">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/recent_notes_widget_info" />
+        </receiver>
+
         <!-- The adb DebugReceiver is declared in src/debug/AndroidManifest.xml
              so it never ships in release builds. -->
     </application>

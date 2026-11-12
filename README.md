@@ -91,7 +91,9 @@ you can't say you weren't warned.
 | Export (Markdown / HTML) and Print / PDF | One note from the editor menu; a whole folder from the drawer (read-only, progress + cancel) |
 | Import `.txt` / `.md` | Opens a draft; Markdown headings/lists/checkboxes/bold/italic become native formatting |
 | Automation intent API (Tasker etc.) | Create / append / open; off by default, permission-protected — see [docs/automation.md](docs/automation.md) |
-| `icloud.com/notes` links, widget, on-device search, DocumentsProvider | Not yet |
+| Home-screen widget | "Recent notes" (Jetpack Glance): up to 8 titles from the local cache (never the network) and a New note button; a title opens the note. Shows "Locked" and only the button while the app lock is on, nothing after sign-out. Not yet tried on a device |
+| On-device search (AppSearch) | Skipped on purpose: it would copy titles into a platform-wide index, see [docs/advice.md](docs/advice.md#entry-points-from-outside-the-app) |
+| `icloud.com/notes` links, DocumentsProvider | Not yet |
 | App lock | Optional (Settings, off by default): fingerprint / face / screen lock on cold start and after more than a minute in the background; while on, notes are hidden from Recents and screenshots (`FLAG_SECURE`) |
 | Tablet / landscape list-detail layout | Not yet |
 | Move notes between folders, folder create/rename/delete, restore from Recently Deleted, pinning | Not yet — needs writes to Apple's schema that haven't been observed |

@@ -1,3 +1,16 @@
 <resources>
     <string name="app_name">Notes of Fruit</string>
+
+    <!--
+        Home-screen widget (issue #20). Kept in their own block to ease
+        merging.
+    -->
+    <string name="widget_label">Recent notes</string>
+    <string name="widget_description">Your most recent notes and a New note button</string>
+    <string name="widget_title">Notes</string>
+    <string name="widget_new_note">New note</string>
+    <string name="widget_locked">Locked</string>
+    <string name="widget_signed_out">Sign in to Notes of Fruit to see your notes here</string>
+    <string name="widget_empty">No notes yet</string>
+    <string name="widget_untitled_note">Untitled note</string>
 </resources>
