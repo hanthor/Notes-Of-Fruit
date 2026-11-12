@@ -369,4 +369,36 @@ class AttributeRunFidelityTest {
         assertArrayEquals(origInfo, attachmentRuns(bolded).single().fields.single { it.fieldNumber == 12 }.payload)
         assertNotNull(Fx.spans(bolded).single { it.isAttachment }.attachmentRecordName)
     }
+
+    /**
+     * Spans that wrongly mark typed chars as the attachment (the editor's
+     * span sync used to copy the U+FFFC's span onto them) must not become
+     * extra attachment runs pointing at the same record.
+     */
+    @Test
+    fun attachmentSpansOnOrdinaryCharsAreNeverEncodedAsAttachments() {
+        val n = attachmentNote()
+        val att = Fx.spans(n).single { it.isAttachment }.copy(length = 1)
+        val body = NoteBodyEditor.AttrSpan(1, NoteBodyEditor.ParagraphStyle.BODY)
+        // Typed right after the attachment, and (on a note that is only the
+        // attachment) typed before it at position 0.
+        val cases = listOf(
+            n to "Table:\n￼XY\nafter",
+            splice(n, b, "￼") to "XY￼",
+        )
+        for ((base, text) in cases) {
+            val spans = text.map { c -> if (c == '￼' || c == 'X' || c == 'Y') att else body }
+            val out = splice(base, b, text, spans)
+            assertEquals(text, NoteBodyEditor.readVisibleText(out))
+            assertAttachmentIntact(out)
+        }
+    }
+
+    /** A span list that forgets the attachment must not strip f12 from the U+FFFC. */
+    @Test
+    fun aU_FFFCKeepsItsAttachmentEvenIfTheSpansForgetIt() {
+        val text = "Table:\n￼\nafter!"
+        val plain = listOf(NoteBodyEditor.AttrSpan(text.length, NoteBodyEditor.ParagraphStyle.BODY))
+        assertAttachmentIntact(splice(attachmentNote(), b, text, plain))
+    }
 }

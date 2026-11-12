@@ -418,6 +418,17 @@ class AppleNotesClient(
      * one from any existing note. The TextDataEncrypted body is a bare
      * topotext.String registering us as the sole replica with one substring
      * covering the entire content.
+     *
+     * [title] and [body] fill the TitleEncrypted / SnippetEncrypted fields
+     * (what the list shows). The proto holds [noteText], which defaults to
+     * the two joined by '\n'; pass it to create exactly what the user typed
+     * (an empty first line, a trailing newline), which the title/body pair
+     * can't express.
+     *
+     * [recordName] is the new record's name. A caller that may retry (the
+     * response can be lost after the server committed) chooses it once and
+     * sends the same name again: the retry then fails with
+     * [NotesError.AlreadyExists] instead of creating a duplicate note.
      */
     @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
     suspend fun createNote(
@@ -425,12 +436,9 @@ class AppleNotesClient(
         body: String,
         folderRef: JsonElement,
         ourReplicaUuid: ByteArray,
+        noteText: String = joinTitleAndBody(title, body),
+        recordName: String = newNoteRecordName(),
     ): NoteRecord {
-        val recordName = java.util.UUID.randomUUID().toString().uppercase()
-        // Combine title and body into a single note_text where line 1 = title.
-        val noteText = if (title.isNotEmpty() && body.isNotEmpty()) "$title\n$body"
-            else if (title.isNotEmpty()) title
-            else body
         val textDataB64 = com.example.applenotes.proto.NoteCreator.buildEmptyNoteB64(
             ourReplicaUuid, noteText,
         )
@@ -486,10 +494,15 @@ class AppleNotesClient(
             }
         }
         CoreLog.v(TAG) { "createNote: $recordName title='${title.take(40)}' body.len=${body.length}" }
-        val (status, raw) = postJson("/records/modify", payload)
-        CoreLog.v(TAG) { "createNote response: HTTP $status, ${raw.length}B body[0..400]=${raw.take(400)}" }
-        val rec = firstRecord(parseResponse(raw, "createNote"), "createNote")
-        throwIfRecordError("createNote", rec)
+        val rec = try {
+            val (status, raw) = postJson("/records/modify", payload)
+            CoreLog.v(TAG) { "createNote response: HTTP $status, ${raw.length}B body[0..400]=${raw.take(400)}" }
+            firstRecord(parseResponse(raw, "createNote"), "createNote").also { throwIfRecordError("createNote", it) }
+        } catch (e: NotesError.Conflict) {
+            // A create carries no change tag, so an oplock CONFLICT can only
+            // mean the recordName is taken: by an earlier attempt of ours.
+            throw NotesError.AlreadyExists(e.details)
+        }
         val record = NoteRecord(
             recordName = rec.recordName ?: recordName,
             recordType = rec.recordType,
@@ -731,6 +744,19 @@ class AppleNotesClient(
         CoreLog.e(TAG, "$label per-record error: $code -> ${err.javaClass.simpleName}")
         throw err
     }
+}
+
+/**
+ * A fresh recordName for a new note: an uppercase v4 UUID, the shape
+ * iCloud.com uses for the notes it creates.
+ */
+fun newNoteRecordName(): String = java.util.UUID.randomUUID().toString().uppercase()
+
+/** Title line + body as one note text (line 1 = title); either is omitted when empty. */
+fun joinTitleAndBody(title: String, body: String): String = when {
+    title.isNotEmpty() && body.isNotEmpty() -> "$title\n$body"
+    title.isNotEmpty() -> title
+    else -> body
 }
 
 /**

@@ -29,8 +29,10 @@ internal fun syncSpansToText(
     val deletedRange = lcp until (oldText.length - lcs)
     val insertedLen = newText.length - lcp - lcs
 
+    // Typed chars are never attachments: inheriting a U+FFFC's span would
+    // copy its record name onto them (several "attachments" for one record).
     val template = (perChar.getOrNull(lcp - 1) ?: perChar.firstOrNull())
-        ?.copy(length = 1)
+        ?.copy(length = 1, isAttachment = false, attachmentRecordName = null, attachmentType = null)
         ?: NoteBodyEditor.AttrSpan(length = 1, style = NoteBodyEditor.ParagraphStyle.BODY)
 
     val newPerChar = ArrayList<NoteBodyEditor.AttrSpan>(newText.length)

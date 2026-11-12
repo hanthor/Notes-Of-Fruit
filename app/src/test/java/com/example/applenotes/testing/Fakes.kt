@@ -93,7 +93,14 @@ class FakeNotesApi : NotesApi {
         val replicaVersion: String?,
     )
 
-    data class Create(val title: String, val body: String, val folderRef: JsonElement, val uuid: ByteArray)
+    data class Create(
+        val title: String,
+        val body: String,
+        val folderRef: JsonElement,
+        val uuid: ByteArray,
+        val noteText: String,
+        val recordName: String,
+    )
 
     val modifies = mutableListOf<Modify>()
 
@@ -205,7 +212,9 @@ class FakeNotesApi : NotesApi {
 
     override suspend fun lookupNote(recordName: String): NoteRecord {
         enter("lookupNote")
-        return records[recordName] ?: error("no such record $recordName")
+        // Like CloudKit's per-record NOT_FOUND.
+        return records[recordName]
+            ?: throw com.example.applenotes.client.NotesError.Server(200, "NOT_FOUND", "no such record $recordName")
     }
 
     override suspend fun fetchAssetBytes(downloadUrl: String): ByteArray? {
@@ -225,12 +234,18 @@ class FakeNotesApi : NotesApi {
         body: String,
         folderRef: JsonElement,
         ourReplicaUuid: ByteArray,
+        noteText: String,
+        recordName: String,
     ): NoteRecord {
         enter("createNote")
-        creates += Create(title, body, folderRef, ourReplicaUuid)
-        val text = if (title.isNotEmpty() && body.isNotEmpty()) "$title\n$body" else title.ifEmpty { body }
+        creates += Create(title, body, folderRef, ourReplicaUuid, noteText, recordName)
+        if (recordName in records) {
+            throw com.example.applenotes.client.NotesError.AlreadyExists("serverErrorCode=EXISTS")
+        }
+        ++createCounter
+        val text = noteText
         val rec = NoteRecord(
-            recordName = "CREATED-${++createCounter}",
+            recordName = recordName,
             recordType = "Note",
             recordChangeTag = "tag-${++tagCounter}",
             rawFields = mapOf(
@@ -239,8 +254,16 @@ class FakeNotesApi : NotesApi {
             ),
         )
         put(rec)
+        // The server committed, but the answer never arrives (timeout).
+        loseResponse.remove("createNote")?.let { throw it }
         return rec
     }
+
+    /** Operation name → error thrown AFTER the call took effect on the "server". */
+    val loseResponse = mutableMapOf<String, Throwable>()
+
+    /** recordName of the n-th successful create (0-based). */
+    fun created(n: Int = 0): String = creates.map { it.recordName }.distinct()[n]
 
     override suspend fun modifyNoteBody(
         recordName: String,

@@ -6,30 +6,65 @@ import android.os.Bundle
 import com.example.applenotes.MainActivity
 import com.example.applenotes.integrations.IncomingRequest
 import com.example.applenotes.integrations.PendingIncoming
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 
 /**
- * Automation OPEN_NOTE: shows a note in the app (an Activity, because a
- * broadcast receiver may not start activities from the background).
- * Same protection as [AutomationReceiver]: the AUTOMATE permission in the
- * manifest plus the in-app toggle. Opening is user-visible and read-only;
- * nothing about the note is returned to the caller beyond success/failure.
+ * Automation entry point for apps that start activities: OPEN_NOTE, and
+ * CREATE_NOTE / APPEND_TO_NOTE for apps that can't attach a PendingIntent to
+ * a broadcast (Tasker, MacroDroid, Automate). Invisible (Theme.NoDisplay):
+ * it decides, hands the work off and finishes in onCreate.
+ *
+ * Exported without a permission; protected by the in-app toggle and the
+ * per-app allow-list. The caller is identified by what the system tells an
+ * activity about who launched it (see [CallerResolver] and
+ * docs/automation.md); an unidentified caller is refused.
+ *
+ * Results: `result_pending_intent` when present (also with the outcome of a
+ * write), and the activity result for startActivityForResult callers. For a
+ * write, the activity result only says the request was accepted
+ * ([AutomationApi.RESULT_ACCEPTED]): the save outlives the activity.
  */
 class AutomationActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val replyTo = resultPendingIntent(intent)
-        val result = open()
-        deliver(this, replyTo, result)
+        // Read before finish(): the launch identity belongs to this activity instance.
+        val caller = CallerResolver.resolve(activityCallerSignals(this, replyTo))
+        val processor = automationProcessor(this)
+        // Local reads only (toggle, allow-list); a NoDisplay activity must
+        // finish before onResume, and OPEN_NOTE must start the app while
+        // this activity is still in front.
+        val authorization = runBlocking { processor.authorize(intent.action, automationExtras(intent), caller) }
+        when (authorization) {
+            is AutomationProcessor.Authorization.Refused -> reply(replyTo, authorization.result)
+            is AutomationProcessor.Authorization.Ok -> when (val request = authorization.request) {
+                is AutomationRequest.Open -> reply(replyTo, open(request))
+                is AutomationRequest.Create, is AutomationRequest.Append -> {
+                    setResult(RESULT_OK, Intent().putExtra(AutomationApi.RESULT_ACCEPTED, true))
+                    val app = applicationContext
+                    AUTOMATION_SCOPE.launch {
+                        val result = try {
+                            withTimeout(AUTOMATION_TIMEOUT_MS) { processor.run(request) }
+                        } catch (e: TimeoutCancellationException) {
+                            AutomationResult.fail(TIMED_OUT)
+                        }
+                        deliver(app, replyTo, result)
+                    }
+                }
+            }
+        }
         finish()
     }
 
-    private fun open(): AutomationResult {
-        if (!AutomationSettings(this).isEnabled()) return AutomationResult.fail(AutomationProcessor.DISABLED)
-        if (intent.action != AutomationApi.ACTION_OPEN_NOTE) return AutomationResult.fail("unknown action")
-        val request = when (val p = parseAutomationRequest(intent.action, automationExtras(intent))) {
-            is Parsed.Invalid -> return AutomationResult.fail(p.error)
-            is Parsed.Ok -> p.request as? AutomationRequest.Open ?: return AutomationResult.fail("unknown action")
-        }
+    private fun reply(replyTo: android.app.PendingIntent?, result: AutomationResult) {
+        setResult(if (result.success) RESULT_OK else RESULT_CANCELED, resultFillIn(result))
+        deliver(this, replyTo, result)
+    }
+
+    private fun open(request: AutomationRequest.Open): AutomationResult {
         PendingIncoming.post(
             request.recordName?.let { IncomingRequest.OpenNote(it) }
                 ?: IncomingRequest.OpenNoteByTitle(request.title!!),

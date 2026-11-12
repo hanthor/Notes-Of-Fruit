@@ -31,30 +31,59 @@ internal data class AutomationResult(val success: Boolean, val recordName: Strin
 internal class AutomationProcessor(
     private val gate: AutomationGate,
     private val repository: NotesRepository,
+    /** The per-app allow-list check (issue #21). */
+    private val access: AutomationAccess,
     /**
      * Turns a [userMessage] into the result's error text. The receiver
      * resolves string resources; tests see only [UiText.Plain] text.
      */
     private val describe: (UiText) -> String = { (it as? UiText.Plain)?.value ?: it.toString() },
 ) {
-    /** Gate, validate and run one request. Never throws (except cancellation). */
-    suspend fun handle(action: String?, extras: AutomationExtras): AutomationResult {
-        if (!gate.isEnabled()) return AutomationResult.fail(DISABLED)
-        val request = when (val p = parseAutomationRequest(action, extras)) {
-            is Parsed.Invalid -> return AutomationResult.fail(p.error)
-            is Parsed.Ok -> p.request
+    internal sealed interface Authorization {
+        data class Ok(val request: AutomationRequest, val caller: VerifiedCaller) : Authorization
+        data class Refused(val result: AutomationResult) : Authorization
+    }
+
+    /**
+     * The toggle, then the caller (approved apps only; an unknown one is
+     * recorded as pending and refused), then validation. Touches neither
+     * iCloud nor the notes cache.
+     */
+    suspend fun authorize(action: String?, extras: AutomationExtras, caller: CallerResolution): Authorization {
+        if (!gate.isEnabled()) return Authorization.Refused(AutomationResult.fail(DISABLED))
+        if (action !in AutomationApi.ACTIONS) return Authorization.Refused(AutomationResult.fail("unknown action"))
+        val allowed = when (val outcome = access.check(caller)) {
+            is AccessOutcome.Refused -> return Authorization.Refused(AutomationResult.fail(outcome.error))
+            is AccessOutcome.Allowed -> outcome.caller
         }
-        return runCatchingCancellable { execute(request) }
+        return when (val p = parseAutomationRequest(action, extras)) {
+            is Parsed.Invalid -> Authorization.Refused(AutomationResult.fail(p.error))
+            is Parsed.Ok -> Authorization.Ok(p.request, allowed)
+        }
+    }
+
+    /** Authorize and run one request. Never throws (except cancellation). */
+    suspend fun handle(action: String?, extras: AutomationExtras, caller: CallerResolution): AutomationResult =
+        when (val a = authorize(action, extras, caller)) {
+            is Authorization.Refused -> a.result
+            is Authorization.Ok -> run(a.request)
+        }
+
+    /** Run an authorized request. Never throws (except cancellation). */
+    suspend fun run(request: AutomationRequest): AutomationResult =
+        runCatchingCancellable { execute(request) }
             // Typed iCloud errors get the same friendly text as the UI (raw
             // server bodies never go back to the calling app).
             .getOrElse { AutomationResult.fail(describe(userMessage(it))) }
-    }
 
     private suspend fun execute(request: AutomationRequest): AutomationResult {
         ensureSignedIn()
+        // Every write below is for the account signed in now; if another
+        // Apple ID signs in meanwhile, the save is refused, not redirected.
+        val account = repository.account.value
         return when (request) {
-            is AutomationRequest.Create -> create(request)
-            is AutomationRequest.Append -> append(request)
+            is AutomationRequest.Create -> create(request, account)
+            is AutomationRequest.Append -> append(request, account)
             is AutomationRequest.Open -> AutomationResult.ok(resolve(request.recordName, request.title))
         }
     }
@@ -65,7 +94,7 @@ internal class AutomationProcessor(
         repository.signIn()
     }
 
-    private suspend fun create(r: AutomationRequest.Create): AutomationResult {
+    private suspend fun create(r: AutomationRequest.Create, account: String?): AutomationResult {
         val folderRecordName = r.folderName?.let { findFolder(it) }
         val folderRef = repository.folderRefForNewNote(folderRecordName ?: DEFAULT_FOLDER_RECORD_NAME)
         if (folderRecordName != null && extractReferenceRecordName(folderRef) != folderRecordName) {
@@ -85,11 +114,13 @@ internal class AutomationProcessor(
             newBody = assembleFullBody(r.title, r.text),
             isPureAppend = false,
             newSpans = null,
+            draftLineage = false,
+            expectedAccount = account,
         )
         return AutomationResult.ok(saved.recordName)
     }
 
-    private suspend fun append(r: AutomationRequest.Append): AutomationResult {
+    private suspend fun append(r: AutomationRequest.Append, account: String?): AutomationResult {
         val recordName = resolve(r.recordName, r.title)
         val record = repository.lookupNote(recordName)
         if (record.rawFields["Folder"]?.let { extractReferenceRecordName(it) } == TRASH_RECORD_NAME) {
@@ -104,6 +135,9 @@ internal class AutomationProcessor(
             newBody = newBody,
             isPureAppend = true,
             newSpans = newSpans,
+            // Not part of any editing session: never a merge base for one.
+            draftLineage = false,
+            expectedAccount = account,
         )
         return AutomationResult.ok(saved.recordName)
     }

@@ -171,6 +171,66 @@ class TextMergeTest {
         assertEquals("same", clean("", "same", "same").text)
     }
 
+    /** A side that drops the base's final '\n' must not glue the other side's appended line onto it. */
+    @Test
+    fun droppingTheFinalNewlineNeverJoinsTwoLines() {
+        // Remote edits the last line and drops its '\n'; local appends a line.
+        conflict("a\nb\n", "a\nb\nc", "a\nB")
+        // Mirror image: local drops it, remote appends.
+        conflict("a\nb\n", "a\nB", "a\nb\nc")
+        // Only the '\n' removed (no other change) still collides with an append.
+        conflict("a\nb\n", "a\nb\nc", "a\nb")
+        conflict("a\nb\n", "a\nb", "a\nb\nc")
+    }
+
+    @Test
+    fun trailingNewlineEdgeCasesThatStillMerge() {
+        // Appending after a terminated last line while the other side edits an earlier line.
+        assertEquals("A\nb\nc", clean("a\nb\n", "a\nb\nc", "A\nb\n").text)
+        // Remote drops the final '\n', local edits the first line: no line follows the unterminated one.
+        assertEquals("A\nb", clean("a\nb\n", "A\nb\n", "a\nb").text)
+        // Both add the same trailing newline.
+        assertEquals("a\nb\n", clean("a\nb", "a\nb\n", "a\nb\n").text)
+        // Local adds a trailing newline, remote edits the first line.
+        assertEquals("A\nb\n", clean("a\nb", "a\nb\n", "A\nb").text)
+    }
+
+    /** Property test with and without trailing newlines: a clean merge never creates a line neither side has. */
+    @Test
+    fun randomEditsNeverJoinLines() {
+        val rnd = Random(11)
+        repeat(2000) { iter ->
+            val baseLines = List(rnd.nextInt(0, 5)) { "b$it" }
+            fun mutate(lines: List<String>, tag: String): List<String> {
+                val out = lines.toMutableList()
+                repeat(rnd.nextInt(0, 3)) {
+                    when (rnd.nextInt(3)) {
+                        0 -> out.add(rnd.nextInt(0, out.size + 1), "$tag${rnd.nextInt(1000)}")
+                        1 -> if (out.isNotEmpty()) out.removeAt(rnd.nextInt(out.size))
+                        else -> if (out.isNotEmpty()) {
+                            val i = rnd.nextInt(out.size)
+                            out[i] = out[i] + tag
+                        }
+                    }
+                }
+                return out
+            }
+            fun join(lines: List<String>, trailing: Boolean) =
+                lines.joinToString("\n") + if (trailing && lines.isNotEmpty()) "\n" else ""
+            val b = join(baseLines, rnd.nextBoolean())
+            val l = join(mutate(baseLines, "L"), rnd.nextBoolean())
+            val r = join(mutate(baseLines, "R"), rnd.nextBoolean())
+            val res = TextMerge.merge(b, l, r)
+            if (res is TextMerge.Clean) {
+                checkOrigins(res, b, l, r)
+                val known = (b.split("\n") + l.split("\n") + r.split("\n")).toSet()
+                for (line in res.text.split("\n")) {
+                    assertTrue("iter $iter made up '$line': b=$b l=$l r=$r m=${res.text}", line in known)
+                }
+            }
+        }
+    }
+
     @Test
     fun tokenizeKeepsNewlines() {
         assertEquals(listOf("a\n", "b"), TextMerge.tokenize("a\nb"))

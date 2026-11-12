@@ -44,7 +44,19 @@ class AutomationTest {
         repo = NotesRepository(auth, { REPLICA_UUID }, CoroutineScope(SupervisorJob() + main.dispatcher))
     }
 
-    private fun processor() = AutomationProcessor(gate, repo)
+    private val caller = CallerResolution.Identified(TASKER, CallerSource.REFERRER)
+    private val allowList = InMemoryAllowListStore(
+        AllowListState(approved = listOf(AllowedApp(TASKER, listOf(TASKER_CERT), "Tasker", 1L))),
+    )
+
+    private fun processor() = AutomationProcessor(
+        gate,
+        repo,
+        AutomationAccess(allowList, FakePackages(VerifiedCaller(TASKER, listOf(TASKER_CERT), "Tasker")), { }),
+    )
+
+    private suspend fun AutomationProcessor.handle(action: String?, extras: AutomationExtras) =
+        handle(action, extras, caller)
 
     // ----- Parsing / validation -----
 
@@ -63,6 +75,21 @@ class AutomationTest {
             Parsed.Ok(AutomationRequest.Create("", "only text", null)),
             parse(AutomationApi.ACTION_CREATE_NOTE, AutomationExtras(text = "only text", folder = "")),
         )
+    }
+
+    /** A stray U+FFFC from the calling app would pose as an attachment. */
+    @Test
+    fun objectReplacementCharsAreStripped() {
+        assertEquals(
+            Parsed.Ok(AutomationRequest.Create("T", "ab", null)),
+            parse(AutomationApi.ACTION_CREATE_NOTE, AutomationExtras(title = "T\uFFFC", text = "a\uFFFCb")),
+        )
+        assertTrue(parse(AutomationApi.ACTION_CREATE_NOTE, AutomationExtras(title = "\uFFFC", text = "\uFFFC")) is Parsed.Invalid)
+        assertEquals(
+            Parsed.Ok(AutomationRequest.Append(null, "Shopping", "eggs")),
+            parse(AutomationApi.ACTION_APPEND_TO_NOTE, AutomationExtras(title = "Shopping", text = "eg\uFFFCgs")),
+        )
+        assertTrue(parse(AutomationApi.ACTION_APPEND_TO_NOTE, AutomationExtras(title = "Shopping", text = "\uFFFC")) is Parsed.Invalid)
     }
 
     @Test

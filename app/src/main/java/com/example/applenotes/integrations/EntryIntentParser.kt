@@ -1,6 +1,7 @@
 package com.example.applenotes.integrations
 
 import android.content.Intent
+import com.example.applenotes.export.stripAttachmentChars
 import com.example.applenotes.ui.detail.DraftPrefill
 
 /** Intent actions handled by [IntegrationEntryActivity] that aren't platform constants. */
@@ -63,20 +64,21 @@ internal fun parseEntryIntent(e: EntryIntent, expectedToken: String): IncomingRe
     return when (e.action) {
         Intent.ACTION_SEND -> {
             if (e.type?.startsWith("text/") != true) return null
-            val text = e.text?.toString().orEmpty()
-            val subject = e.subject?.toString()
+            // No U+FFFC from outside: it would pose as an attachment.
+            val text = stripAttachmentChars(e.text?.toString().orEmpty())
+            val subject = e.subject?.toString()?.let(::stripAttachmentChars)
             if (text.isBlank() && subject.isNullOrBlank()) return null
             IncomingRequest.NewDraft(DraftPrefill.ofText(text, subject))
         }
         Intent.ACTION_SEND_MULTIPLE -> {
             if (e.type?.startsWith("text/") != true) return null
-            val parts = e.textList.orEmpty().map { it.toString() }.filter { it.isNotBlank() }
-            val subject = e.subject?.toString()
+            val parts = e.textList.orEmpty().map { stripAttachmentChars(it.toString()) }.filter { it.isNotBlank() }
+            val subject = e.subject?.toString()?.let(::stripAttachmentChars)
             if (parts.isEmpty() && subject.isNullOrBlank()) return null
             IncomingRequest.NewDraft(DraftPrefill.ofText(parts.joinToString("\n\n"), subject))
         }
         Intent.ACTION_PROCESS_TEXT -> {
-            val text = e.processText?.toString().orEmpty()
+            val text = stripAttachmentChars(e.processText?.toString().orEmpty())
             if (text.isBlank()) return null
             IncomingRequest.NewDraft(DraftPrefill.ofText(text))
         }

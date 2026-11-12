@@ -147,7 +147,7 @@ cli/src/main/kotlin/com/example/applenotes/cli/     (:cli, nof-cli; docs/cli.md)
 app/src/main/java/com/example/applenotes/           (:app)
 ├── NotesOfFruitApp.kt        Application: installs the CoreLog → AppLog bridge
 ├── auth/                      WebView cookie harvest, session refresh, DeviceIdentity (stores the v4 UUID!)
-├── automation/                Automation intent API (docs/automation.md): parsing, gate, receiver, OPEN_NOTE activity
+├── automation/                Automation intent API (docs/automation.md): parsing, toggle, caller identification + allow-list, receiver, activity
 ├── data/
 │   ├── NotesApi.kt           Interface over the client calls the UI uses (+ fakes in tests)
 │   ├── NotesRepository.kt    App-scoped session, cached notes/folders, sync (full / incremental), save/delete flow, outbox
@@ -177,7 +177,7 @@ app/src/main/java/com/example/applenotes/           (:app)
     │                         (AttachmentImageLoader / ImageDecoding: off-main-thread, downsampled;
     │                          AttachmentGuard: no deleting attachments; RemoteChangeWatcher)
     ├── login/                WebView sign-in
-    ├── settings/             Settings screen (automation, app lock, update check, diagnostic report)
+    ├── settings/             Settings screen (automation + allowed apps, app lock, update check, diagnostic report)
     └── common/               Shared screens, snackbar helper, alpha dialog, UiText (translatable
                               text built outside Compose)
 
@@ -208,8 +208,14 @@ only write path is still the editor's `NotesRepository.saveNote`. Each
 exported component's reasoning is in comments in `AndroidManifest.xml`.
 Because `createNote` writes plain text only, a draft that carries formatting
 (toolbar before the first save, or an imported Markdown file) gets one
-follow-up modify after the create to apply its attribute runs
-(`NoteDetailViewModel.save`, `formattingPending`).
+follow-up modify after the create to apply its attribute runs. The
+repository does it (`NotesRepository.applyFormattingAfterCreate`, for the
+editor and the worker alike): the outbox row is first re-keyed to the
+created recordName and scheduled, so a follow-up that fails or whose editor
+went away is sent later. Text from outside the app (share, "Add to Notes",
+import, automation, paste) has U+FFFC stripped (`stripAttachmentChars`):
+it can't carry an attachment, and only a U+FFFC with an attachment run is
+protected from deletion.
 
 The home-screen widget (`widget/RecentNotesWidget`, Jetpack Glance) uses the
 same entry activity: "New note" sends `NEW_NOTE`, a title sends the token-
@@ -265,11 +271,26 @@ what isn't:
 
 ## Known limitations
 
+- **App lock is a privacy screen, not encryption.** The optional app lock
+  (`security/`) hides the UI behind the system fingerprint / face / screen-lock
+  prompt, keeps notes out of Recents thumbnails and blocks screenshots
+  (`FLAG_SECURE`), and hides widget titles and DocumentsProvider roots while
+  on. It does not encrypt anything: the Room cache, on-disk drafts and the
+  WebView cookie jar sit in app-private storage like any other app's data, and
+  the prompt is not bound to a `CryptoObject` (CodeQL's "insecure local
+  authentication" finding), so someone who can hook the app process (root,
+  instrumentation) can skip it. Real protection would mean encrypting the
+  cache and drafts with a Keystore key that requires user authentication and
+  unwrapping it through the prompt's `CryptoObject`. Costs: `BIOMETRIC_STRONG`
+  only (weak face unlock can't be offered), the PIN/pattern fallback with a
+  crypto object only on Android 11+, and background draft sync can't read
+  drafts while the app is locked.
 - **Concurrent-edit conflicts** (issue #4): on CONFLICT the save looks the
   note up again and runs a three-way merge (`data/TextMerge.kt`: base = what
   the user started from, local = the draft, remote = the fresh text). The
   merge is **line level** and conservative: edits to different lines merge;
-  both sides touching the same line (including both appending at the end) is
+  both sides touching the same line (including both appending at the end,
+  or one side dropping the final newline while the other appends a line) is
   a conflict, and the editor asks "Keep both" (the user's version is appended
   under a marked separator, attachments in that copy become `[attachment]`
   text) or "Discard my changes". Nothing is written until the user picks.
@@ -307,10 +328,24 @@ what isn't:
   (`pending_draft` table: base record, text, spans) 1 s after typing stops,
   autosaves after 3 s idle when online, and hands unsaved changes to
   `DraftSyncWorker` on pause / leave. Saves of one note are serialised in
-  the repository; a draft's created recordName is stored the moment
-  `createNote` returns, so the worker and the editor never create a note
-  twice (the window between the server creating it and the app storing
-  the mapping — a crash there — can still duplicate, as before). A conflict
+  the repository. A new note's recordName (an uppercase v4 UUID) is chosen
+  once per draft and stored (`created_draft`, unconfirmed) *before* the
+  create is sent; a retry after a lost answer sends the same name, CloudKit
+  refuses it (`EXISTS`, mapped to `NotesError.AlreadyExists`; a `CONFLICT`
+  answer to a create is treated the same) and the existing record is used.
+  So the worker, the editor and retries never create a note twice; the
+  only remaining window is a failure to write that one row before sending.
+  The `EXISTS` code comes from Apple's CloudKit Web Services error list and
+  has not been observed against iCloud yet. The created record is kept with
+  the mapping as the merge base for later saves of the draft, so edits made
+  on another device meanwhile are merged, not overwritten. The repository
+  also remembers its last confirmed write per note: a save that CONFLICTs
+  with the app's own background save of the same draft merges from that
+  write (no conflict against the user's own text), and the open editor
+  moves its base forward when the worker saves its draft. Deleting a new
+  note while its first save is in flight waits for that save and deletes
+  what it created. Drafts are stamped with the account they were typed in
+  and are never persisted or saved under another Apple ID. A conflict
   found in the background is never resolved there: the draft is flagged
   and the editor offers it on the next open, ending in Keep both /
   Discard. Sign-out deletes the cache, drafts (including unsent ones) and

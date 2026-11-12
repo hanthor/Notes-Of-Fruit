@@ -24,6 +24,7 @@ import com.example.applenotes.data.EditConflictException
 import com.example.applenotes.data.NoteRebase
 import com.example.applenotes.data.TextMerge
 import com.example.applenotes.data.decodeNoteBody
+import com.example.applenotes.data.hasRichFormatting
 import com.example.applenotes.data.local.PendingDraft
 import com.example.applenotes.data.local.spansSignature
 import com.example.applenotes.data.errorDetails
@@ -143,6 +144,13 @@ class NoteDetailViewModel(
     /** The open note was deleted: nothing of it goes to the outbox on the way out. */
     private var noteDeleted = false
 
+    /**
+     * Draft keys the user deleted. A first save of one that was still being
+     * dispatched when the delete ran (so the repository found nothing
+     * created yet) deletes what it creates as soon as it returns.
+     */
+    private val deletedDrafts = mutableSetOf<String>()
+
     // ----- "Updated on another device" (issue #16; RemoteChangeWatcher.kt) -----
 
     private val remoteWatcher = RemoteChangeWatcher(repository::lookupNote, repository.online)
@@ -189,6 +197,69 @@ class NoteDetailViewModel(
                     if (_status.value.saveFailed && isModified) save(alsoExit = false)
                 }
                 wasOnline = now
+            }
+        }
+    }
+
+    init {
+        viewModelScope.launch { repository.confirmedWrites.collect(::onConfirmedWrite) }
+        // Another Apple ID signed in: the draft in memory is the previous
+        // account's (its copy on disk was already deleted). Drop it.
+        viewModelScope.launch {
+            repository.account.collect { now ->
+                val mine = openedAccount
+                if (now != null && mine != null && now != mine && _status.value.openId != null) dropForAccountChange()
+            }
+        }
+    }
+
+    /**
+     * The account the open note belongs to ([NotesRepository.account] when
+     * it was opened). Drafts are stamped with it and saves carry it, so
+     * nothing typed here can end up in another account.
+     */
+    private var openedAccount: String? = null
+
+    private fun dropForAccountChange() {
+        AppLog.w(TAG, "editor: a different iCloud account signed in; dropping the open note's draft")
+        noteDeleted = true // nothing of it goes to the outbox on the way out
+        close()
+        // Don't keep the previous account's text in memory either.
+        titleDraft = ""
+        bodyDraft = TextFieldValue("")
+        spansDraft = emptyList()
+        attrSpans = emptyList()
+        originalBody = ""
+        prevFullBody = ""
+    }
+
+    /**
+     * iCloud confirmed a write the editor didn't make itself: the background
+     * worker sent this note's outbox draft while the editor stayed open.
+     * Move the base forward to that write (the draft stays exactly as typed,
+     * nothing visible changes), so the next save starts from it instead of
+     * CONFLICTing with the user's own earlier text.
+     */
+    private fun onConfirmedWrite(w: com.example.applenotes.data.ConfirmedWrite) {
+        val rec = record ?: return
+        val s = _status.value
+        if (s.saving || s.deleting || s.loading || s.conflict != null || s.savedDraft != null || isReadOnly) return
+        if (w.record.recordChangeTag == null || w.record.recordChangeTag == rec.recordChangeTag) return
+        // The same note (or, for a new note, the note created from this draft).
+        if (w.record.recordName != rec.recordName && w.savedFor != rec.recordName) return
+        when {
+            // iCloud now holds exactly the draft: nothing is unsaved any more.
+            fullBodyForSave == w.text && spansDraft == w.spans -> {
+                AppLog.i(TAG) { "editor: ${rec.recordName} was saved in the background; adopting that version" }
+                val oldKey = rec.recordName
+                load(w.record, null, draft = null)
+                outbox.afterSaveOrDiscard(alsoForget = listOf(oldKey))
+            }
+            // An earlier state of this draft (made over the same base) was
+            // saved; the user typed on since. Keep the draft, move the base.
+            w.ownDraft && w.savedFor == rec.recordName && w.baseTag == rec.recordChangeTag -> {
+                AppLog.i(TAG) { "editor: our own background save of ${rec.recordName} landed; moving the base forward" }
+                load(w.record, null, draft = null, keepCurrentDraft = true)
             }
         }
     }
@@ -277,7 +348,12 @@ class NoteDetailViewModel(
 
     /** Length of the title line plus its separator in [fullBodyForSave]. */
     val titlePrefixSkip: Int
-        get() = if (fullBodyForSave.contains('\n')) titleDraft.length + 1 else titleDraft.length
+        get() = when {
+            // assembleFullBody: an empty title adds no line, the body starts at 0.
+            titleDraft.isEmpty() -> 0
+            bodyDraft.text.isEmpty() -> titleDraft.length
+            else -> titleDraft.length + 1
+        }
 
     // ----- Opening -----
 
@@ -296,6 +372,13 @@ class NoteDetailViewModel(
         offlineCopy: Boolean = false,
     ) {
         if (_status.value.openId == openId) {
+            val now = repository.account.value
+            if (now != null && openedAccount != null && now != openedAccount) {
+                // Re-signed in with a different Apple ID: never save this draft there.
+                dropForAccountChange()
+                _status.value = Status(openId = openId, exitRequested = true)
+                return
+            }
             // Back from re-signing in after the session expired: the draft
             // is still here; save it now.
             if (pendingRetry == PendingRetry.AFTER_SIGN_IN && repository.isSignedIn &&
@@ -316,6 +399,7 @@ class NoteDetailViewModel(
             restore(openId)
             return
         }
+        openedAccount = repository.account.value
         _status.value = Status(openId = openId, offlineCopy = offlineCopy)
         savedState.remove<Boolean>(KEY_CONFLICT)
         val draft = prefill?.takeIf { record.recordChangeTag == null }?.toSnapshot()
@@ -383,6 +467,8 @@ class NoteDetailViewModel(
     /** The draft as it should be on disk, or null when nothing is unsaved. */
     private fun currentPendingDraft(): PendingDraft? {
         val rec = record ?: return null
+        if (noteDeleted || _status.value.deleting) return null
+        if (openedAccount != null && repository.account.value != openedAccount) return null
         if (isReadOnly || !isModified) return null
         if (rec.recordChangeTag == null && pendingFolderRef == null) return null
         return PendingDraft(
@@ -401,6 +487,7 @@ class NoteDetailViewModel(
             ).encode(),
             updatedAtMs = clock(),
             conflict = _status.value.conflict != null,
+            account = openedAccount,
         )
     }
 
@@ -438,6 +525,15 @@ class NoteDetailViewModel(
             _status.value = Status(openId = openId, exitRequested = true)
             return
         }
+        val stamped = savedState.get<String>(KEY_ACCOUNT)
+        val now = repository.account.value
+        if (stamped != null && now != null && stamped != now) {
+            // Saved state of a note from the previous account: drop it.
+            close()
+            _status.value = Status(openId = openId, exitRequested = true)
+            return
+        }
+        openedAccount = stamped ?: now
         val tag = savedState.get<String>(KEY_RECORD_TAG)
         val draft = DraftSnapshot.decodeOrNull(savedState.get<String>(KEY_DRAFT))
         if (tag == null) {
@@ -554,9 +650,7 @@ class NoteDetailViewModel(
         val spans = body.spans
         attrSpans = spans
 
-        val firstNl = original.indexOf('\n')
-        val initialTitle = if (firstNl < 0) original else original.substring(0, firstNl)
-        val initialBody = if (firstNl < 0) "" else original.substring(firstNl + 1)
+        val (initialTitle, initialBody) = splitFullBody(original)
 
         if (keepCurrentDraft && body is NoteBody.Editable) {
             // titleDraft / bodyDraft / spansDraft / prevFullBody stay; they
@@ -582,7 +676,7 @@ class NoteDetailViewModel(
             // (which we render separately in the app bar). Trim the title's
             // worth of spans off the front so styleAt indexes align with
             // `initialBody`.
-            val skip = if (original.contains('\n')) initialTitle.length + 1 else initialTitle.length
+            val skip = original.length - initialBody.length
             val hasRichFormatting = attrSpansAfter(spans, skip).any {
                 it.style != NoteBodyEditor.ParagraphStyle.BODY &&
                     it.style != NoteBodyEditor.ParagraphStyle.TITLE
@@ -622,26 +716,33 @@ class NoteDetailViewModel(
 
     fun onTitleChange(value: String) {
         if (isReadOnly) return
-        val title = value.replace("\n", "")
-        if (rejectAttachmentRemoval(titleDraft, title)) return
+        val title = dropInsertedAttachmentChars(titleDraft, TextFieldValue(value.replace("\n", ""))).text
+        if (rejectAttachmentRemoval(titleDraft, title, offset = 0)) return
         titleDraft = title
         syncSpans()
         outbox.onEdited()
     }
 
-    fun onBodyChange(value: TextFieldValue) {
+    fun onBodyChange(input: TextFieldValue) {
         if (isReadOnly) return
+        // Pasted text can't bring in an attachment.
+        val value = dropInsertedAttachmentChars(bodyDraft.text, input)
         // Keep the previous value (text + selection) when the edit would
         // delete an attachment (issue #14; see AttachmentGuard.kt).
-        if (rejectAttachmentRemoval(bodyDraft.text, value.text)) return
+        if (rejectAttachmentRemoval(bodyDraft.text, value.text, offset = titlePrefixSkip)) return
         bodyDraft = value
         syncSpans()
         outbox.onEdited()
     }
 
-    /** True (and a snackbar is shown) when [old] → [new] would remove an attachment. */
-    private fun rejectAttachmentRemoval(old: String, new: String): Boolean {
-        if (!removesAttachment(old, new)) return false
+    /**
+     * True (and a snackbar is shown) when [old] → [new] would remove an
+     * attachment. [old] starts at [offset] of the full text; only a U+FFFC
+     * with an attachment run counts (a stray one is just a character).
+     */
+    private fun rejectAttachmentRemoval(old: String, new: String, offset: Int): Boolean {
+        val chars by lazy { NoteBodyEditor.expandSpansToChars(fullBodyForSave, spansDraft) }
+        if (!removesAttachment(old, new) { chars.getOrNull(offset + it)?.isAttachment == true }) return false
         _status.update { it.copy(message = message(ATTACHMENT_DELETE_BLOCKED, null)) }
         return true
     }
@@ -713,6 +814,8 @@ class NoteDetailViewModel(
     fun save(alsoExit: Boolean, isPureAppendOverride: Boolean? = null) {
         val rec = record ?: return
         val openId = _status.value.openId ?: return
+        // Being deleted (or gone): nothing more goes to iCloud.
+        if (_status.value.deleting || noteDeleted) return
         // Never write a body we couldn't decode back to iCloud.
         if (isReadOnly) return
         // An unresolved conflict: the draft must not be written as-is
@@ -733,7 +836,14 @@ class NoteDetailViewModel(
         _status.update { it.copy(saving = true, message = null) }
         viewModelScope.launch {
             val result = runCatchingCancellable {
-                repository.saveNote(rec, folderRef, newBody, pureAppend, spans)
+                repository.saveNote(rec, folderRef, newBody, pureAppend, spans, expectedAccount = openedAccount)
+            }
+            val created = result.getOrNull()
+            if (rec.recordChangeTag == null && rec.recordName in deletedDrafts && created?.recordChangeTag != null) {
+                AppLog.i(TAG) { "save: the draft was deleted while it was being created; deleting the note" }
+                runCatchingCancellable { repository.deleteNote(created) }
+                updateIfOpen(openId) { it.copy(saving = false) }
+                return@launch
             }
             val queuedExit = queuedSave?.takeIf { it.first == openId }?.second
             if (queuedExit != null) queuedSave = null
@@ -745,19 +855,24 @@ class NoteDetailViewModel(
             // was already patched by the repository either way.
             val stillHere = _status.value.openId == openId &&
                 record?.recordName == rec.recordName
+            if (result.exceptionOrNull() is com.example.applenotes.data.AccountChangedException) {
+                if (stillHere) dropForAccountChange()
+                return@launch
+            }
             result.onSuccess { updated ->
                 if (!stillHere) return@onSuccess
                 pendingRetry = PendingRetry.NONE
-                // createNote only writes plain text (NoteCreator has no
-                // attribute runs), so a draft that carries formatting (the
-                // toolbar used before the first save, or an imported
-                // Markdown file) needs one follow-up modify through the
-                // normal splice path (and its conflict merge) to apply it.
-                val formattingPending = rec.recordChangeTag == null && hasRichFormatting(newBody, spans)
-                // Did the user keep typing while the save was in flight?
-                var changedSince = fullBodyForSave != newBody || spansDraft != spans || formattingPending
                 // Did the save merge in a change from another device?
                 val saved = decodeNoteBody(updated)
+                // A new note's formatting is applied by the repository right
+                // after the create (createNote writes plain text). If that
+                // follow-up couldn't be sent yet it waits in the outbox for
+                // the worker; keep the formatted draft here meanwhile
+                // (no save of our own: the repository owns the follow-up).
+                val formattingPending = rec.recordChangeTag == null && hasRichFormatting(newBody, spans) &&
+                    !(saved is NoteBody.Editable && hasRichFormatting(saved.text, saved.spans))
+                // Did the user keep typing while the save was in flight?
+                var changedSince = fullBodyForSave != newBody || spansDraft != spans || formattingPending
                 val mergedRemote = saved is NoteBody.Editable && saved.text != newBody
                 var conflict: EditConflict? = null
                 if (changedSince && mergedRemote) {
@@ -809,7 +924,7 @@ class NoteDetailViewModel(
                 when {
                     exit && !changedSince -> _status.update { it.copy(exitRequested = true) }
                     // Save the rest before leaving / for the queued request.
-                    changedSince && (exit || queuedExit != null || formattingPending) -> save(alsoExit = exit)
+                    changedSince && (exit || queuedExit != null) -> save(alsoExit = exit)
                 }
             }.onFailure { e ->
                 AppLog.e(TAG, "save failed", e)
@@ -920,9 +1035,7 @@ class NoteDetailViewModel(
      * change happened before it.
      */
     private fun setDraftFromFullText(full: String, spans: List<NoteBodyEditor.AttrSpan>) {
-        val firstNl = full.indexOf('\n')
-        val title = if (firstNl < 0) full else full.substring(0, firstNl)
-        val body = if (firstNl < 0) "" else full.substring(firstNl + 1)
+        val (title, body) = splitFullBody(full)
         val old = bodyDraft
         val sel = old.selection
         var lcp = 0
@@ -946,16 +1059,23 @@ class NoteDetailViewModel(
     fun delete() {
         val rec = record ?: return
         val openId = _status.value.openId ?: return
-        // Draft (never saved to iCloud): just discard locally, no network
-        // call needed.
-        if (rec.recordChangeTag == null) {
-            discardUnsavedChanges()
-            _status.update { it.copy(exitRequested = true) }
-            return
-        }
+        if (_status.value.deleting) return
         _status.update { it.copy(deleting = true, message = null) }
+        queuedSave = null
         viewModelScope.launch {
-            runCatchingCancellable { repository.deleteNote(rec) }
+            // A never-saved draft: the repository waits for a first save that
+            // may be in flight and deletes what it created (no network call
+            // when nothing was). Deleting only locally would let that create
+            // land afterwards and the note reappear.
+            val result = runCatchingCancellable {
+                if (rec.recordChangeTag == null) {
+                    repository.deleteUnsavedDraft(rec.recordName)
+                } else {
+                    repository.deleteNote(rec)
+                }
+            }
+            if (result.isSuccess && rec.recordChangeTag == null) deletedDrafts += rec.recordName
+            result
                 .onSuccess {
                     // The repository dropped the note's disk draft; don't hand
                     // the editor's copy to the worker on the way out.
@@ -1014,6 +1134,8 @@ class NoteDetailViewModel(
         savedState.remove<String>(KEY_DRAFT)
         savedState.remove<String>(KEY_BASE)
         savedState.remove<Boolean>(KEY_CONFLICT)
+        savedState.remove<String>(KEY_ACCOUNT)
+        openedAccount = null
     }
 
     // ----- Saved state -----
@@ -1024,6 +1146,7 @@ class NoteDetailViewModel(
         savedState[KEY_RECORD_NAME] = rec.recordName
         savedState[KEY_RECORD_TAG] = rec.recordChangeTag
         savedState[KEY_FOLDER_REF] = pendingFolderRef?.toString()
+        savedState[KEY_ACCOUNT] = openedAccount
     }
 
     /**
@@ -1074,6 +1197,7 @@ class NoteDetailViewModel(
         internal const val KEY_DRAFT = "detail.draft"
         internal const val KEY_BASE = "detail.base"
         internal const val KEY_CONFLICT = "detail.conflict"
+        internal const val KEY_ACCOUNT = "detail.account"
         private const val MAX_SAVED_DRAFT_CHARS = 100_000
 
         fun factory(context: Context): ViewModelProvider.Factory {
@@ -1096,21 +1220,16 @@ internal fun assembleFullBody(title: String, body: String): String = when {
 }
 
 /**
- * True when [spans] (over [text]) carry anything beyond plain Body text and a
- * Title-styled first line.
+ * The note's full visible text -> (title, body), the inverse of
+ * [assembleFullBody]: the first line is the title, except that a text
+ * starting with an empty line keeps it in the body (title ""), so the blank
+ * line survives a round trip instead of being dropped by the assembly.
  */
-internal fun hasRichFormatting(text: String, spans: List<NoteBodyEditor.AttrSpan>): Boolean {
-    val firstLineEnd = text.indexOf('\n').let { if (it < 0) text.length else it }
-    var offset = 0
-    for (s in spans) {
-        val styled = when (s.style) {
-            NoteBodyEditor.ParagraphStyle.BODY -> false
-            // Title on the first line is what every note has; elsewhere it's formatting.
-            NoteBodyEditor.ParagraphStyle.TITLE -> offset + s.length > firstLineEnd + 1
-            else -> true
-        }
-        if (styled || s.bold || s.italic || s.underline || s.strikethrough || s.linkUrl != null) return true
-        offset += s.length
+internal fun splitFullBody(full: String): Pair<String, String> {
+    val firstNl = full.indexOf('\n')
+    return when {
+        firstNl < 0 -> full to ""
+        firstNl == 0 -> "" to full
+        else -> full.substring(0, firstNl) to full.substring(firstNl + 1)
     }
-    return false
 }

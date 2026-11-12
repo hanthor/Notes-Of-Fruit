@@ -27,11 +27,19 @@ interface NotesApi {
     suspend fun lookupNote(recordName: String): NoteRecord
     suspend fun fetchAssetBytes(downloadUrl: String): ByteArray?
     suspend fun deleteNote(recordName: String, recordChangeTag: String): String
+    /**
+     * [noteText] is the exact visible text to create; [title] / [body] only
+     * fill the list fields. [recordName] is chosen by the caller, once per
+     * draft, so a retry can't create a second note
+     * ([com.example.applenotes.client.NotesError.AlreadyExists] instead).
+     */
     suspend fun createNote(
         title: String,
         body: String,
         folderRef: JsonElement,
         ourReplicaUuid: ByteArray,
+        noteText: String,
+        recordName: String,
     ): NoteRecord
     suspend fun modifyNoteBody(
         recordName: String,
@@ -78,11 +86,15 @@ class CloudKitNotesApi(private val client: AppleNotesClient) : NotesApi {
         body: String,
         folderRef: JsonElement,
         ourReplicaUuid: ByteArray,
+        noteText: String,
+        recordName: String,
     ) = client.createNote(
         title = title,
         body = body,
         folderRef = folderRef,
         ourReplicaUuid = ourReplicaUuid,
+        noteText = noteText,
+        recordName = recordName,
     )
 
     override suspend fun modifyNoteBody(

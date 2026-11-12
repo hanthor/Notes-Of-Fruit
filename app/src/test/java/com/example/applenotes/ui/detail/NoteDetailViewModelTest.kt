@@ -156,14 +156,14 @@ class NoteDetailViewModelTest {
         assertArrayEquals(REPLICA_UUID, c.uuid)
         assertTrue(api.modifies.isEmpty())
         // The new note is pre-pended to the list cache.
-        assertEquals("CREATED-1", repo.notes.value.first().recordName)
+        assertEquals(api.created(), repo.notes.value.first().recordName)
         assertEquals("New idea", repo.notes.value.first().title)
         // The editor switched to the real record: the next save modifies.
-        assertEquals("CREATED-1", vm.record!!.recordName)
+        assertEquals(api.created(), vm.record!!.recordName)
         vm.type("details, more")
         vm.save(alsoExit = false)
         assertEquals(1, api.creates.size)
-        assertEquals("CREATED-1", api.modifies.single().recordName)
+        assertEquals(api.created(), api.modifies.single().recordName)
     }
 
     @Test
@@ -210,6 +210,44 @@ class NoteDetailViewModelTest {
         vm.delete()
         assertTrue(vm.status.value.exitRequested)
         assertTrue(api.deletes.isEmpty())
+    }
+
+    /** Finding: Delete while the first save was in flight discarded the draft, then the create landed. */
+    @Test
+    fun deletingANewNoteWhileItIsBeingCreatedDeletesWhatWasCreated() {
+        val vm = newVm()
+        vm.open("open-d", com.example.applenotes.client.NoteRecord("draft-1", "Note", null, emptyMap()), folderRef("X"))
+        vm.type("first words")
+        val gate = CompletableDeferred<Unit>()
+        api.gates["createNote"] = gate
+        vm.save(alsoExit = false)
+        assertTrue(vm.status.value.saving)
+        vm.delete()
+        assertFalse(vm.status.value.exitRequested)
+        gate.complete(Unit)
+        assertEquals(1, api.creates.size)
+        assertEquals(listOf(api.created()), api.deletes.map { it.first })
+        assertTrue(api.records.keys.none { it == api.created() })
+        assertTrue(repo.notes.value.none { it.recordName == api.created() })
+        assertTrue(vm.status.value.exitRequested)
+        // Nothing of it is left to be sent later.
+        assertTrue(repo.pendingDrafts.value.isEmpty())
+        vm.close()
+        assertTrue(repo.pendingDrafts.value.isEmpty())
+        assertEquals(1, api.creates.size)
+        assertTrue(api.modifies.isEmpty())
+    }
+
+    /** The editor still holds the stub but the worker already created the note. */
+    @Test
+    fun deletingADraftTheWorkerAlreadyCreatedDeletesTheNote() = runTest(main.dispatcher) {
+        val stub = com.example.applenotes.client.NoteRecord("draft-1", "Note", null, emptyMap())
+        val created = repo.saveNote(stub, folderRef("X"), "made in the background", false, null)
+        val vm = newVm()
+        vm.open("open-d", stub, folderRef("X"))
+        vm.delete()
+        assertEquals(listOf(created.recordName), api.deletes.map { it.first })
+        assertTrue(vm.status.value.exitRequested)
     }
 
     @Test
@@ -478,8 +516,8 @@ class NoteDetailViewModelTest {
         vm.save(alsoExit = false)   // e.g. Save button
         gate.complete(Unit)
         assertEquals(1, api.creates.size)
-        assertEquals("CREATED-1", api.modifies.single().recordName)
-        assertEquals("Title\nbody", api.records.getValue("CREATED-1").visibleText())
+        assertEquals(api.created(), api.modifies.single().recordName)
+        assertEquals("Title\nbody", api.records.getValue(api.created()).visibleText())
     }
 
     @Test
@@ -567,5 +605,36 @@ class NoteDetailViewModelTest {
         vm.type("first words")
         vm.save(alsoExit = false)
         assertEquals("first words", api.records.getValue("NOTE-0").visibleText())
+    }
+
+    /** A note whose first line is empty opens unmodified and saves exactly as it was. */
+    @Test
+    fun aBlankFirstLineRoundTrips() {
+        api.put(noteRecord("NOTE-BLANK", "\nfoo\nbar"))
+        val vm = newVm()
+        vm.openExisting("NOTE-BLANK")
+        assertEquals("\nfoo\nbar", vm.fullBodyForSave)
+        assertFalse(vm.isModified)
+        // Body-relative spans start at the body (no title line to skip).
+        assertEquals(0, vm.titlePrefixSkip)
+        vm.type(vm.bodyDraft.text + "\nbaz")
+        vm.save(alsoExit = false)
+        assertEquals("\nfoo\nbar\nbaz", api.records.getValue("NOTE-BLANK").visibleText())
+    }
+
+    /** Finding: a new note starting with an empty line was created without it, then "merged". */
+    @Test
+    fun aNewNoteStartingWithABlankLineIsSavedAsTyped() {
+        val vm = newVm()
+        vm.open("open-d", com.example.applenotes.client.NoteRecord("draft-1", "Note", null, emptyMap()), folderRef("F"))
+        vm.type("\nfoo")
+        vm.save(alsoExit = false)
+        val created = api.records.getValue(api.created())
+        assertEquals("\nfoo", created.visibleText())
+        val s = vm.status.value
+        assertNull(s.message)
+        assertFalse(s.saveFailed)
+        assertFalse(vm.isModified)
+        assertEquals("\nfoo", vm.fullBodyForSave)
     }
 }

@@ -116,6 +116,15 @@ class MarkdownTest {
     }
 
     @Test
+    fun importDropsObjectReplacementChars() {
+        val md = importPrefill("# T￼itle\n**b￼**", "a.md", null)
+        assertEquals("Title\nb", md.text)
+        assertEquals(md.text.length, md.spans.sumOf { it.length })
+        assertEquals("ab", importPrefill("a￼b", "a.txt", "text/plain").text)
+        assertEquals("Pic", importPrefill("￼", "Pic.txt", "text/plain").text)
+    }
+
+    @Test
     fun exportRendersMarkdown() {
         val (t, s) = note(
             "Title\n" to span(ParagraphStyle.TITLE),

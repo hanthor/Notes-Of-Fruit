@@ -9,6 +9,7 @@ import com.example.applenotes.data.local.spansSignature
 import com.example.applenotes.proto.NoteBodyEditor
 import com.example.applenotes.testing.FakeAuthGateway
 import com.example.applenotes.testing.FakeConnectivity
+import com.example.applenotes.testing.FakeDraftScheduler
 import com.example.applenotes.testing.FakeNotesApi
 import com.example.applenotes.testing.REPLICA_UUID
 import com.example.applenotes.testing.folderRef
@@ -159,15 +160,15 @@ class DraftSyncerTest {
         assertEquals(DraftSyncer.Outcome.Done, DraftSyncer(repo).sync("draft-1"))
         assertEquals(1, api.creates.size)
         assertNull(store.getDraft("draft-1"))
-        assertEquals("CREATED-1", store.createdRecordName("draft-1"))
+        assertEquals(api.created(), store.createdRecordName("draft-1"))
 
         // The editor still holds the never-saved stub and saves it again
         // (it was open while the worker ran): that modifies, never re-creates.
         val stub = NoteRecord("draft-1", "Note", null, emptyMap())
         val saved = repo.saveNote(stub, folderRef("DefaultFolder-CloudKit"), "Groceries\napples\npears", false, null)
         assertEquals(1, api.creates.size)
-        assertEquals("CREATED-1", saved.recordName)
-        assertEquals("Groceries\napples\npears", api.records.getValue("CREATED-1").visibleText())
+        assertEquals(api.created(), saved.recordName)
+        assertEquals("Groceries\napples\npears", api.records.getValue(api.created()).visibleText())
     }
 
     @Test
@@ -194,6 +195,51 @@ class DraftSyncerTest {
         assertEquals(1, api.creates.size)
         assertEquals(1, api.modifies.size)
         assertTrue(store.allDrafts().isEmpty())
+    }
+
+    /**
+     * Finding: the worker created the note, the formatting follow-up failed
+     * transiently, the retry ran for "draft-1", found no row and was Done;
+     * the row re-keyed to the created recordName was never scheduled.
+     */
+    @Test
+    fun aFailedFormattingFollowUpIsScheduledUnderTheCreatedName() = runTest {
+        val scheduler = FakeDraftScheduler()
+        val repo = NotesRepository(
+            auth = FakeAuthGateway(api),
+            replicaUuidLoader = { REPLICA_UUID },
+            externalScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler)),
+            connectivity = net,
+            backoff = {},
+            store = store,
+            draftScheduler = scheduler,
+        )
+        val text = "Groceries\napples"
+        val spans = listOf(
+            NoteBodyEditor.AttrSpan(length = 10, style = NoteBodyEditor.ParagraphStyle.TITLE),
+            NoteBodyEditor.AttrSpan(length = 6, style = NoteBodyEditor.ParagraphStyle.BODY, bold = true),
+        )
+        store.putDraft(draftOf("draft-1", null, text, spans = spans, folder = "DefaultFolder-CloudKit"))
+        api.failNext["modifyNoteBody"] = NotesError.Offline()
+        val first = DraftSyncer(repo).sync("draft-1")
+        assertEquals(1, api.creates.size)
+        assertTrue(api.modifies.isEmpty())
+        val created = api.created()
+        // Whatever the first run reports, the formatting is kept and its key scheduled.
+        assertNotNull(store.getDraft(created))
+        assertTrue(scheduler.enqueued.contains(created) || first == DraftSyncer.Outcome.Retry)
+        // The retry for draft-1 (if any) and the run for the created key finish the job.
+        DraftSyncer(repo).sync("draft-1")
+        assertEquals(DraftSyncer.Outcome.Done, DraftSyncer(repo).sync(created))
+        assertEquals(1, api.creates.size)
+        assertEquals(1, api.modifies.size)
+        val saved = api.records.getValue(created)
+        val chars = NoteBodyEditor.expandSpansToChars(
+            saved.visibleText()!!, NoteBodyEditor.parseAttributeRunsFromBase64(saved.stringField("TextDataEncrypted")!!),
+        )
+        assertTrue(chars[12].bold)
+        assertTrue(store.allDrafts().isEmpty())
+        assertTrue(scheduler.enqueued.contains(created))
     }
 
     @Test

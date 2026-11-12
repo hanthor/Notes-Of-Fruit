@@ -208,5 +208,6 @@ internal object MarkdownImport {
         }
     }
 
-    private fun normalise(raw: String) = raw.removePrefix("\uFEFF").replace("\r\n", "\n").replace('\r', '\n')
+    private fun normalise(raw: String) =
+        stripAttachmentChars(raw.removePrefix("\uFEFF").replace("\r\n", "\n").replace('\r', '\n'))
 }

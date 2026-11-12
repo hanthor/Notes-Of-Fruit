@@ -86,6 +86,9 @@ sealed interface AppScreen {
 
     /** The minimal settings screen (automation toggle). */
     data object Settings : AppScreen
+
+    /** Settings → Allowed apps: the automation allow-list (issue #21). */
+    data object AllowedApps : AppScreen
 }
 
 /**
@@ -98,6 +101,7 @@ sealed interface PendingSwitch {
     data class Open(val note: NoteSummary) : PendingSwitch
     data object Create : PendingSwitch
     data object Settings : PendingSwitch
+    data object AllowedApps : PendingSwitch
 }
 
 /** Snackbar actions offered by the list screen. */
@@ -221,6 +225,9 @@ class AppViewModel(
                 wasOnline = now
             }
         }
+        // A different Apple ID signed in (after a session expired): forget
+        // the previous account's open note and waiting requests.
+        viewModelScope.launch { repository.account.collect { forgetOtherAccountsState() } }
         // First-launch alpha disclaimer. Block all app behaviour behind this —
         // we don't even start the auth bootstrap until the user has acknowledged.
         viewModelScope.launch {
@@ -236,6 +243,26 @@ class AppViewModel(
             _alphaAcknowledged.value = true
             start()
         }
+    }
+
+    /**
+     * Compare the signed-in account with the one this screen state was built
+     * for (kept in saved state, so it survives process death). On a change,
+     * drop the remembered open note (its draft is the previous account's;
+     * the detail ViewModel discards its copy) and any pending request, and
+     * leave an open note. Runs from the account flow and, synchronously,
+     * right after each sign-in, before the remembered note is reopened.
+     */
+    private fun forgetOtherAccountsState() {
+        val now = repository.account.value ?: return
+        val before = savedState.get<String>(KEY_ACCOUNT)
+        savedState[KEY_ACCOUNT] = now
+        if (before == null || before == now) return
+        AppLog.w(TAG, "a different iCloud account signed in; dropping the previous account's open note and requests")
+        savedState.remove<String>(KEY_DETAIL_OPEN_ID)
+        pendingIncoming = null
+        cancelPendingSwitch()
+        if (_screen.value is AppScreen.Detail) _screen.value = AppScreen.NotesList
     }
 
     private fun start() {
@@ -270,6 +297,7 @@ class AppViewModel(
             runCatchingCancellable { repository.signIn() }
                 .onSuccess {
                     _loginStaleToken.value = null
+                    forgetOtherAccountsState()
                     // Process-death restore: reopen the note that was on
                     // screen. The detail ViewModel rebuilds it (and any
                     // unsaved draft) from its own saved state.
@@ -315,6 +343,7 @@ class AppViewModel(
             runCatchingCancellable { repository.signIn() }
                 .onSuccess {
                     _loginStaleToken.value = null
+                    forgetOtherAccountsState()
                     if (_screen.value == AppScreen.NotesList) processPendingIncoming()
                 }
                 .onFailure {
@@ -521,7 +550,7 @@ class AppViewModel(
     internal fun handleIncoming(request: IncomingRequest) {
         val s = _screen.value
         val ready = repository.isSignedIn &&
-            (s == AppScreen.NotesList || s == AppScreen.Settings || (s is AppScreen.Detail && s.record != null))
+            (s == AppScreen.NotesList || s == AppScreen.Settings || s == AppScreen.AllowedApps || (s is AppScreen.Detail && s.record != null))
         if (ready) {
             pendingIncoming = null
             process(request)
@@ -543,6 +572,8 @@ class AppViewModel(
         when (request) {
             is IncomingRequest.NewDraft -> createNote(request.prefill)
             is IncomingRequest.OpenNote -> openNoteByRecordName(request.recordName)
+            IncomingRequest.ReviewAutomationApps ->
+                if (_screen.value is AppScreen.Detail) requestSwitch(PendingSwitch.AllowedApps) else showAllowedApps()
             is IncomingRequest.OpenNoteByTitle -> {
                 val wanted = request.title.trim()
                 val matches = repository.notes.value.filter {
@@ -580,6 +611,10 @@ class AppViewModel(
 
     fun showSettings() {
         _screen.value = AppScreen.Settings
+    }
+
+    fun showAllowedApps() {
+        _screen.value = AppScreen.AllowedApps
     }
 
     // ----- Two-pane list + detail (issue #16) -----
@@ -660,6 +695,7 @@ class AppViewModel(
             is PendingSwitch.Open -> openNote(switch.note)
             PendingSwitch.Create -> createNote()
             PendingSwitch.Settings -> showSettings()
+            PendingSwitch.AllowedApps -> showAllowedApps()
             null -> processPendingIncoming()
         }
     }
@@ -688,6 +724,7 @@ class AppViewModel(
         internal const val KEY_SELECTED_FOLDER = "selectedFolder"
         internal const val KEY_DETAIL_OPEN_ID = "detailOpenId"
         internal const val KEY_PENDING_INCOMING = "pendingIncoming"
+        internal const val KEY_ACCOUNT = "account"
         private const val MAX_SAVED_INCOMING_CHARS = 100_000
 
         /** Refresh-on-resume throttle (issue #12). */

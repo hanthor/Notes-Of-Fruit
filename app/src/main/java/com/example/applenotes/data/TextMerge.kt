@@ -22,7 +22,10 @@ package com.example.applenotes.data
  * - identical hunks (same range, same replacement) are not a conflict;
  *   the change is taken once;
  * - anything else (including an insertion right at the edge of the other
- *   side's range, or edits to adjacent lines) merges in base order.
+ *   side's range, or edits to adjacent lines) merges in base order;
+ * - except: a line without its trailing '\n' (one side dropped the base's
+ *   final newline) followed by anything else in the merge → conflict, since
+ *   applying both would glue two lines into one.
  *
  * Pure Kotlin on UTF-16 strings; no Android dependencies. Lines are compared
  * whole, so surrogate pairs, CJK and U+FFFC attachment markers need no
@@ -106,11 +109,13 @@ object TextMerge {
         val stepCuts = ArrayList<Pair<Int, Int>>()
 
         var pos = 0
+        var emittedTokens = 0
         var shiftL = 0
         var shiftR = 0
         fun emitStable(until: Int) {
             for (t in pos until until) {
                 val tok = b[t]
+                emittedTokens++
                 for (c in tok.indices) {
                     out.append(tok[c])
                     bi.add(bOff[t] + c)
@@ -130,6 +135,7 @@ object TextMerge {
                 val remoteStart = a.pairedWith?.sideStart ?: -1
                 for ((k, t) in (h.sideStart until h.sideEnd).withIndex()) {
                     val tok = l[t]
+                    emittedTokens++
                     for (c in tok.indices) {
                         out.append(tok[c])
                         bi.add(-1)
@@ -147,6 +153,7 @@ object TextMerge {
             } else {
                 for (t in h.sideStart until h.sideEnd) {
                     val tok = r[t]
+                    emittedTokens++
                     for (c in tok.indices) {
                         out.append(tok[c])
                         bi.add(-1)
@@ -161,6 +168,10 @@ object TextMerge {
         emitStable(b.size)
 
         val text = out.toString()
+        // Only the very last line may lack its '\n'. One side dropping the
+        // base's final newline while the other appends after it would join
+        // two lines ("a\nB" + "c" → "a\nBc"): refuse rather than guess.
+        if (tokenize(text).size != emittedTokens) return Conflict
         val steps = if (text == remote) {
             emptyList()
         } else {

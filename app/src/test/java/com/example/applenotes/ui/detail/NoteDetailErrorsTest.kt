@@ -114,6 +114,60 @@ class NoteDetailErrorsTest {
         assertEquals("milk\neggs", vm.bodyDraft.text)
     }
 
+    /**
+     * Finding: the session expired, someone signed in with a different Apple
+     * ID, and the open editor saved account A's draft into account B.
+     */
+    @Test
+    fun aDraftIsNeverSavedIntoAnotherAppleId() {
+        val vm = newVm()
+        vm.type("milk\neggs")
+        api.failNext["modifyNoteBody"] = NotesError.AuthExpired("HTTP 421")
+        auth.failOpen = NotesError.AuthExpired("validate 421")
+        vm.save(alsoExit = false)
+        assertTrue(repo.sessionExpired.value)
+        api.modifies.clear()
+
+        // A different account signs in; the same note id happens to exist there.
+        api.accountId = "dsid-2"
+        api.records.clear()
+        api.put(noteRecord("NOTE-A", "Someone else's note"))
+        kotlinx.coroutines.runBlocking { repo.signIn() }
+        vm.open("open-1", record = null, pendingFolderRef = null)
+        vm.autoSave()
+        vm.save(alsoExit = false)
+        vm.close()
+
+        assertTrue(api.modifies.isEmpty())
+        assertEquals("Someone else's note", api.records.getValue("NOTE-A").visibleText())
+        assertTrue(repo.pendingDrafts.value.isEmpty())
+        // Account A's text is gone from the editor too.
+        assertFalse(vm.bodyDraft.text.contains("eggs"))
+        assertTrue(savedState.get<String>(NoteDetailViewModel.KEY_DRAFT)?.contains("eggs") != true)
+    }
+
+    /** A draft stamped with one account is refused once another one is signed in. */
+    @Test
+    fun drafsAndSavesForAnotherAccountAreRefused() = runTest(main.dispatcher) {
+        val a = repo.account.value!!
+        api.accountId = "dsid-2"
+        repo.signIn()
+        assertTrue(repo.account.value != a)
+        repo.persistDraft(
+            com.example.applenotes.data.local.PendingDraft(
+                "NOTE-A", api.records.getValue("NOTE-A"), null, "x", "", "{}", 1, account = a,
+            ),
+        ).join()
+        assertTrue(repo.pendingDrafts.value.isEmpty())
+        try {
+            repo.saveNote(api.records.getValue("NOTE-A"), null, "x", false, null, expectedAccount = a)
+            org.junit.Assert.fail("expected AccountChangedException")
+        } catch (e: com.example.applenotes.data.AccountChangedException) {
+            // expected
+        }
+        assertTrue(api.modifies.isEmpty())
+    }
+
     @Test
     fun throttledSaveIsSurfacedWithRetry() {
         val vm = newVm()

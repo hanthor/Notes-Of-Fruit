@@ -54,14 +54,19 @@ interface NotesStore {
     fun observeDrafts(): Flow<List<PendingDraft>>
 
     /**
-     * Local draft id ("draft-<uuid>") → recordName CloudKit gave the note when
-     * it was created. Written the moment createNote returns, so a second save
-     * of the same draft (the app and the background worker racing, or a retry
-     * after the response was lost to process death) modifies that note
-     * instead of creating a duplicate.
+     * Local draft id ("draft-<uuid>") → the CloudKit recordName chosen for
+     * the note. Written *before* the create is sent ([CreatedDraft.confirmed]
+     * false), so a retry after a lost response sends the same name and can't
+     * duplicate the note, and confirmed with the record createNote returned
+     * the moment it returns, so a second save of the same draft (the app and
+     * the background worker racing, a retry) modifies that note instead.
      */
-    suspend fun createdRecordName(draftId: String): String?
-    suspend fun putCreatedRecordName(draftId: String, recordName: String)
+    suspend fun createdDraft(draftId: String): CreatedDraft?
+    suspend fun putCreatedDraft(entry: CreatedDraft)
+
+    /** The recordName a draft was created as, once the create is confirmed. */
+    suspend fun createdRecordName(draftId: String): String? =
+        createdDraft(draftId)?.takeIf { it.confirmed }?.recordName
 
     /** Sign-out: forget everything (cache, drafts, sync state). */
     suspend fun clearAll()
@@ -93,9 +98,30 @@ data class PendingDraft(
     val updatedAtMs: Long,
     /** A background save found overlapping remote edits; resolved in the editor. */
     val conflict: Boolean = false,
+    /**
+     * Fingerprint of the iCloud account the draft was typed in (see
+     * NotesRepository.account); null for rows written before this existed.
+     * A draft is never persisted or saved under a different account.
+     */
+    val account: String? = null,
 ) {
     val isNewNote: Boolean get() = baseRecord == null
 }
+
+/** See [NotesStore.createdDraft]. */
+data class CreatedDraft(
+    val draftId: String,
+    val recordName: String,
+    /** False while the create may or may not have reached iCloud. */
+    val confirmed: Boolean,
+    /**
+     * The record as our create (or our last save through this mapping) left
+     * it: the merge base for later saves of the draft, so changes made on
+     * another device since are merged, not overwritten. Null for rows written
+     * before this was stored.
+     */
+    val record: NoteRecord? = null,
+)
 
 /** Keys for [NotesStore.getMeta]. */
 object StoreMeta {
@@ -111,7 +137,7 @@ class InMemoryNotesStore : NotesStore {
     private val folders = linkedMapOf<String, FolderSummary>()
     private val meta = mutableMapOf<String, String>()
     private val bodies = linkedMapOf<String, Pair<NoteRecord, String?>>()
-    private val created = mutableMapOf<String, String>()
+    private val created = mutableMapOf<String, CreatedDraft>()
     private val drafts = MutableStateFlow<Map<String, PendingDraft>>(emptyMap())
 
     /** Test hook: how many bodies are cached. */
@@ -157,9 +183,9 @@ class InMemoryNotesStore : NotesStore {
     override suspend fun allDrafts() = drafts.value.values.toList()
     override fun observeDrafts(): Flow<List<PendingDraft>> = drafts.map { it.values.toList() }
 
-    override suspend fun createdRecordName(draftId: String) = lock.withLock { created[draftId] }
-    override suspend fun putCreatedRecordName(draftId: String, recordName: String) = lock.withLock {
-        created[draftId] = recordName
+    override suspend fun createdDraft(draftId: String) = lock.withLock { created[draftId] }
+    override suspend fun putCreatedDraft(entry: CreatedDraft) = lock.withLock {
+        created[entry.draftId] = entry
     }
 
     override suspend fun clearAll() {

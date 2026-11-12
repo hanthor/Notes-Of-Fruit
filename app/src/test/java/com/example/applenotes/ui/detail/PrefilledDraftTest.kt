@@ -3,6 +3,7 @@ package com.example.applenotes.ui.detail
 import androidx.lifecycle.SavedStateHandle
 import com.example.applenotes.client.NoteRecord
 import com.example.applenotes.data.NotesRepository
+import com.example.applenotes.data.hasRichFormatting
 import com.example.applenotes.export.MarkdownImport
 import com.example.applenotes.proto.NoteBodyEditor
 import com.example.applenotes.proto.NoteBodyEditor.AttrSpan
@@ -79,13 +80,43 @@ class PrefilledDraftTest {
         // through the normal splice path, then the editor exits.
         assertEquals(1, api.creates.size)
         assertEquals(1, api.modifies.size)
-        val saved = api.records.getValue("CREATED-1")
+        val saved = api.records.getValue(api.created())
         assertEquals("Groceries\nmilk\nbold line", saved.visibleText())
         val spans = NoteBodyEditor.parseAttributeRunsFromBase64(saved.stringField("TextDataEncrypted")!!)
         val chars = NoteBodyEditor.expandSpansToChars(saved.visibleText()!!, spans)
         assertEquals(ParagraphStyle.CHECKBOX_LIST, chars["Groceries\n".length].style)
         assertTrue(chars["Groceries\nmilk\n".length].bold)
         assertTrue(vm.status.value.exitRequested)
+    }
+
+    private fun assertFormatted(recordName: String) {
+        val saved = api.records.getValue(recordName)
+        val spans = NoteBodyEditor.parseAttributeRunsFromBase64(saved.stringField("TextDataEncrypted")!!)
+        val chars = NoteBodyEditor.expandSpansToChars(saved.visibleText()!!, spans)
+        assertEquals(ParagraphStyle.CHECKBOX_LIST, chars["Groceries\n".length].style)
+        assertTrue(chars["Groceries\nmilk\n".length].bold)
+    }
+
+    /**
+     * Finding: the follow-up modify that applies a new note's formatting ran
+     * only in the editor's success handler for the same open note. Another
+     * "New note" arriving while the create is in flight moved the editor on,
+     * and the formatting was lost.
+     */
+    @Test
+    fun formattingIsAppliedEvenIfTheEditorMovedOnDuringTheCreate() {
+        val imported = MarkdownImport.markdown("# Groceries\n- [ ] milk\n**bold** line")
+        val vm = NoteDetailViewModel(repo, SavedStateHandle())
+        vm.open("o", draft(), folderRef("DefaultFolder-CloudKit"), DraftPrefill.of(imported.text, imported.spans))
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        api.gates["createNote"] = gate
+        vm.autoSave()
+        // A second "New note" intent: the editor opens another draft.
+        vm.open("o2", NoteRecord("draft-2", "Note", null, emptyMap()), folderRef("DefaultFolder-CloudKit"))
+        gate.complete(Unit)
+        assertEquals(1, api.creates.size)
+        assertEquals(1, api.modifies.size)
+        assertFormatted(api.created())
     }
 
     @Test

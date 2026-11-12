@@ -5,6 +5,7 @@ import com.example.applenotes.client.NoteSummary
 import com.example.applenotes.client.NotesError
 import com.example.applenotes.client.ZoneChanges
 import com.example.applenotes.data.local.InMemoryNotesStore
+import com.example.applenotes.data.local.NotesStore
 import com.example.applenotes.data.local.PendingDraft
 import com.example.applenotes.data.local.StoreMeta
 import com.example.applenotes.testing.FakeAuthGateway
@@ -16,11 +17,14 @@ import com.example.applenotes.testing.noteRecord
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -316,6 +320,77 @@ class NotesRepositorySyncTest {
         testScheduler.advanceUntilIdle()
         assertEquals(listOf("OTHER-1"), repo.notes.value.map { it.recordName })
         assertTrue(store.allDrafts().isEmpty())
+    }
+
+    /** A store whose clearAll waits for [gate], like a slow database transaction. */
+    private class SlowClearStore(val inner: InMemoryNotesStore) : NotesStore by inner {
+        val gate = CompletableDeferred<Unit>()
+        override suspend fun clearAll() {
+            gate.await()
+            inner.clearAll()
+        }
+    }
+
+    /** Finding: the account-switch clear ran concurrently with re-populating the store. */
+    @Test
+    fun anAccountSwitchWaitsForTheClearBeforeRepopulating() = runTest {
+        val slow = SlowClearStore(store)
+        fun repoOn(s: NotesStore) = NotesRepository(
+            auth = auth,
+            replicaUuidLoader = { REPLICA_UUID },
+            externalScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler)),
+            clock = { now },
+            connectivity = net,
+            backoff = {},
+            store = s,
+            draftScheduler = scheduler,
+        )
+        repoOn(store).signIn()
+        assertTrue(store.loadSummaries().any { it.recordName == "NOTE-A" })
+
+        // Next launch: the session belongs to another Apple ID.
+        val repo = repoOn(slow)
+        api.accountId = "dsid-2"
+        api.records.clear()
+        api.put(noteRecord("OTHER-1", "Other account"))
+        val signIn = async { repo.signIn() }
+        testScheduler.runCurrent()
+        // Nothing of account A may be shown while the clear is pending.
+        assertFalse(repo.notes.value.any { it.recordName == "NOTE-A" })
+        slow.gate.complete(Unit)
+        signIn.await()
+        testScheduler.advanceUntilIdle()
+
+        assertEquals(listOf("OTHER-1"), repo.notes.value.map { it.recordName })
+        assertEquals(listOf("OTHER-1"), store.loadSummaries().map { it.recordName })
+        // The new account's marker survived the clear.
+        assertNotNull(store.getMeta(StoreMeta.ACCOUNT))
+        assertNotEquals(null, store.getMeta(StoreMeta.LAST_FULL_SYNC_MS))
+    }
+
+    @Test
+    fun signInRightAfterSignOutWaitsForTheClear() = runTest {
+        val slow = SlowClearStore(store)
+        val repo = NotesRepository(
+            auth = auth,
+            replicaUuidLoader = { REPLICA_UUID },
+            externalScope = CoroutineScope(SupervisorJob() + UnconfinedTestDispatcher(testScheduler)),
+            clock = { now },
+            connectivity = net,
+            backoff = {},
+            store = slow,
+            draftScheduler = scheduler,
+        )
+        repo.signIn()
+        repo.signOut()
+        auth.savedLogin = true
+        val signIn = async { repo.signIn() }
+        testScheduler.runCurrent()
+        slow.gate.complete(Unit)
+        signIn.await()
+        testScheduler.advanceUntilIdle()
+        assertEquals(setOf("NOTE-A", "NOTE-B"), store.loadSummaries().map { it.recordName }.toSet())
+        assertNotNull(store.getMeta(StoreMeta.ACCOUNT))
     }
 
     @Test

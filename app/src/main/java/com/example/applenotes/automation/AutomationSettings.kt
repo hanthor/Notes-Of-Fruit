@@ -10,7 +10,7 @@ interface AutomationGate {
 
 /**
  * Stored in private SharedPreferences (read synchronously by the
- * permission-protected entry points). Never backed up (allowBackup=false and
+ * automation entry points). Never backed up (allowBackup=false and
  * the extraction rules exclude every domain), so a restored device starts
  * with automation off.
  */

@@ -1,5 +1,6 @@
 package com.example.applenotes.automation
 
+import com.example.applenotes.export.stripAttachmentChars
 import com.example.applenotes.integrations.isPlausibleRecordName
 
 /**
@@ -11,6 +12,9 @@ object AutomationApi {
     const val ACTION_APPEND_TO_NOTE = "io.github.hanthor.notesoffruit.action.APPEND_TO_NOTE"
     const val ACTION_OPEN_NOTE = "io.github.hanthor.notesoffruit.action.OPEN_NOTE"
 
+    /** Every action there is. No delete, overwrite or read-back, on purpose. */
+    val ACTIONS = setOf(ACTION_CREATE_NOTE, ACTION_APPEND_TO_NOTE, ACTION_OPEN_NOTE)
+
     const val EXTRA_TITLE = "title"
     const val EXTRA_TEXT = "text"
     const val EXTRA_FOLDER = "folder"
@@ -21,6 +25,13 @@ object AutomationApi {
     const val RESULT_SUCCESS = "success"
     const val RESULT_RECORD_NAME = "record_name"
     const val RESULT_ERROR = "error"
+
+    /**
+     * Activity result only: true when a CREATE/APPEND request started with
+     * [android.app.Activity.startActivityForResult] was accepted and is being
+     * saved. The outcome arrives through [EXTRA_RESULT_PENDING_INTENT].
+     */
+    const val RESULT_ACCEPTED = "accepted"
 
     /** Longest title / text accepted in one request (chars). */
     const val MAX_TEXT_CHARS = 100_000
@@ -53,7 +64,9 @@ internal data class AutomationExtras(
 
 internal fun parseAutomationRequest(action: String?, e: AutomationExtras): Parsed {
     val title = e.title?.trim()?.takeIf { it.isNotEmpty() }
-    val text = e.text?.replace("\r\n", "\n")
+    // Text from another app can't carry an attachment: a stray U+FFFC would
+    // pose as one (see stripAttachmentChars).
+    val text = e.text?.replace("\r\n", "\n")?.let(::stripAttachmentChars)
     val recordName = e.recordName?.trim()?.takeIf { it.isNotEmpty() }
     if (title != null && title.length > AutomationApi.MAX_TITLE_CHARS) return Parsed.Invalid("title is too long")
     if (text != null && text.length > AutomationApi.MAX_TEXT_CHARS) return Parsed.Invalid("text is too long")
@@ -67,10 +80,11 @@ internal fun parseAutomationRequest(action: String?, e: AutomationExtras): Parse
 
     return when (action) {
         AutomationApi.ACTION_CREATE_NOTE -> {
-            if (title == null && text.isNullOrBlank()) return Parsed.Invalid("title or text is required")
-            if (title != null && title.contains('\n')) return Parsed.Invalid("title must be a single line")
+            val newTitle = title?.let(::stripAttachmentChars)?.trim()?.takeIf { it.isNotEmpty() }
+            if (newTitle == null && text.isNullOrBlank()) return Parsed.Invalid("title or text is required")
+            if (newTitle != null && newTitle.contains('\n')) return Parsed.Invalid("title must be a single line")
             val folder = e.folder?.trim()?.takeIf { it.isNotEmpty() }
-            Parsed.Ok(AutomationRequest.Create(title.orEmpty(), text?.trim('\n').orEmpty(), folder))
+            Parsed.Ok(AutomationRequest.Create(newTitle.orEmpty(), text?.trim('\n').orEmpty(), folder))
         }
         AutomationApi.ACTION_APPEND_TO_NOTE -> {
             target()?.let { return Parsed.Invalid(it) }
