@@ -568,4 +568,35 @@ class NoteDetailViewModelTest {
         vm.save(alsoExit = false)
         assertEquals("first words", api.records.getValue("NOTE-0").visibleText())
     }
+
+    /** A note whose first line is empty opens unmodified and saves exactly as it was. */
+    @Test
+    fun aBlankFirstLineRoundTrips() {
+        api.put(noteRecord("NOTE-BLANK", "\nfoo\nbar"))
+        val vm = newVm()
+        vm.openExisting("NOTE-BLANK")
+        assertEquals("\nfoo\nbar", vm.fullBodyForSave)
+        assertFalse(vm.isModified)
+        // Body-relative spans start at the body (no title line to skip).
+        assertEquals(0, vm.titlePrefixSkip)
+        vm.type(vm.bodyDraft.text + "\nbaz")
+        vm.save(alsoExit = false)
+        assertEquals("\nfoo\nbar\nbaz", api.records.getValue("NOTE-BLANK").visibleText())
+    }
+
+    /** Finding: a new note starting with an empty line was created without it, then "merged". */
+    @Test
+    fun aNewNoteStartingWithABlankLineIsSavedAsTyped() {
+        val vm = newVm()
+        vm.open("open-d", com.example.applenotes.client.NoteRecord("draft-1", "Note", null, emptyMap()), folderRef("F"))
+        vm.type("\nfoo")
+        vm.save(alsoExit = false)
+        val created = api.records.values.single { it.recordName.startsWith("CREATED") }
+        assertEquals("\nfoo", created.visibleText())
+        val s = vm.status.value
+        assertNull(s.message)
+        assertFalse(s.saveFailed)
+        assertFalse(vm.isModified)
+        assertEquals("\nfoo", vm.fullBodyForSave)
+    }
 }

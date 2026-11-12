@@ -747,16 +747,14 @@ class NotesRepository(
             // self-consistent record on first sight.
             val folderRef = pendingFolderRef
                 ?: error("Draft has no folderRef — refresh first.")
-            // Split fullBodyForSave back into title + body the
-            // same way it was assembled upstream (see
-            // NoteDetailViewModel.fullBodyForSave): the first '\n' is the
-            // title/body separator. computeTitleAndSnippet's
-            // `newTitle` is derived heuristically (first
-            // non-blank line, possibly trimmed) and would
-            // misbehave under leading whitespace / leading
-            // blank lines, duplicating content into the proto.
+            // The proto gets exactly what was typed (newBody), including
+            // an empty first line or a trailing newline. Title / body only
+            // fill the list fields: the first line and the rest, as
+            // before, except that a blank first line doesn't make a blank
+            // title (Apple's lists show the first non-blank line).
             val firstNlIdx = newBody.indexOf('\n')
-            val createTitle = if (firstNlIdx < 0) newBody else newBody.substring(0, firstNlIdx)
+            val firstLine = if (firstNlIdx < 0) newBody else newBody.substring(0, firstNlIdx)
+            val createTitle = firstLine.ifBlank { newTitle }
             val createBody = if (firstNlIdx < 0) "" else newBody.substring(firstNlIdx + 1)
             AppLog.v(TAG) {
                 "save (draft→createNote): title='${createTitle.take(30)}' " +
@@ -767,6 +765,7 @@ class NotesRepository(
                 body = createBody,
                 folderRef = folderRef,
                 ourReplicaUuid = uuid,
+                noteText = newBody,
             )
             // Remember the created note at once: a second save of this
             // draft (worker vs. editor, or a retry) must modify it, not

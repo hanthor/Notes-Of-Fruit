@@ -27,11 +27,13 @@ interface NotesApi {
     suspend fun lookupNote(recordName: String): NoteRecord
     suspend fun fetchAssetBytes(downloadUrl: String): ByteArray?
     suspend fun deleteNote(recordName: String, recordChangeTag: String): String
+    /** [noteText] is the exact visible text to create; [title] / [body] only fill the list fields. */
     suspend fun createNote(
         title: String,
         body: String,
         folderRef: JsonElement,
         ourReplicaUuid: ByteArray,
+        noteText: String,
     ): NoteRecord
     suspend fun modifyNoteBody(
         recordName: String,
@@ -78,11 +80,13 @@ class CloudKitNotesApi(private val client: AppleNotesClient) : NotesApi {
         body: String,
         folderRef: JsonElement,
         ourReplicaUuid: ByteArray,
+        noteText: String,
     ) = client.createNote(
         title = title,
         body = body,
         folderRef = folderRef,
         ourReplicaUuid = ourReplicaUuid,
+        noteText = noteText,
     )
 
     override suspend fun modifyNoteBody(

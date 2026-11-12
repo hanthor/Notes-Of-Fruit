@@ -277,7 +277,12 @@ class NoteDetailViewModel(
 
     /** Length of the title line plus its separator in [fullBodyForSave]. */
     val titlePrefixSkip: Int
-        get() = if (fullBodyForSave.contains('\n')) titleDraft.length + 1 else titleDraft.length
+        get() = when {
+            // assembleFullBody: an empty title adds no line, the body starts at 0.
+            titleDraft.isEmpty() -> 0
+            bodyDraft.text.isEmpty() -> titleDraft.length
+            else -> titleDraft.length + 1
+        }
 
     // ----- Opening -----
 
@@ -554,9 +559,7 @@ class NoteDetailViewModel(
         val spans = body.spans
         attrSpans = spans
 
-        val firstNl = original.indexOf('\n')
-        val initialTitle = if (firstNl < 0) original else original.substring(0, firstNl)
-        val initialBody = if (firstNl < 0) "" else original.substring(firstNl + 1)
+        val (initialTitle, initialBody) = splitFullBody(original)
 
         if (keepCurrentDraft && body is NoteBody.Editable) {
             // titleDraft / bodyDraft / spansDraft / prevFullBody stay; they
@@ -582,7 +585,7 @@ class NoteDetailViewModel(
             // (which we render separately in the app bar). Trim the title's
             // worth of spans off the front so styleAt indexes align with
             // `initialBody`.
-            val skip = if (original.contains('\n')) initialTitle.length + 1 else initialTitle.length
+            val skip = original.length - initialBody.length
             val hasRichFormatting = attrSpansAfter(spans, skip).any {
                 it.style != NoteBodyEditor.ParagraphStyle.BODY &&
                     it.style != NoteBodyEditor.ParagraphStyle.TITLE
@@ -920,9 +923,7 @@ class NoteDetailViewModel(
      * change happened before it.
      */
     private fun setDraftFromFullText(full: String, spans: List<NoteBodyEditor.AttrSpan>) {
-        val firstNl = full.indexOf('\n')
-        val title = if (firstNl < 0) full else full.substring(0, firstNl)
-        val body = if (firstNl < 0) "" else full.substring(firstNl + 1)
+        val (title, body) = splitFullBody(full)
         val old = bodyDraft
         val sel = old.selection
         var lcp = 0
@@ -1093,6 +1094,21 @@ internal fun assembleFullBody(title: String, body: String): String = when {
     title.isEmpty() -> body
     body.isEmpty() -> title
     else -> "$title\n$body"
+}
+
+/**
+ * The note's full visible text -> (title, body), the inverse of
+ * [assembleFullBody]: the first line is the title, except that a text
+ * starting with an empty line keeps it in the body (title ""), so the blank
+ * line survives a round trip instead of being dropped by the assembly.
+ */
+internal fun splitFullBody(full: String): Pair<String, String> {
+    val firstNl = full.indexOf('\n')
+    return when {
+        firstNl < 0 -> full to ""
+        firstNl == 0 -> "" to full
+        else -> full.substring(0, firstNl) to full.substring(firstNl + 1)
+    }
 }
 
 /**

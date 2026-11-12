@@ -418,6 +418,12 @@ class AppleNotesClient(
      * one from any existing note. The TextDataEncrypted body is a bare
      * topotext.String registering us as the sole replica with one substring
      * covering the entire content.
+     *
+     * [title] and [body] fill the TitleEncrypted / SnippetEncrypted fields
+     * (what the list shows). The proto holds [noteText], which defaults to
+     * the two joined by '\n'; pass it to create exactly what the user typed
+     * (an empty first line, a trailing newline), which the title/body pair
+     * can't express.
      */
     @OptIn(kotlin.io.encoding.ExperimentalEncodingApi::class)
     suspend fun createNote(
@@ -425,12 +431,9 @@ class AppleNotesClient(
         body: String,
         folderRef: JsonElement,
         ourReplicaUuid: ByteArray,
+        noteText: String = joinTitleAndBody(title, body),
     ): NoteRecord {
         val recordName = java.util.UUID.randomUUID().toString().uppercase()
-        // Combine title and body into a single note_text where line 1 = title.
-        val noteText = if (title.isNotEmpty() && body.isNotEmpty()) "$title\n$body"
-            else if (title.isNotEmpty()) title
-            else body
         val textDataB64 = com.example.applenotes.proto.NoteCreator.buildEmptyNoteB64(
             ourReplicaUuid, noteText,
         )
@@ -731,6 +734,13 @@ class AppleNotesClient(
         CoreLog.e(TAG, "$label per-record error: $code -> ${err.javaClass.simpleName}")
         throw err
     }
+}
+
+/** Title line + body as one note text (line 1 = title); either is omitted when empty. */
+fun joinTitleAndBody(title: String, body: String): String = when {
+    title.isNotEmpty() && body.isNotEmpty() -> "$title\n$body"
+    title.isNotEmpty() -> title
+    else -> body
 }
 
 /**

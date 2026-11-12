@@ -93,7 +93,13 @@ class FakeNotesApi : NotesApi {
         val replicaVersion: String?,
     )
 
-    data class Create(val title: String, val body: String, val folderRef: JsonElement, val uuid: ByteArray)
+    data class Create(
+        val title: String,
+        val body: String,
+        val folderRef: JsonElement,
+        val uuid: ByteArray,
+        val noteText: String,
+    )
 
     val modifies = mutableListOf<Modify>()
 
@@ -225,10 +231,11 @@ class FakeNotesApi : NotesApi {
         body: String,
         folderRef: JsonElement,
         ourReplicaUuid: ByteArray,
+        noteText: String,
     ): NoteRecord {
         enter("createNote")
-        creates += Create(title, body, folderRef, ourReplicaUuid)
-        val text = if (title.isNotEmpty() && body.isNotEmpty()) "$title\n$body" else title.ifEmpty { body }
+        creates += Create(title, body, folderRef, ourReplicaUuid, noteText)
+        val text = noteText
         val rec = NoteRecord(
             recordName = "CREATED-${++createCounter}",
             recordType = "Note",

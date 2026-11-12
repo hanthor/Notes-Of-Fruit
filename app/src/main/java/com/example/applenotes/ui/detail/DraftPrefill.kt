@@ -19,9 +19,7 @@ data class DraftPrefill(
     val spans: List<SavedSpan> = emptyList(),
 ) {
     internal fun toSnapshot(): DraftSnapshot {
-        val firstNl = text.indexOf('\n')
-        val title = if (firstNl < 0) text else text.substring(0, firstNl)
-        val body = if (firstNl < 0) "" else text.substring(firstNl + 1)
+        val (title, body) = splitFullBody(text)
         val hasSpans = spans.isNotEmpty() && spans.sumOf { it.length } == text.length
         return DraftSnapshot(
             title = title,
