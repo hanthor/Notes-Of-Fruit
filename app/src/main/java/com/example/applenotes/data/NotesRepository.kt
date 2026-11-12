@@ -1093,6 +1093,34 @@ class NotesRepository(
         discardDraft(record.recordName)
     }
 
+    /**
+     * Delete a note the user is holding as a never-saved draft ([draftKey] =
+     * "draft-<uuid>"). Waits for a save of the draft that is in flight (the
+     * per-note save lock), then deletes whatever that save, an earlier one
+     * or the background worker created, and drops the draft. Without a
+     * create there is nothing to do on the network.
+     */
+    suspend fun deleteUnsavedDraft(draftKey: String) {
+        externalScope.async {
+            saveLock(draftKey).withLock {
+                val mapping = runCatchingCancellable { store.createdDraft(draftKey) }.getOrNull()
+                val created = mapping?.let {
+                    try {
+                        withApi(idempotent = true) { api -> api.lookupNote(it.recordName) }
+                    } catch (e: NotesError.Server) {
+                        // An unconfirmed create that never reached the server.
+                        if (e.code == "NOT_FOUND") null else throw e
+                    }
+                }
+                if (created?.recordChangeTag != null) {
+                    AppLog.i(TAG) { "delete: draft $draftKey was created as ${created.recordName}; deleting it" }
+                    deleteNote(created)
+                }
+                discardDraft(draftKey)
+            }
+        }.await()
+    }
+
     // ----- Unsent drafts / outbox (issue #13) -----
 
     /** The outbox entry for [key] (a recordName or a local "draft-<uuid>"), if any. */

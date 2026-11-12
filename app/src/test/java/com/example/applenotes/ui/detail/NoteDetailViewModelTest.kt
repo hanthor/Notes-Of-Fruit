@@ -212,6 +212,44 @@ class NoteDetailViewModelTest {
         assertTrue(api.deletes.isEmpty())
     }
 
+    /** Finding: Delete while the first save was in flight discarded the draft, then the create landed. */
+    @Test
+    fun deletingANewNoteWhileItIsBeingCreatedDeletesWhatWasCreated() {
+        val vm = newVm()
+        vm.open("open-d", com.example.applenotes.client.NoteRecord("draft-1", "Note", null, emptyMap()), folderRef("X"))
+        vm.type("first words")
+        val gate = CompletableDeferred<Unit>()
+        api.gates["createNote"] = gate
+        vm.save(alsoExit = false)
+        assertTrue(vm.status.value.saving)
+        vm.delete()
+        assertFalse(vm.status.value.exitRequested)
+        gate.complete(Unit)
+        assertEquals(1, api.creates.size)
+        assertEquals(listOf(api.created()), api.deletes.map { it.first })
+        assertTrue(api.records.keys.none { it == api.created() })
+        assertTrue(repo.notes.value.none { it.recordName == api.created() })
+        assertTrue(vm.status.value.exitRequested)
+        // Nothing of it is left to be sent later.
+        assertTrue(repo.pendingDrafts.value.isEmpty())
+        vm.close()
+        assertTrue(repo.pendingDrafts.value.isEmpty())
+        assertEquals(1, api.creates.size)
+        assertTrue(api.modifies.isEmpty())
+    }
+
+    /** The editor still holds the stub but the worker already created the note. */
+    @Test
+    fun deletingADraftTheWorkerAlreadyCreatedDeletesTheNote() = runTest(main.dispatcher) {
+        val stub = com.example.applenotes.client.NoteRecord("draft-1", "Note", null, emptyMap())
+        val created = repo.saveNote(stub, folderRef("X"), "made in the background", false, null)
+        val vm = newVm()
+        vm.open("open-d", stub, folderRef("X"))
+        vm.delete()
+        assertEquals(listOf(created.recordName), api.deletes.map { it.first })
+        assertTrue(vm.status.value.exitRequested)
+    }
+
     @Test
     fun deleteRemovesNoteAndExits() {
         val vm = newVm()

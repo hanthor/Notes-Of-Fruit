@@ -144,6 +144,13 @@ class NoteDetailViewModel(
     /** The open note was deleted: nothing of it goes to the outbox on the way out. */
     private var noteDeleted = false
 
+    /**
+     * Draft keys the user deleted. A first save of one that was still being
+     * dispatched when the delete ran (so the repository found nothing
+     * created yet) deletes what it creates as soon as it returns.
+     */
+    private val deletedDrafts = mutableSetOf<String>()
+
     // ----- "Updated on another device" (issue #16; RemoteChangeWatcher.kt) -----
 
     private val remoteWatcher = RemoteChangeWatcher(repository::lookupNote, repository.online)
@@ -389,6 +396,7 @@ class NoteDetailViewModel(
     /** The draft as it should be on disk, or null when nothing is unsaved. */
     private fun currentPendingDraft(): PendingDraft? {
         val rec = record ?: return null
+        if (noteDeleted || _status.value.deleting) return null
         if (isReadOnly || !isModified) return null
         if (rec.recordChangeTag == null && pendingFolderRef == null) return null
         return PendingDraft(
@@ -724,6 +732,8 @@ class NoteDetailViewModel(
     fun save(alsoExit: Boolean, isPureAppendOverride: Boolean? = null) {
         val rec = record ?: return
         val openId = _status.value.openId ?: return
+        // Being deleted (or gone): nothing more goes to iCloud.
+        if (_status.value.deleting || noteDeleted) return
         // Never write a body we couldn't decode back to iCloud.
         if (isReadOnly) return
         // An unresolved conflict: the draft must not be written as-is
@@ -745,6 +755,13 @@ class NoteDetailViewModel(
         viewModelScope.launch {
             val result = runCatchingCancellable {
                 repository.saveNote(rec, folderRef, newBody, pureAppend, spans)
+            }
+            val created = result.getOrNull()
+            if (rec.recordChangeTag == null && rec.recordName in deletedDrafts && created?.recordChangeTag != null) {
+                AppLog.i(TAG) { "save: the draft was deleted while it was being created; deleting the note" }
+                runCatchingCancellable { repository.deleteNote(created) }
+                updateIfOpen(openId) { it.copy(saving = false) }
+                return@launch
             }
             val queuedExit = queuedSave?.takeIf { it.first == openId }?.second
             if (queuedExit != null) queuedSave = null
@@ -956,16 +973,23 @@ class NoteDetailViewModel(
     fun delete() {
         val rec = record ?: return
         val openId = _status.value.openId ?: return
-        // Draft (never saved to iCloud): just discard locally, no network
-        // call needed.
-        if (rec.recordChangeTag == null) {
-            discardUnsavedChanges()
-            _status.update { it.copy(exitRequested = true) }
-            return
-        }
+        if (_status.value.deleting) return
         _status.update { it.copy(deleting = true, message = null) }
+        queuedSave = null
         viewModelScope.launch {
-            runCatchingCancellable { repository.deleteNote(rec) }
+            // A never-saved draft: the repository waits for a first save that
+            // may be in flight and deletes what it created (no network call
+            // when nothing was). Deleting only locally would let that create
+            // land afterwards and the note reappear.
+            val result = runCatchingCancellable {
+                if (rec.recordChangeTag == null) {
+                    repository.deleteUnsavedDraft(rec.recordName)
+                } else {
+                    repository.deleteNote(rec)
+                }
+            }
+            if (result.isSuccess && rec.recordChangeTag == null) deletedDrafts += rec.recordName
+            result
                 .onSuccess {
                     // The repository dropped the note's disk draft; don't hand
                     // the editor's copy to the worker on the way out.

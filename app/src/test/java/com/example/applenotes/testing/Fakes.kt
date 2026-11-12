@@ -212,7 +212,9 @@ class FakeNotesApi : NotesApi {
 
     override suspend fun lookupNote(recordName: String): NoteRecord {
         enter("lookupNote")
-        return records[recordName] ?: error("no such record $recordName")
+        // Like CloudKit's per-record NOT_FOUND.
+        return records[recordName]
+            ?: throw com.example.applenotes.client.NotesError.Server(200, "NOT_FOUND", "no such record $recordName")
     }
 
     override suspend fun fetchAssetBytes(downloadUrl: String): ByteArray? {
