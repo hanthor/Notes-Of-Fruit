@@ -8,6 +8,15 @@ import com.example.applenotes.proto.NoteBodyEditor.ParagraphStyle
 internal const val ATTACHMENT_CHAR = '\uFFFC'
 
 /**
+ * [text] without U+FFFC. Text from outside the app (share, "Add to Notes",
+ * import, automation, the clipboard) can't carry an attachment, and a stray
+ * object-replacement char would look like one in the editor and on Apple's
+ * clients.
+ */
+internal fun stripAttachmentChars(text: String): String =
+    if (ATTACHMENT_CHAR in text) text.replace(ATTACHMENT_CHAR.toString(), "") else text
+
+/**
  * A note's visible text + attribute runs regrouped into paragraphs of inline
  * runs, the shape both exporters ([NoteHtml], [NoteMarkdown]) walk.
  *

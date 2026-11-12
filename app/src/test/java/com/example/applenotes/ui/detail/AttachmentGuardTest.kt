@@ -8,7 +8,10 @@ import com.example.applenotes.testing.FakeAuthGateway
 import com.example.applenotes.testing.FakeNotesApi
 import com.example.applenotes.testing.MainDispatcherRule
 import com.example.applenotes.testing.REPLICA_UUID
+import com.example.applenotes.testing.noteBodyB64
 import com.example.applenotes.testing.noteRecord
+import com.example.applenotes.proto.NoteAppender
+import com.example.applenotes.proto.NoteBodyEditor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.test.runTest
@@ -68,9 +71,24 @@ class AttachmentGuardTest {
     @get:Rule
     val main = MainDispatcherRule()
 
-    private fun vmWith(text: String): Pair<NoteDetailViewModel, FakeNotesApi> {
+    /**
+     * A note with [text] whose U+FFFCs are real attachments (an attribute run
+     * with attachment_info), unless [realAttachments] is false (a stray char).
+     */
+    private fun vmWith(text: String, realAttachments: Boolean = true): Pair<NoteDetailViewModel, FakeNotesApi> {
         val api = FakeNotesApi()
-        api.put(noteRecord("NOTE-A", text))
+        val spans = text.map { c ->
+            if (c == obj && realAttachments) {
+                NoteBodyEditor.AttrSpan(
+                    1, NoteBodyEditor.ParagraphStyle.BODY, isAttachment = true,
+                    attachmentRecordName = "4629BD72-48F7-48C9-8080-1334094B5DCC", attachmentType = "public.png",
+                )
+            } else {
+                NoteBodyEditor.AttrSpan(1, NoteBodyEditor.ParagraphStyle.BODY)
+            }
+        }
+        val b64 = NoteAppender.setBodyBase64(noteBodyB64(text), REPLICA_UUID, text, 1, spans)
+        api.put(noteRecord("NOTE-A", text, textB64 = b64))
         val repo = NotesRepository(
             auth = FakeAuthGateway(api),
             replicaUuidLoader = { REPLICA_UUID },
@@ -117,5 +135,35 @@ class AttachmentGuardTest {
         assertEquals("bfore\n$obj\nafter!", vm.bodyDraft.text)
         assertTrue(vm.isModified)
         assertNull(vm.status.value.message)
+    }
+
+    @Test
+    fun theTestNoteReallyHasAnAttachment() = runTest(main.dispatcher) {
+        val (vm, _) = vmWith("Title\nbefore\n$obj\nafter")
+        assertEquals(1, vm.spansDraft.count { it.isAttachment })
+    }
+
+    /** A U+FFFC without an attachment run is just a character: it can be deleted. */
+    @Test
+    fun aStrayObjectCharWithoutAnAttachmentCanBeDeleted() = runTest(main.dispatcher) {
+        val (vm, _) = vmWith("Title\nbefore\n$obj\nafter", realAttachments = false)
+        vm.onBodyChange(TextFieldValue("before\n\nafter", TextRange(7)))
+        assertEquals("before\n\nafter", vm.bodyDraft.text)
+        assertNull(vm.status.value.message)
+    }
+
+    /** Pasted text can't bring in an attachment: its U+FFFCs are dropped. */
+    @Test
+    fun pastedObjectCharsAreDropped() = runTest(main.dispatcher) {
+        val (vm, _) = vmWith("Title\nbefore\n$obj\nafter")
+        // Paste "x￼y" at the end of "before".
+        vm.onBodyChange(TextFieldValue("beforex${obj}y\n$obj\nafter", TextRange(9)))
+        assertEquals("beforexy\n$obj\nafter", vm.bodyDraft.text)
+        assertEquals(TextRange(8), vm.bodyDraft.selection)
+        assertEquals(1, vm.spansDraft.count { it.isAttachment })
+        assertEquals(vm.fullBodyForSave.length, vm.spansDraft.sumOf { it.length })
+        // Into the title as well.
+        vm.onTitleChange("Ti${obj}tle")
+        assertEquals("Title", vm.titleDraft)
     }
 }

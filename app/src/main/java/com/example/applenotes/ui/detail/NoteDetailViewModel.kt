@@ -625,26 +625,33 @@ class NoteDetailViewModel(
 
     fun onTitleChange(value: String) {
         if (isReadOnly) return
-        val title = value.replace("\n", "")
-        if (rejectAttachmentRemoval(titleDraft, title)) return
+        val title = dropInsertedAttachmentChars(titleDraft, TextFieldValue(value.replace("\n", ""))).text
+        if (rejectAttachmentRemoval(titleDraft, title, offset = 0)) return
         titleDraft = title
         syncSpans()
         outbox.onEdited()
     }
 
-    fun onBodyChange(value: TextFieldValue) {
+    fun onBodyChange(input: TextFieldValue) {
         if (isReadOnly) return
+        // Pasted text can't bring in an attachment.
+        val value = dropInsertedAttachmentChars(bodyDraft.text, input)
         // Keep the previous value (text + selection) when the edit would
         // delete an attachment (issue #14; see AttachmentGuard.kt).
-        if (rejectAttachmentRemoval(bodyDraft.text, value.text)) return
+        if (rejectAttachmentRemoval(bodyDraft.text, value.text, offset = titlePrefixSkip)) return
         bodyDraft = value
         syncSpans()
         outbox.onEdited()
     }
 
-    /** True (and a snackbar is shown) when [old] → [new] would remove an attachment. */
-    private fun rejectAttachmentRemoval(old: String, new: String): Boolean {
-        if (!removesAttachment(old, new)) return false
+    /**
+     * True (and a snackbar is shown) when [old] → [new] would remove an
+     * attachment. [old] starts at [offset] of the full text; only a U+FFFC
+     * with an attachment run counts (a stray one is just a character).
+     */
+    private fun rejectAttachmentRemoval(old: String, new: String, offset: Int): Boolean {
+        val chars by lazy { NoteBodyEditor.expandSpansToChars(fullBodyForSave, spansDraft) }
+        if (!removesAttachment(old, new) { chars.getOrNull(offset + it)?.isAttachment == true }) return false
         _status.update { it.copy(message = message(ATTACHMENT_DELETE_BLOCKED, null)) }
         return true
     }

@@ -1,6 +1,7 @@
 package com.example.applenotes.ui.detail
 
 import com.example.applenotes.proto.NoteBodyEditor
+import com.example.applenotes.export.stripAttachmentChars
 import kotlinx.serialization.Serializable
 
 /**
@@ -40,8 +41,8 @@ data class DraftPrefill(
     companion object {
         /** Plain text, optionally with a separate subject that becomes the title line. */
         fun ofText(text: String, subject: String? = null): DraftPrefill {
-            val body = text.replace("\r\n", "\n").trim('\n')
-            val title = subject?.replace('\n', ' ')?.trim().orEmpty()
+            val body = stripAttachmentChars(text).replace("\r\n", "\n").trim('\n')
+            val title = subject?.let(::stripAttachmentChars)?.replace('\n', ' ')?.trim().orEmpty()
             val full = when {
                 title.isEmpty() -> body
                 body.isEmpty() -> title

@@ -50,6 +50,19 @@ class EntryIntentParserTest {
         assertNull(parse(EntryIntent(Intent.ACTION_PROCESS_TEXT, "text/plain", processText = "")))
     }
 
+    /** A stray U+FFFC from outside would look like an (undeletable) attachment. */
+    @Test
+    fun objectReplacementCharsAreStrippedFromIncomingText() {
+        assertEquals(
+            "Sub\nab",
+            draftText(parse(EntryIntent(Intent.ACTION_SEND, "text/plain", text = "a￼b", subject = "S￼ub"))),
+        )
+        assertEquals("x\n\ny", draftText(parse(EntryIntent(Intent.ACTION_SEND_MULTIPLE, "text/plain", textList = listOf("x￼", "y")))))
+        assertEquals("sel", draftText(parse(EntryIntent(Intent.ACTION_PROCESS_TEXT, "text/plain", processText = "￼sel"))))
+        assertNull(parse(EntryIntent(Intent.ACTION_PROCESS_TEXT, "text/plain", processText = "￼")))
+        assertNull(parse(EntryIntent(Intent.ACTION_SEND, "text/plain", text = "￼ ")))
+    }
+
     @Test
     fun newNoteActionsOpenAnEmptyDraft() {
         val empty = IncomingRequest.NewDraft(DraftPrefill(""))
