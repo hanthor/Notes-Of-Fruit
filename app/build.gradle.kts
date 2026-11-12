@@ -142,6 +142,8 @@ dependencies {
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.androidx.datastore.preferences)
   implementation(libs.androidx.core.splashscreen)
+  // Optional app lock (fingerprint / face / device PIN); also brings androidx.fragment.
+  implementation(libs.androidx.biometric)
   // Tooling
   debugImplementation(libs.androidx.compose.ui.tooling)
   // Instrumented tests

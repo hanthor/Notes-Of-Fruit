@@ -120,10 +120,13 @@ app/src/main/java/com/example/applenotes/
 │   ├── TextMerge.kt          Line-level three-way merge for save conflicts
 │   ├── NoteRebase.kt         Merge formatting, splice the merge onto the fresh proto, "Keep both"
 │   ├── Connectivity.kt       Online/offline flow (ConnectivityManager)
+│   ├── AttachmentCache.kt    Disk cache for attachment images (LRU, 100 MB) + small LRU map
+│   ├── AttachmentAssets.kt   CKAsset / PreviewImages JSON → download URL + cache key
 │   └── NoteBody.kt           decodeNoteBody(): Editable vs ReadOnly(reason)
 ├── export/                   Attribute runs → HTML / Markdown, Markdown → spans (import), SAF export, print
 ├── integrations/             Share-in / PROCESS_TEXT / shortcuts / QS tile / notes-role entry (IntegrationEntryActivity)
 ├── log/AppLog.kt              The only logcat access; release builds log no note content
+├── security/                 Optional app lock: policy (timeout), DataStore toggle, BiometricPrompt, lock screen
 ├── proto/
 │   ├── ProtobufWire.kt       Hand-rolled protobuf wire format (no schema dep)
 │   ├── Gzip.kt               gzip + zlib detect/compress/decompress
@@ -136,8 +139,10 @@ app/src/main/java/com/example/applenotes/
     ├── AppViewModel.kt       Navigation, sign-in, list, folder selection
     ├── list/                 Notes list + folder drawer
     ├── detail/               NoteDetailViewModel, editor, formatting toolbar, attachments
+    │                         (AttachmentImageLoader / ImageDecoding: off-main-thread, downsampled;
+    │                          AttachmentGuard: no deleting attachments; RemoteChangeWatcher)
     ├── login/                WebView sign-in
-    ├── settings/             Settings screen (automation toggle)
+    ├── settings/             Settings screen (automation toggle, app lock)
     └── common/               Shared screens, snackbar helper, alpha dialog
 
 app/src/debug/java/com/example/applenotes/

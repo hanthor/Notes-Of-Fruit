@@ -88,6 +88,9 @@ you can't say you weren't warned.
 | Import `.txt` / `.md` | Opens a draft; Markdown headings/lists/checkboxes/bold/italic become native formatting |
 | Automation intent API (Tasker etc.) | Create / append / open; off by default, permission-protected — see [docs/automation.md](docs/automation.md) |
 | `icloud.com/notes` links, widget, on-device search, DocumentsProvider | Not yet |
+| App lock | Optional (Settings, off by default): fingerprint / face / screen lock on cold start and after more than a minute in the background; while on, notes are hidden from Recents and screenshots (`FLAG_SECURE`) |
+| Tablet / landscape list-detail layout | Not yet |
+| Move notes between folders, folder create/rename/delete, restore from Recently Deleted, pinning | Not yet — needs writes to Apple's schema that haven't been observed |
 | Delete | Uses CloudKit `forceDelete`; Mac surfaces as "Recently Deleted" (server-managed, not a hard wipe) |
 | Format display (paragraph styles + inline) | Works — Title / Heading / Subheading / Body / Monospaced; Bulleted / Dashed / Numbered / Checkbox; bold / italic / underline / strikethrough; clickable links |
 | Table attachments | Decoded from `MergeableDataEncrypted` (CRDT graph), rendered as a real grid; row/column order from `crRows`/`crColumns` (synthetic-tested only) |
