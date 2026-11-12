@@ -112,7 +112,7 @@ you can't say you weren't warned.
 | Other attachments (sketches, scans, maps, etc.) | Apple's preview image with a type label when the record has one, otherwise a labeled placeholder card |
 | "Updated on another device" | While a note is open, visible and online, its `recordChangeTag` is checked every 60 s (read-only lookup); a change shows a banner with Reload (only offered when there are no unsaved edits — otherwise saving merges) |
 | Locked (password-protected) notes | Detected by the `Crypto*` fields on the record and shown read-only with "This note is locked with a password…" (plus the password hint if present). Never decrypted. Field names from public reverse-engineering, not verified on a real account; the list can't show a lock icon yet (it doesn't fetch those fields) |
-| Removing attachments | Blocked: an edit that would delete an attachment (its `U+FFFC` character) is refused with "Attachments can't be removed from Android yet" (we can't verify that round-trips) |
+| Removing attachments | Blocked: an edit that would delete an attachment (a `U+FFFC` character with an attachment run) is refused with "Attachments can't be removed from Android yet" (we can't verify that round-trips). A `U+FFFC` arriving from outside (share, import, paste, automation) is stripped |
 | Format input toolbar | Works — paragraph style picker, list toggles (bullet/dash/numbered/checkbox), inline B/I/U/S, link |
 | Tap-to-toggle checkbox | Works in formatted view (auto-saves) |
 | Conflict UX | On CONFLICT/oplock the edit is three-way merged (line level) onto the fresh record and spliced onto its proto; overlapping edits ask "Keep both" / "Discard my changes" (unit-tested; not yet round-tripped against a real concurrent Mac edit) |
