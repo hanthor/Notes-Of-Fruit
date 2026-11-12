@@ -241,7 +241,7 @@
     <string name="settings_automation_summary">Lets apps such as Tasker create notes, append to notes and open notes.</string>
     <string name="settings_automation_details">An app also needs the \"Automate Notes of Fruit\" permission, which you grant to it separately. Automation can add text but never delete or replace a note. Writes go straight to iCloud without opening the editor, so only allow apps you trust. See docs/automation.md in the project for the intent API.</string>
     <string name="settings_app_lock">App lock</string>
-    <string name="settings_app_lock_summary">Ask for your fingerprint, face or screen lock when the app starts and after it has been in the background for more than a minute. Also hides notes from the recent-apps screen and blocks screenshots.</string>
+    <string name="settings_app_lock_summary">Ask for your fingerprint, face or screen lock when the app starts and after it has been in the background for more than a minute. Also hides notes from the recent-apps screen and blocks screenshots. This is a privacy screen: notes saved on this device are not encrypted.</string>
     <string name="settings_app_lock_needs_screen_lock">Set a screen lock on this device first</string>
     <string name="settings_app_lock_prompt_title">Turn on app lock</string>
     <string name="settings_app_lock_prompt_subtitle">Confirm it\'s you</string>

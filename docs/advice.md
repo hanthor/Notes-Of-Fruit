@@ -265,6 +265,20 @@ what isn't:
 
 ## Known limitations
 
+- **App lock is a privacy screen, not encryption.** The optional app lock
+  (`security/`) hides the UI behind the system fingerprint / face / screen-lock
+  prompt, keeps notes out of Recents thumbnails and blocks screenshots
+  (`FLAG_SECURE`), and hides widget titles and DocumentsProvider roots while
+  on. It does not encrypt anything: the Room cache, on-disk drafts and the
+  WebView cookie jar sit in app-private storage like any other app's data, and
+  the prompt is not bound to a `CryptoObject` (CodeQL's "insecure local
+  authentication" finding), so someone who can hook the app process (root,
+  instrumentation) can skip it. Real protection would mean encrypting the
+  cache and drafts with a Keystore key that requires user authentication and
+  unwrapping it through the prompt's `CryptoObject`. Costs: `BIOMETRIC_STRONG`
+  only (weak face unlock can't be offered), the PIN/pattern fallback with a
+  crypto object only on Android 11+, and background draft sync can't read
+  drafts while the app is locked.
 - **Concurrent-edit conflicts** (issue #4): on CONFLICT the save looks the
   note up again and runs a three-way merge (`data/TextMerge.kt`: base = what
   the user started from, local = the draft, remote = the fresh text). The

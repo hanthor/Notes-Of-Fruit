@@ -20,7 +20,17 @@ internal const val APP_LOCK_AUTHENTICATORS = BIOMETRIC_WEAK or DEVICE_CREDENTIAL
 internal fun canUseAppLock(context: Context): Boolean =
     BiometricManager.from(context).canAuthenticate(APP_LOCK_AUTHENTICATORS) == BiometricManager.BIOMETRIC_SUCCESS
 
-/** Show the system prompt. [onResult] gets true on success, false on cancel / error. */
+/**
+ * Show the system prompt. [onResult] gets true on success, false on cancel / error.
+ *
+ * Deliberately not bound to a CryptoObject: the app lock is a privacy screen
+ * (hides the UI, Recents thumbnails and screenshots), not encryption. The
+ * local cache and drafts are not encrypted at rest, so there is no key for a
+ * CryptoObject to unlock, and someone who can hook the app process could
+ * bypass this callback. See docs/advice.md "Known limitations" for what a
+ * real at-rest-encryption design would cost (BIOMETRIC_STRONG only, PIN
+ * fallback Android 11+, no background draft sync while locked).
+ */
 internal fun showAppLockPrompt(
     activity: FragmentActivity,
     title: String,
