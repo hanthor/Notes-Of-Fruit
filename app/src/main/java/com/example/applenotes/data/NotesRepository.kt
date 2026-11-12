@@ -261,6 +261,9 @@ class NotesRepository(
      * network.
      */
     suspend fun loadCache(): Boolean {
+        // Never read the store while a sign-out / account-switch clear is
+        // still deleting it (we'd show, and re-cache, the old account's data).
+        awaitPendingClear()
         if (!cacheLoaded) {
             val gen = generation
             val notes = runCatchingCancellable { store.loadSummaries() }
@@ -541,11 +544,14 @@ class NotesRepository(
      * drafts rather than showing them, or saving them into this account.
      */
     private suspend fun adoptAccount(newApi: NotesApi) {
+        awaitPendingClear()
         val account = newApi.accountId?.let(::accountFingerprint) ?: return
         val previous = runCatchingCancellable { store.getMeta(StoreMeta.ACCOUNT) }.getOrNull()
         if (previous != null && previous != account) {
             AppLog.w(TAG, "signed in to a different account; clearing the previous account's cache and drafts")
-            clearLocalData()
+            // The clear also deletes `meta`: finish it before writing ACCOUNT
+            // and before anything re-populates the store.
+            clearLocalData().join()
         }
         safeStore("store account") { store.setMeta(StoreMeta.ACCOUNT, account) }
     }
@@ -565,8 +571,21 @@ class NotesRepository(
         clearLocalData()
     }
 
-    /** Forget the cache, sync state and unsent drafts (sign-out: they're this account's). */
-    private fun clearLocalData() {
+    /** The last [clearLocalData] run; anything that reads or fills the store waits for it. */
+    @Volatile
+    private var pendingClear: Job? = null
+
+    private suspend fun awaitPendingClear() {
+        pendingClear?.join()
+    }
+
+    /**
+     * Forget the cache, sync state and unsent drafts (sign-out: they're this
+     * account's). The in-memory state goes at once; the returned job deletes
+     * the store (in [externalScope], so it finishes even if the caller goes
+     * away). [loadCache] and [adoptAccount] wait for it.
+     */
+    private fun clearLocalData(): Job {
         generation++
         synchronized(syncLock) {
             syncJob?.cancel()
@@ -579,10 +598,12 @@ class NotesRepository(
         _pendingDrafts.value = emptyList()
         cacheLoaded = false
         draftScheduler.cancelAll()
-        externalScope.launch {
+        val previous = pendingClear
+        return externalScope.launch {
+            previous?.join()
             safeStore("clear local data") { store.clearAll() }
             safeStore("clear other local data") { clearOtherLocalData() }
-        }
+        }.also { pendingClear = it }
     }
 
     /** Run a store operation; a storage failure is logged, never fatal (the cache is rebuildable). */
