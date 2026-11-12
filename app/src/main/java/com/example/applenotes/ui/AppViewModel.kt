@@ -19,9 +19,12 @@ import com.example.applenotes.data.DRAFT_RECORD_PREFIX
 import com.example.applenotes.data.NotesRepository
 import com.example.applenotes.client.NotesError
 import com.example.applenotes.data.errorDetails
+import com.example.applenotes.data.TRASH_RECORD_NAME
+import com.example.applenotes.integrations.IncomingRequest
 import com.example.applenotes.data.runCatchingCancellable
 import com.example.applenotes.data.userMessage
 import com.example.applenotes.ui.common.UiMessage
+import com.example.applenotes.ui.detail.DraftPrefill
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -68,7 +71,12 @@ sealed interface AppScreen {
         val openId: String,
         val record: NoteRecord?,
         val pendingFolderRef: JsonElement? = null,
+        /** Initial (unsaved) content for a new draft opened from outside the app. */
+        val prefill: DraftPrefill? = null,
     ) : AppScreen
+
+    /** The minimal settings screen (automation toggle). */
+    data object Settings : AppScreen
 }
 
 /** Snackbar actions offered by the list screen. */
@@ -76,6 +84,7 @@ sealed interface ListAction {
     data object RetryRefresh : ListAction
     data class RetryOpen(val note: NoteSummary) : ListAction
     data object RetryCreate : ListAction
+    data class RetryCreatePrefilled(val prefill: DraftPrefill) : ListAction
 }
 
 data class NotesListUiState(
@@ -187,10 +196,14 @@ class AppViewModel(
                     // screen. The detail ViewModel rebuilds it (and any
                     // unsaved draft) from its own saved state.
                     val openId = savedState.get<String>(KEY_DETAIL_OPEN_ID)
-                    _screen.value = if (openId != null) {
-                        AppScreen.Detail(openId, record = null)
+                    if (openId != null) {
+                        // A request that arrived meanwhile waits until the
+                        // restored note is closed (see showList), so the
+                        // restored draft isn't replaced.
+                        _screen.value = AppScreen.Detail(openId, record = null)
                     } else {
-                        AppScreen.NotesList
+                        _screen.value = AppScreen.NotesList
+                        processPendingIncoming()
                     }
                 }
                 .onFailure {
@@ -230,6 +243,8 @@ class AppViewModel(
 
     fun signOut() {
         _loginStaleToken.value = null
+        // Don't carry content shared before sign-out into another account.
+        pendingIncoming = null
         repository.signOut()
         savedState.remove<String>(KEY_DETAIL_OPEN_ID)
         _listMessage.value = null
@@ -273,10 +288,18 @@ class AppViewModel(
         }
     }
 
-    fun createNote() {
+    fun createNote() = createNote(prefill = null)
+
+    /**
+     * New draft in the selected folder (the default folder when "Recently
+     * Deleted" is selected), optionally prefilled. Still a deferred create:
+     * nothing is written until the editor saves.
+     */
+    fun createNote(prefill: DraftPrefill?) {
         _screen.value = AppScreen.Loading("Creating note…")
+        val folder = selectedFolder.value.takeIf { it != TRASH_RECORD_NAME } ?: DEFAULT_FOLDER_RECORD_NAME
         viewModelScope.launch {
-            runCatchingCancellable { repository.folderRefForNewNote(selectedFolder.value) }
+            runCatchingCancellable { repository.folderRefForNewNote(folder) }
                 .onSuccess { folderRef ->
                     // DEFERRED CREATE: do NOT call createNote yet. iCloud.com
                     // doesn't either — clicking "new note" just opens an
@@ -298,21 +321,107 @@ class AppViewModel(
                         recordChangeTag = null,
                         rawFields = emptyMap(),
                     )
-                    showDetail(draftRecord, pendingFolderRef = folderRef)
+                    showDetail(draftRecord, pendingFolderRef = folderRef, prefill = prefill)
                 }
                 .onFailure {
                     AppLog.e(TAG, "createNote (folder lookup) failed", it)
                     if (needsSignIn(it)) return@onFailure signInAgain()
                     _screen.value = AppScreen.NotesList
-                    postListMessage("Couldn't create a note: ${userMessage(it)}", ListAction.RetryCreate, errorDetails(it))
+                    postListMessage(
+                        "Couldn't create a note: ${userMessage(it)}",
+                        if (prefill == null) ListAction.RetryCreate else ListAction.RetryCreatePrefilled(prefill),
+                        errorDetails(it),
+                    )
                 }
         }
     }
 
-    private fun showDetail(record: NoteRecord, pendingFolderRef: JsonElement?) {
+    private fun showDetail(record: NoteRecord, pendingFolderRef: JsonElement?, prefill: DraftPrefill? = null) {
         val openId = java.util.UUID.randomUUID().toString()
         savedState[KEY_DETAIL_OPEN_ID] = openId
-        _screen.value = AppScreen.Detail(openId, record, pendingFolderRef)
+        _screen.value = AppScreen.Detail(openId, record, pendingFolderRef, prefill)
+    }
+
+    // ----- Requests from outside the app (share, shortcuts, tile, import) -----
+
+    /** Waiting for sign-in / the list; mirrored into [savedState] when small enough. */
+    private var pendingIncoming: IncomingRequest?
+        get() = pendingIncomingInMemory
+            ?: savedState.get<String>(KEY_PENDING_INCOMING)?.let { IncomingRequest.decodeOrNull(it) }
+        set(value) {
+            pendingIncomingInMemory = value
+            val encoded = value?.let { IncomingRequest.encode(it) }
+            if (encoded != null && encoded.length <= MAX_SAVED_INCOMING_CHARS) {
+                savedState[KEY_PENDING_INCOMING] = encoded
+            } else {
+                savedState.remove<String>(KEY_PENDING_INCOMING)
+            }
+        }
+    private var pendingIncomingInMemory: IncomingRequest? = null
+
+    /**
+     * Show [request] now if the user is signed in and on the list, settings
+     * or a loaded note (the editor auto-saves the open draft first; see
+     * DetailRoute). Otherwise keep it and show it once sign-in finishes.
+     */
+    internal fun handleIncoming(request: IncomingRequest) {
+        val s = _screen.value
+        val ready = repository.isSignedIn &&
+            (s == AppScreen.NotesList || s == AppScreen.Settings || (s is AppScreen.Detail && s.record != null))
+        if (ready) {
+            pendingIncoming = null
+            process(request)
+        } else {
+            pendingIncoming = request
+        }
+    }
+
+    /** True while a request is waiting for sign-in / the list. */
+    internal val hasPendingIncoming: Boolean get() = pendingIncoming != null
+
+    private fun processPendingIncoming() {
+        val request = pendingIncoming ?: return
+        pendingIncoming = null
+        process(request)
+    }
+
+    private fun process(request: IncomingRequest) {
+        when (request) {
+            is IncomingRequest.NewDraft -> createNote(request.prefill)
+            is IncomingRequest.OpenNote -> openNoteByRecordName(request.recordName)
+            is IncomingRequest.OpenNoteByTitle -> {
+                val wanted = request.title.trim()
+                val matches = repository.notes.value.filter {
+                    it.folderRecordName != TRASH_RECORD_NAME && it.title?.trim() == wanted
+                }
+                if (matches.size == 1) {
+                    openNote(matches[0])
+                } else {
+                    postListMessage(
+                        if (matches.isEmpty()) "No note titled \"$wanted\"" else "${matches.size} notes are titled \"$wanted\"",
+                        action = null,
+                    )
+                }
+            }
+        }
+    }
+
+    /** Open a note by recordName (launcher shortcut / automation). */
+    fun openNoteByRecordName(recordName: String) {
+        val summary = repository.notes.value.firstOrNull { it.recordName == recordName }
+            ?: NoteSummary(
+                recordName = recordName,
+                title = null,
+                snippet = null,
+                modificationTimestampMs = null,
+                deleted = false,
+                folderRecordName = null,
+            )
+        openNote(summary)
+    }
+
+    fun showSettings() {
+        _screen.value = AppScreen.Settings
     }
 
     /**
@@ -324,6 +433,7 @@ class AppViewModel(
         savedState.remove<String>(KEY_DETAIL_OPEN_ID)
         _screen.value = AppScreen.NotesList
         if (message != null) postListMessage(message, action = null)
+        processPendingIncoming()
     }
 
     private fun postListMessage(text: String, action: ListAction?, details: String? = null) {
@@ -336,6 +446,7 @@ class AppViewModel(
             ListAction.RetryRefresh -> refresh()
             is ListAction.RetryOpen -> openNote(a.note)
             ListAction.RetryCreate -> createNote()
+            is ListAction.RetryCreatePrefilled -> createNote(a.prefill)
             null -> Unit
         }
     }
@@ -347,6 +458,8 @@ class AppViewModel(
     companion object {
         internal const val KEY_SELECTED_FOLDER = "selectedFolder"
         internal const val KEY_DETAIL_OPEN_ID = "detailOpenId"
+        internal const val KEY_PENDING_INCOMING = "pendingIncoming"
+        private const val MAX_SAVED_INCOMING_CHARS = 100_000
 
         /** Saved-state stand-in for the null "All notes" folder. */
         private const val ALL_NOTES = "\u0000all-notes"

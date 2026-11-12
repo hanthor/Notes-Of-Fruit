@@ -1,6 +1,5 @@
 package com.example.applenotes.ui.detail
 
-import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -51,6 +50,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.applenotes.data.ReadOnlyReason
+import com.example.applenotes.export.NoteExportMenuItems
+import com.example.applenotes.export.NoteSnapshot
+import com.example.applenotes.export.rememberNoteExportActions
+import com.example.applenotes.integrations.NoteShortcuts
 import com.example.applenotes.ui.common.CenteredSpinner
 import androidx.compose.material3.Surface
 import androidx.compose.material.icons.filled.Lock
@@ -98,6 +101,9 @@ internal fun NoteDetailScreen(
     }
 
     var showDeleteDialog by rememberSaveable { mutableStateOf(false) }
+    val exportActions = rememberNoteExportActions {
+        NoteSnapshot.of(vm.titleDraft, vm.fullBodyForSave, vm.spansDraft, vm.attachments.value)
+    }
     var menuOpen by remember { mutableStateOf(false) }
 
     // Auto-save on lifecycle ON_PAUSE (app backgrounded, screen turns off,
@@ -232,21 +238,9 @@ internal fun NoteDetailScreen(
                             }
                         }
                         IconButton(
-                            onClick = {
-                                // Share the visible body (title + content) as
-                                // plaintext via Android's standard chooser.
-                                val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                                    type = "text/plain"
-                                    putExtra(Intent.EXTRA_TEXT, fullBodyForSave)
-                                    titleDraft.takeIf { it.isNotBlank() }?.let {
-                                        putExtra(Intent.EXTRA_SUBJECT, it)
-                                    }
-                                }
-                                val chooser = Intent.createChooser(sendIntent, null).apply {
-                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                }
-                                shareContext.startActivity(chooser)
-                            },
+                            // Plain text plus an HTML version carrying the
+                            // note's formatting (export/NoteHtml.kt).
+                            onClick = exportActions.share,
                         ) {
                             Icon(Icons.Default.Share, contentDescription = "Share")
                         }
@@ -254,6 +248,22 @@ internal fun NoteDetailScreen(
                             Icon(Icons.Default.MoreVert, contentDescription = "More")
                         }
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            NoteExportMenuItems(
+                                actions = exportActions,
+                                hasImages = attachments.values.any { it is AttachmentContent.Image },
+                                canPin = record.recordChangeTag != null,
+                                onPin = {
+                                    val ok = NoteShortcuts.requestPin(shareContext, record.recordName, titleDraft)
+                                    if (!ok) {
+                                        android.widget.Toast.makeText(
+                                            shareContext,
+                                            "Your launcher doesn't support pinned shortcuts",
+                                            android.widget.Toast.LENGTH_SHORT,
+                                        ).show()
+                                    }
+                                },
+                                onDismiss = { menuOpen = false },
+                            )
                             DropdownMenuItem(
                                 text = { Text("Delete note") },
                                 leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },

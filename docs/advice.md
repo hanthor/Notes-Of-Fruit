@@ -67,7 +67,10 @@ relitigate without reason. (These used to live in `PLAN.md`.)
 | Mid-text splice round-trips | Edit existing text on Android → save → verify on Mac |
 | Create new note with v4 UUID | Tap FAB → type → back → verify note appears (and stays) on Mac |
 | Auto-save | Type, swipe back without explicit save → reopen → text persists |
-| Share OUT | Detail screen → share button → Android chooser appears |
+| Share OUT | Detail screen → share button → Android chooser appears; a rich-text target (e.g. Gmail) keeps headings/bold/lists |
+| Share IN | Share text from another app → "New note" → editor opens prefilled, unsaved; back saves |
+| Import | Drawer → Import → pick a `.md` → draft shows native formatting; save, check on Mac that no `#`/`**` appears |
+| Export | Editor menu → Export as Markdown/HTML; drawer → Export folder… (one file per note) |
 | Folder filter | Drawer → select folder → list filters; trash hidden by default |
 
 The `DebugReceiver` exposes the same code paths via `adb` broadcasts. It only
@@ -107,6 +110,7 @@ Watch with `adb logcat -s AppleNotesClient:* AppleNotesDebug:*`.
 ```
 app/src/main/java/com/example/applenotes/
 ├── auth/                      WebView cookie harvest, session refresh, DeviceIdentity (v4 UUID!)
+├── automation/                Automation intent API (docs/automation.md): parsing, gate, receiver, OPEN_NOTE activity
 ├── client/                    AppleNotesClient: HTTP layer, fetchRecents/lookupNote/createNote/modifyNoteBody
 │   └── NotesError.kt         Typed failures (AuthExpired, Offline, Conflict, Throttled, …) + mapping
 ├── data/
@@ -117,6 +121,8 @@ app/src/main/java/com/example/applenotes/
 │   ├── NoteRebase.kt         Merge formatting, splice the merge onto the fresh proto, "Keep both"
 │   ├── Connectivity.kt       Online/offline flow (ConnectivityManager)
 │   └── NoteBody.kt           decodeNoteBody(): Editable vs ReadOnly(reason)
+├── export/                   Attribute runs → HTML / Markdown, Markdown → spans (import), SAF export, print
+├── integrations/             Share-in / PROCESS_TEXT / shortcuts / QS tile / notes-role entry (IntegrationEntryActivity)
 ├── log/AppLog.kt              The only logcat access; release builds log no note content
 ├── proto/
 │   ├── ProtobufWire.kt       Hand-rolled protobuf wire format (no schema dep)
@@ -131,6 +137,7 @@ app/src/main/java/com/example/applenotes/
     ├── list/                 Notes list + folder drawer
     ├── detail/               NoteDetailViewModel, editor, formatting toolbar, attachments
     ├── login/                WebView sign-in
+    ├── settings/             Settings screen (automation toggle)
     └── common/               Shared screens, snackbar helper, alpha dialog
 
 app/src/debug/java/com/example/applenotes/
@@ -147,6 +154,42 @@ Read order if you're new:
    `AppViewModel.createNote` (the FAB).
 5. `src/test/.../proto/TopotextTestSupport.kt` — the invariant checker every
    write-path test runs; use it for any new proto code.
+
+### Entry points from outside the app
+
+Every system entry point (share sheet, "Add to Notes", launcher shortcuts,
+the QS tile, the notes role) goes through `integrations/IntegrationEntryActivity`,
+which turns the intent into an `IncomingRequest` and hands it to
+`AppViewModel.handleIncoming` via the in-process `PendingIncoming` holder.
+Requests wait (also in the SavedStateHandle) until the user is signed in and
+on the list. New drafts open *prefilled but unsaved* (`DraftPrefill`), so the
+only write path is still the editor's `NotesRepository.saveNote`. Each
+exported component's reasoning is in comments in `AndroidManifest.xml`.
+Because `createNote` writes plain text only, a draft that carries formatting
+(toolbar before the first save, or an imported Markdown file) gets one
+follow-up modify after the create to apply its attribute runs
+(`NoteDetailViewModel.save`, `formattingPending`).
+
+## Reaching Reminders (not implemented)
+
+Apple Reminders is not in the Notes data this app reads. What is known, and
+what isn't:
+
+- Notes lives in the `com.apple.notes` CloudKit container, private database,
+  zone `Notes` (see [protocol.md](protocol.md)). Reminders are **not** records
+  in that zone.
+- Modern (iOS 13+ "upgraded") Reminders sync through CloudKit too, in a
+  different container. Its identifier, zone names, record types and field
+  encoding have **not been observed** by this project. Older accounts used
+  CalDAV, which is a different protocol altogether.
+- Unknown: whether the web session cookies this app harvests are accepted for
+  the Reminders container; whether the setup/bootstrap call returns a
+  Reminders endpoint the same way it does for Notes; whether Reminders
+  fields are encrypted/compressed like `TextDataEncrypted`.
+- How to find out, the same way Notes was done: open Reminders on iCloud.com
+  in a desktop browser, record its network traffic, and A/B a change (create,
+  complete, edit a reminder) against the requests. Write findings into
+  protocol.md before writing code.
 
 ## Known limitations
 

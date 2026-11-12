@@ -76,6 +76,7 @@ internal fun NotesListScreen(
     onMessageAction: (UiMessage<ListAction>) -> Unit = {},
     onMessageDismissed: (UiMessage<ListAction>) -> Unit = {},
     offline: Boolean = false,
+    drawerActions: List<DrawerAction> = emptyList(),
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -126,6 +127,12 @@ internal fun NotesListScreen(
                 onSignOut = {
                     drawerScope.launch { drawerState.close() }
                     onSignOut()
+                },
+                actions = drawerActions.map { a ->
+                    DrawerAction(a.label, a.icon) {
+                        drawerScope.launch { drawerState.close() }
+                        a.onClick()
+                    }
                 },
             )
         },

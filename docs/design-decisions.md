@@ -11,6 +11,10 @@ Notes added later:
 - Q2: auto-save shipped as lifecycle-only, as decided (the `ON_PAUSE`
   observer in `NoteDetailScreen`).
 - Q6: the FAB shipped.
+- Q4: Share OUT now sends an HTML version (formatting) alongside the plain
+  text; Markdown/HTML file export and print/PDF were added (issue #21).
+- Q5: Share IN shipped (issue #20): shared text opens a prefilled, unsaved
+  draft in the editor, so the only write path is still the editor's save.
 - Q8: the *application ID* has since changed to
   `io.github.hanthor.notesoffruit` (issue #19). The Kotlin packages, Gradle
   namespace and DebugReceiver action names are still `com.example.applenotes`,

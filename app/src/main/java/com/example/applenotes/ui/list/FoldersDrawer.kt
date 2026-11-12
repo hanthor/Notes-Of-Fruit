@@ -37,6 +37,8 @@ internal fun FoldersDrawer(
     selectedFolder: String?,
     onSelect: (String?) -> Unit,
     onSignOut: () -> Unit,
+    /** Extra drawer entries (import / export / settings); empty = none. */
+    actions: List<DrawerAction> = emptyList(),
 ) {
     // Per-folder note counts (excluding deleted=true outliers, which we
     // already filter at fetch time).
@@ -87,6 +89,10 @@ internal fun FoldersDrawer(
                 icon = Icons.Default.Delete,
             )
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            for (a in actions) {
+                DrawerFolderRow(label = a.label, count = 0, selected = false, onClick = a.onClick, icon = a.icon)
+            }
+            if (actions.isNotEmpty()) HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -109,6 +115,13 @@ internal fun FoldersDrawer(
         }
     }
 }
+
+/** A non-folder drawer entry. */
+internal class DrawerAction(
+    val label: String,
+    val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val onClick: () -> Unit,
+)
 
 @Composable
 private fun DrawerFolderRow(

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Debug copy of src/main/res/xml/shortcuts.xml: same shortcuts, debug application ID. -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="new_note"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_new_note"
+        android:shortcutShortLabel="@string/shortcut_new_note_short">
+        <intent
+            android:action="io.github.hanthor.notesoffruit.action.NEW_NOTE"
+            android:targetPackage="io.github.hanthor.notesoffruit.debug"
+            android:targetClass="com.example.applenotes.integrations.IntegrationEntryActivity" />
+    </shortcut>
+</shortcuts>
