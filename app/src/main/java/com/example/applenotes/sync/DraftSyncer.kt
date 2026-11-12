@@ -10,7 +10,6 @@ import com.example.applenotes.data.decodeNoteBody
 import com.example.applenotes.data.local.PendingDraft
 import com.example.applenotes.log.AppLog
 import com.example.applenotes.ui.detail.DraftSnapshot
-import com.example.applenotes.ui.detail.hasRichFormatting
 import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.serialization.json.Json
 
@@ -86,16 +85,9 @@ class DraftSyncer(private val repository: NotesRepository) {
                 newSpans = spans,
                 requirePendingDraft = draft.key,
             )
-            if (base.recordChangeTag == null && hasRichFormatting(draft.fullText, spans)) {
-                // createNote writes plain text; apply the formatting with one
-                // modify of the created note, kept in the outbox until done.
-                val followUp = draft.copy(key = saved.recordName, baseRecord = saved, folderRefJson = null)
-                repository.persistDraft(followUp).join()
-                repository.saveNote(
-                    saved, null, draft.fullText, isPureAppend = false, newSpans = spans,
-                    requirePendingDraft = followUp.key,
-                )
-            }
+            // A new note's formatting follow-up is the repository's (see
+            // NotesRepository.saveNote): applied right away, or kept in the
+            // outbox under the created recordName and scheduled.
             onSaved(saved)
             AppLog.i(TAG) { "saved unsent draft ${draft.key}" }
             Outcome.Done

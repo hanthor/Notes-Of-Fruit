@@ -24,6 +24,7 @@ import com.example.applenotes.data.EditConflictException
 import com.example.applenotes.data.NoteRebase
 import com.example.applenotes.data.TextMerge
 import com.example.applenotes.data.decodeNoteBody
+import com.example.applenotes.data.hasRichFormatting
 import com.example.applenotes.data.local.PendingDraft
 import com.example.applenotes.data.local.spansSignature
 import com.example.applenotes.data.errorDetails
@@ -758,16 +759,17 @@ class NoteDetailViewModel(
             result.onSuccess { updated ->
                 if (!stillHere) return@onSuccess
                 pendingRetry = PendingRetry.NONE
-                // createNote only writes plain text (NoteCreator has no
-                // attribute runs), so a draft that carries formatting (the
-                // toolbar used before the first save, or an imported
-                // Markdown file) needs one follow-up modify through the
-                // normal splice path (and its conflict merge) to apply it.
-                val formattingPending = rec.recordChangeTag == null && hasRichFormatting(newBody, spans)
-                // Did the user keep typing while the save was in flight?
-                var changedSince = fullBodyForSave != newBody || spansDraft != spans || formattingPending
                 // Did the save merge in a change from another device?
                 val saved = decodeNoteBody(updated)
+                // A new note's formatting is applied by the repository right
+                // after the create (createNote writes plain text). If that
+                // follow-up couldn't be sent yet it waits in the outbox for
+                // the worker; keep the formatted draft here meanwhile
+                // (no save of our own: the repository owns the follow-up).
+                val formattingPending = rec.recordChangeTag == null && hasRichFormatting(newBody, spans) &&
+                    !(saved is NoteBody.Editable && hasRichFormatting(saved.text, saved.spans))
+                // Did the user keep typing while the save was in flight?
+                var changedSince = fullBodyForSave != newBody || spansDraft != spans || formattingPending
                 val mergedRemote = saved is NoteBody.Editable && saved.text != newBody
                 var conflict: EditConflict? = null
                 if (changedSince && mergedRemote) {
@@ -819,7 +821,7 @@ class NoteDetailViewModel(
                 when {
                     exit && !changedSince -> _status.update { it.copy(exitRequested = true) }
                     // Save the rest before leaving / for the queued request.
-                    changedSince && (exit || queuedExit != null || formattingPending) -> save(alsoExit = exit)
+                    changedSince && (exit || queuedExit != null) -> save(alsoExit = exit)
                 }
             }.onFailure { e ->
                 AppLog.e(TAG, "save failed", e)
@@ -1116,24 +1118,4 @@ internal fun splitFullBody(full: String): Pair<String, String> {
         firstNl == 0 -> "" to full
         else -> full.substring(0, firstNl) to full.substring(firstNl + 1)
     }
-}
-
-/**
- * True when [spans] (over [text]) carry anything beyond plain Body text and a
- * Title-styled first line.
- */
-internal fun hasRichFormatting(text: String, spans: List<NoteBodyEditor.AttrSpan>): Boolean {
-    val firstLineEnd = text.indexOf('\n').let { if (it < 0) text.length else it }
-    var offset = 0
-    for (s in spans) {
-        val styled = when (s.style) {
-            NoteBodyEditor.ParagraphStyle.BODY -> false
-            // Title on the first line is what every note has; elsewhere it's formatting.
-            NoteBodyEditor.ParagraphStyle.TITLE -> offset + s.length > firstLineEnd + 1
-            else -> true
-        }
-        if (styled || s.bold || s.italic || s.underline || s.strikethrough || s.linkUrl != null) return true
-        offset += s.length
-    }
-    return false
 }

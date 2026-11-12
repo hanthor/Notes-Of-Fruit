@@ -769,10 +769,61 @@ class NotesRepository(
         safeStore("record created draft") { store.putCreatedDraft(entry) }
         addCreatedSummary(created.recordName, folderRef, newBody)
         val createdBody = decodeNoteBody(created)
-        if (createdBody is NoteBody.Editable && createdBody.text == newBody) return created
+        if (createdBody is NoteBody.Editable && createdBody.text == newBody) {
+            if (newSpans == null || !hasRichFormatting(newBody, newSpans)) return created
+            return applyFormattingAfterCreate(draftKey, entry, newBody, newSpans)
+        }
         // The note exists with other text (an earlier attempt sent an older
         // version of the draft): bring it up to date through the modify path.
         return saveOverCreated(entry, newBody, newSpans)
+    }
+
+    /**
+     * createNote writes plain text (NoteCreator has no attribute runs), so a
+     * draft that carries formatting (the toolbar before the first save, an
+     * imported Markdown file) gets one follow-up modify of the created note
+     * through the normal splice path. Done here, for every caller (editor,
+     * worker), not by whoever happens to still be looking at the note.
+     *
+     * Before trying, the outbox row of the draft is re-keyed to the created
+     * recordName (base = the created record) and that key is scheduled, so a
+     * follow-up that can't be sent now (offline, throttled, a remote edit)
+     * survives the editor going away and the process dying: the worker sends
+     * it later. The create itself succeeded, so a failed follow-up is not an
+     * error for the caller; the record returned is then the plain one.
+     */
+    private suspend fun applyFormattingAfterCreate(
+        draftKey: String,
+        entry: CreatedDraft,
+        newBody: String,
+        newSpans: List<NoteBodyEditor.AttrSpan>,
+    ): NoteRecord {
+        val created = entry.record!!
+        val newKey = created.recordName
+        val rekeyed = draftLock.withLock {
+            val row = runCatchingCancellable { store.getDraft(draftKey) }.getOrNull()
+                ?.takeIf { it.fullText == newBody && it.spansSignature == spansSignature(newSpans) }
+                ?: return@withLock false
+            runCatchingCancellable {
+                store.putDraft(row.copy(key = newKey, baseRecord = created, folderRefJson = null, conflict = false))
+            }.isSuccess
+        }
+        if (rekeyed) draftScheduler.enqueue(newKey)
+        return try {
+            saveOverCreated(entry, newBody, newSpans).also {
+                clearDraftIfSaved(newKey, newBody, newSpans)
+                if (rekeyed) draftScheduler.cancel(newKey)
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: EditConflictException) {
+            AppLog.i(TAG) { "save: formatting the new note overlaps a remote edit; kept for the editor" }
+            markDraftConflict(newKey)
+            created
+        } catch (e: Throwable) {
+            AppLog.w(TAG, "save: formatting the new note failed; it waits in the outbox", e)
+            created
+        }
     }
 
     /**

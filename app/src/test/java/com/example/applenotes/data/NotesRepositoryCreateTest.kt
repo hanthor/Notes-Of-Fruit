@@ -17,6 +17,10 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import com.example.applenotes.data.local.PendingDraft
+import com.example.applenotes.data.local.spansSignature
+import com.example.applenotes.proto.NoteBodyEditor
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import com.example.applenotes.client.NotesError
@@ -158,6 +162,65 @@ class NotesRepositoryCreateTest {
             // nothing written
         }
         assertEquals("Groceries\nred apples", api.records.getValue(created.recordName).visibleText())
+    }
+
+    private val richText = "Groceries\napples"
+    private val richSpans = listOf(
+        NoteBodyEditor.AttrSpan(length = 10, style = NoteBodyEditor.ParagraphStyle.TITLE),
+        NoteBodyEditor.AttrSpan(length = 6, style = NoteBodyEditor.ParagraphStyle.BODY, bold = true),
+    )
+
+    private fun richRow(key: String = "draft-1") = PendingDraft(
+        key = key,
+        baseRecord = null,
+        folderRefJson = folder.toString(),
+        fullText = richText,
+        spansSignature = spansSignature(richSpans),
+        snapshotJson = "{}",
+        updatedAtMs = 1,
+    )
+
+    private fun boldAt(recordName: String, i: Int): Boolean {
+        val r = api.records.getValue(recordName)
+        val spans = NoteBodyEditor.parseAttributeRunsFromBase64(r.stringField("TextDataEncrypted")!!)
+        return NoteBodyEditor.expandSpansToChars(r.visibleText()!!, spans)[i].bold
+    }
+
+    /** The create path itself applies the formatting (createNote writes plain text). */
+    @Test
+    fun aFormattedDraftIsCreatedAndFormattedInOneSave() = runTest {
+        val repo = newRepo()
+        repo.signIn()
+        store.putDraft(richRow())
+        val saved = repo.saveNote(stub(), folder, richText, isPureAppend = false, newSpans = richSpans)
+        assertEquals(1, api.creates.size)
+        assertEquals(1, api.modifies.size)
+        assertTrue(boldAt(saved.recordName, 12))
+        checkProto(api.records.getValue(saved.recordName), richText)
+        assertTrue(store.allDrafts().isEmpty())
+    }
+
+    /**
+     * Finding: after the create the outbox row was cleared as if the
+     * formatting had been saved. When the follow-up can't be sent now, it
+     * must stay in the outbox under the created recordName and be scheduled.
+     */
+    @Test
+    fun aFormattingFollowUpThatFailsStaysInTheOutboxUnderTheCreatedName() = runTest {
+        val repo = newRepo()
+        repo.signIn()
+        store.putDraft(richRow())
+        api.failNext["modifyNoteBody"] = NotesError.Offline()
+        val saved = repo.saveNote(stub(), folder, richText, isPureAppend = false, newSpans = richSpans)
+        // The note exists (plain for now); the save itself succeeded.
+        assertEquals(1, api.creates.size)
+        assertNull(store.getDraft("draft-1"))
+        val row = store.getDraft(saved.recordName)!!
+        assertEquals(richText, row.fullText)
+        assertEquals(spansSignature(richSpans), row.spansSignature)
+        assertEquals(saved.recordName, row.baseRecord!!.recordName)
+        assertNull(row.folderRefJson)
+        assertTrue(saved.recordName in scheduler.enqueued)
     }
 
     @Test
