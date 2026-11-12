@@ -441,14 +441,26 @@ class NoteDetailViewModel(
 
     fun onTitleChange(value: String) {
         if (isReadOnly) return
-        titleDraft = value.replace("\n", "")
+        val title = value.replace("\n", "")
+        if (rejectAttachmentRemoval(titleDraft, title)) return
+        titleDraft = title
         syncSpans()
     }
 
     fun onBodyChange(value: TextFieldValue) {
         if (isReadOnly) return
+        // Keep the previous value (text + selection) when the edit would
+        // delete an attachment (issue #14; see AttachmentGuard.kt).
+        if (rejectAttachmentRemoval(bodyDraft.text, value.text)) return
         bodyDraft = value
         syncSpans()
+    }
+
+    /** True (and a snackbar is shown) when [old] → [new] would remove an attachment. */
+    private fun rejectAttachmentRemoval(old: String, new: String): Boolean {
+        if (!removesAttachment(old, new)) return false
+        _status.update { it.copy(message = message(ATTACHMENT_DELETE_BLOCKED, null)) }
+        return true
     }
 
     /** Toolbar / link-dialog span mutations (full-body coordinates). */
