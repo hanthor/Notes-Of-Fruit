@@ -115,7 +115,8 @@ app/src/main/java/com/example/applenotes/
 │   └── NotesError.kt         Typed failures (AuthExpired, Offline, Conflict, Throttled, …) + mapping
 ├── data/
 │   ├── NotesApi.kt           Interface over the client calls the UI uses (+ fakes in tests)
-│   ├── NotesRepository.kt    App-scoped session, cached notes/folders, save/delete flow
+│   ├── NotesRepository.kt    App-scoped session, cached notes/folders, sync (full / incremental), save/delete flow, outbox
+│   ├── local/                On-device store (Room): note summaries, folders, sync token, opened bodies, unsent drafts
 │   ├── AppGraph.kt           Lazy singleton: one HttpClient, repository, alpha gate
 │   ├── TextMerge.kt          Line-level three-way merge for save conflicts
 │   ├── NoteRebase.kt         Merge formatting, splice the merge onto the fresh proto, "Keep both"
@@ -127,6 +128,7 @@ app/src/main/java/com/example/applenotes/
 ├── integrations/             Share-in / PROCESS_TEXT / shortcuts / QS tile / notes-role entry (IntegrationEntryActivity)
 ├── log/AppLog.kt              The only logcat access; release builds log no note content
 ├── security/                 Optional app lock: policy (timeout), DataStore toggle, BiometricPrompt, lock screen
+├── sync/                     DraftSyncer (+ WorkManager DraftSyncWorker): background saves of unsent drafts
 ├── proto/
 │   ├── ProtobufWire.kt       Hand-rolled protobuf wire format (no schema dep)
 │   ├── Gzip.kt               gzip + zlib detect/compress/decompress
@@ -215,9 +217,42 @@ what isn't:
 - **Errors and sessions** (issue #11): failures are typed
   (`client/NotesError.kt`); an expired session is refreshed from the cookie
   jar once, then the user is sent to sign in with the open note and draft
-  kept. Drafts live in memory and the detail `SavedStateHandle` only; there
-  are no on-disk drafts yet, so force-stopping the app loses an unsaved
-  edit.
+  kept.
+- **Local cache and sync** (issue #12): note summaries, folders, the zone
+  sync token and the records of opened notes live in a Room database
+  (`data/local/`, schema exported to `app/schemas/`; never add a
+  destructive migration, it would delete unsent drafts). Launch shows the
+  cache, then syncs. The incremental path (`AppleNotesClient.fetchZoneChanges`,
+  `POST …/changes/zone`, parsed by `ZoneChangesParser`, which also accepts a
+  batched `zones: [...]` answer) is **untested against a real account**:
+  request and response shapes come from Apple's CloudKit Web Services
+  reference, the tests use synthetic fixtures. Any error on that path
+  (BAD_REQUEST, ZONE_NOT_FOUND, an expired token, missing `syncToken`,
+  unsupported, or a batch that would remove more than half the cached
+  notes) drops the token and does the full recents refetch, which pages
+  with no cap (≈13 notes per request, so a large first sync takes a while;
+  the first page shows at once) and prunes only after a complete pass. A
+  full refetch also runs at least every 24 h. A token is "primed" after
+  each full refetch by enumerating the zone without one; if the server
+  refuses that, refreshes simply stay full refetches. Records of other types
+  (Attachment, Media, …) in a changes response are ignored. Search covers
+  all cached titles/snippets and opened notes' bodies (SQLite `LIKE`, so
+  case-insensitive for ASCII only). At most 300 bodies are cached.
+- **Unsent drafts** (issue #13): the editor writes its draft to the outbox
+  (`pending_draft` table: base record, text, spans) 1 s after typing stops,
+  autosaves after 3 s idle when online, and hands unsaved changes to
+  `DraftSyncWorker` on pause / leave. Saves of one note are serialised in
+  the repository; a draft's created recordName is stored the moment
+  `createNote` returns, so the worker and the editor never create a note
+  twice (the window between the server creating it and the app storing
+  the mapping — a crash there — can still duplicate, as before). A conflict
+  found in the background is never resolved there: the draft is flagged
+  and the editor offers it on the next open, ending in Keep both /
+  Discard. Sign-out deletes the cache, drafts (including unsent ones) and
+  the attachment disk cache; signing in to a *different* Apple ID after a
+  session expired does the same. Decoded images already in memory stay
+  until the process ends. Nothing of this has run on a device or against
+  iCloud yet.
 - **Modern `MergableData` proto is not supported.** Newer Apple Notes (iOS 17+
   collaborative notes?) use a different shape. We refuse to operate on those —
   see `NoteBodyEditor.probe`. Read-only support would be a starting point.
@@ -231,5 +266,6 @@ what isn't:
 - **No subscription / push.** Polls when the user opens the app, plus a
   once-a-minute `lookupNote` of the open note while its screen is visible
   (`RemoteChangeWatcher`; it fetches the whole record, body included, since
-  `lookupNote` has no `desiredKeys`). Background sync, CloudKit
-  subscriptions, and a send queue are all unimplemented.
+  `lookupNote` has no `desiredKeys`). Background sync of the list and
+  CloudKit subscriptions are unimplemented; unsent edits do go out in the
+  background (see "Unsent drafts").

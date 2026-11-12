@@ -72,13 +72,17 @@ you can't say you weren't warned.
 | Capability | Status |
 |---|---|
 | Sign in with Apple ID (cookie-based) | Works |
-| List notes (recents, paginated) | Works |
-| Folder navigation (sidebar, trash filter) | Works |
+| List notes (recents, paginated) | Works, with no cap: the list is cached on the device (Room) and shown at once on launch, then synced in the background ("Updating…"); pull-to-refresh, refresh on resume (at most once a minute, never offline) |
+| Incremental sync (`changes/zone` + sync token) | Implemented defensively, **not yet verified against a real account**: any failure falls back to the full recents refetch, which also runs at least daily |
+| Offline reading | Notes opened before can be opened without a network ("Offline — showing saved copy") |
+| Search | Titles and snippets of every cached note, plus the text of notes opened before |
+| Folder navigation (sidebar, trash filter) | Works; folders seen in a zone-changes sync stay listed even when empty |
 | Read note content (decode topotext proto) | Works for `NOTE_STORE_PROTO`; not the modern `MergableData` shape |
 | Append text | Works (round-trips with Mac) |
 | Mid-text splice (insert/replace/delete) | Works (matches iCloud.com's slot-promotion pattern) |
 | Create new note (FAB → save) | Code path works (deferred-create + v4 UUID); end-to-end Mac round-trip not yet user-confirmed |
-| Auto-save on lifecycle pause | Works (lifecycle `ON_PAUSE` only — see `NoteDetailViewModel.autoSave` in [`ui/detail/`](app/src/main/java/com/example/applenotes/ui/detail/)) |
+| Auto-save | While typing (3 s idle, online), on back, and on `ON_PAUSE`. The draft is written to disk 1 s after typing stops and kept until iCloud confirms the save |
+| Unsent drafts (outbox) | Pausing or leaving with unsaved changes hands the draft to a WorkManager job (network-constrained, exponential backoff) that saves it through the same conflict-merge path, new notes created exactly once; "N unsent changes" on the list retries. Reopening a note with an unsent draft offers "Restore unsaved changes?". Not yet exercised on a device |
 | Share OUT (Android intent chooser) | Works — plain text plus an HTML version with the note's formatting (`EXTRA_HTML_TEXT`) |
 | Share IN / "Add to Notes" text selection | Opens a prefilled, unsaved draft (text only; images not yet) |
 | Launcher shortcuts | Static "New note"; the 4 most recently opened notes (title only); "Pin to home screen" from the editor |

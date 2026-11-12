@@ -179,7 +179,7 @@ class AppViewModel(
         viewModelScope.launch {
             var wasOnline = online.value
             online.collect { now ->
-                if (now && !wasOnline) onAppResumed()
+                if (now && !wasOnline) onAppResumed(reconnected = true)
                 wasOnline = now
             }
         }
@@ -352,12 +352,14 @@ class AppViewModel(
      * The list came to the foreground (or the network came back): refresh
      * quietly, at most once a minute, never offline, never before sign-in.
      */
-    fun onAppResumed() {
+    fun onAppResumed(reconnected: Boolean = false) {
         if (!online.value || _screen.value != AppScreen.NotesList) return
         if (repository.sessionExpired.value) return
         val now = System.currentTimeMillis()
         val last = maxOf(lastAutoRefreshMs ?: 0L, repository.lastSyncAtMs ?: 0L)
-        if (now - last < AUTO_REFRESH_INTERVAL_MS) return
+        // Coming back online catches up at once unless a sync just succeeded.
+        val since = if (reconnected) repository.lastSyncAtMs ?: 0L else last
+        if (now - since < AUTO_REFRESH_INTERVAL_MS) return
         lastAutoRefreshMs = now
         viewModelScope.launch {
             runCatchingCancellable { repository.refresh() }

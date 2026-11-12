@@ -838,8 +838,8 @@ class NoteDetailViewModel(
     /**
      * What to tell the user when a save failed. Every branch is true at that
      * point: the draft is still in this ViewModel and its SavedStateHandle
-     * (on-disk drafts are not implemented yet, so "on this device" means
-     * "in the app", which survives rotation and process death).
+     * (survives rotation and process death) and in the on-disk outbox
+     * (survives force-stop; issue #13), so "on this device" holds.
      */
     private fun saveFailureMessage(e: Throwable, retry: DetailAction.RetrySave): UiMessage<DetailAction> =
         when (e) {

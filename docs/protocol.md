@@ -71,6 +71,15 @@ and commit `3ee1a60`.
   `TrashFolder-CloudKit` ("Recently Deleted").
 - Notes in trash live under `Folder = TrashFolder-CloudKit`. The `Deleted` field
   is added by Mac housekeeping; don't filter by it. Filter by Folder ref.
+- The recents index answers ~13 records per page whatever `resultsLimit`
+  says; the app pages through all of it (`fetchRecentsPage`), with no cap.
+- **Unverified:** incremental sync via `POST …/private/changes/zone` with
+  `{zoneID: {zoneName: "Notes"}, syncToken?, resultsLimit, desiredKeys}`,
+  expecting `{records, syncToken, moreComing}` (deleted records as
+  `{recordName, deleted: true}`), per Apple's CloudKit Web Services
+  reference. Not yet observed against a real account; the app falls back to
+  the recents refetch on any error or odd answer (see advice.md, "Local cache
+  and sync"). If you can capture what iCloud.com sends here, write it down.
 
 ### The body proto: `topotext.String`
 

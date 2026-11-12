@@ -44,20 +44,28 @@ class DraftSyncer(private val repository: NotesRepository) {
     suspend fun sync(key: String): Outcome {
         // The editor (or a previous run) may change the row while we save;
         // re-read and go again a couple of times rather than write stale text.
+        var previous: Pair<String, NoteRecord>? = null
         repeat(MAX_PASSES) {
-            val draft = repository.pendingDraft(key) ?: return Outcome.Done
-            if (draft.conflict) return Outcome.Done
+            val row = repository.pendingDraft(key) ?: return Outcome.Done
+            if (row.conflict) return Outcome.Done
+            // A newer draft from the same base we just saved from was typed on
+            // top of what we saved: merge it against that, not the old base.
+            val draft = previous?.takeIf { (fromTag, _) -> row.baseRecord?.recordChangeTag == fromTag }
+                ?.let { (_, saved) -> row.copy(baseRecord = saved) } ?: row
+            previous = null
             val outcome = try {
-                saveOnce(draft)
+                saveOnce(draft) { saved -> draft.baseRecord?.recordChangeTag?.let { previous = it to saved } }
             } catch (e: DraftSupersededException) {
                 null
             }
-            if (outcome != null) return outcome
+            // Saved, but the editor wrote a newer draft meanwhile: send that too.
+            val newer = outcome == Outcome.Done && repository.pendingDraft(key).let { it != null && !it.conflict }
+            if (outcome != null && !newer) return outcome
         }
         return Outcome.Retry
     }
 
-    private suspend fun saveOnce(draft: PendingDraft): Outcome {
+    private suspend fun saveOnce(draft: PendingDraft, onSaved: (NoteRecord) -> Unit): Outcome {
         val snapshot = DraftSnapshot.decodeOrNull(draft.snapshotJson)
             ?: return Outcome.Failed("unreadable draft")
         val spans = snapshot.spans.map { it.toAttrSpan() }
@@ -88,6 +96,7 @@ class DraftSyncer(private val repository: NotesRepository) {
                     requirePendingDraft = followUp.key,
                 )
             }
+            onSaved(saved)
             AppLog.i(TAG) { "saved unsent draft ${draft.key}" }
             Outcome.Done
         } catch (e: CancellationException) {

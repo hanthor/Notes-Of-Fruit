@@ -166,15 +166,19 @@ class FakeNotesApi : NotesApi {
      */
     var recentsPageSize: Int? = null
 
+    /** When set, every page after the first waits for it (to see what happens mid-sync). */
+    var laterPagesGate: CompletableDeferred<Unit>? = null
+
     /** Extra summaries served by the recents index (to test big libraries without records). */
     val extraSummaries = mutableListOf<NoteSummary>()
 
     override suspend fun fetchRecentsPage(continuationMarker: String?, resultsLimit: Int): RecentsPage {
         val size = recentsPageSize
             ?: return RecentsPage(if (continuationMarker == null) fetchRecents(resultsLimit) else emptyList(), null)
+        val from = continuationMarker?.removePrefix("page@")?.toInt() ?: 0
+        if (from > 0) laterPagesGate?.await()
         enter("fetchRecentsPage")
         val all = summaries() + extraSummaries
-        val from = continuationMarker?.removePrefix("page@")?.toInt() ?: 0
         val to = minOf(all.size, from + size)
         return RecentsPage(all.subList(from, to), if (to < all.size) "page@$to" else null)
     }
