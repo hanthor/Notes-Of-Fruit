@@ -201,6 +201,41 @@ class NoteDetailViewModel(
         }
     }
 
+    init {
+        viewModelScope.launch { repository.confirmedWrites.collect(::onConfirmedWrite) }
+    }
+
+    /**
+     * iCloud confirmed a write the editor didn't make itself: the background
+     * worker sent this note's outbox draft while the editor stayed open.
+     * Move the base forward to that write (the draft stays exactly as typed,
+     * nothing visible changes), so the next save starts from it instead of
+     * CONFLICTing with the user's own earlier text.
+     */
+    private fun onConfirmedWrite(w: com.example.applenotes.data.ConfirmedWrite) {
+        val rec = record ?: return
+        val s = _status.value
+        if (s.saving || s.deleting || s.loading || s.conflict != null || s.savedDraft != null || isReadOnly) return
+        if (w.record.recordChangeTag == null || w.record.recordChangeTag == rec.recordChangeTag) return
+        // The same note (or, for a new note, the note created from this draft).
+        if (w.record.recordName != rec.recordName && w.savedFor != rec.recordName) return
+        when {
+            // iCloud now holds exactly the draft: nothing is unsaved any more.
+            fullBodyForSave == w.text && spansDraft == w.spans -> {
+                AppLog.i(TAG) { "editor: ${rec.recordName} was saved in the background; adopting that version" }
+                val oldKey = rec.recordName
+                load(w.record, null, draft = null)
+                outbox.afterSaveOrDiscard(alsoForget = listOf(oldKey))
+            }
+            // An earlier state of this draft (made over the same base) was
+            // saved; the user typed on since. Keep the draft, move the base.
+            w.ownDraft && w.savedFor == rec.recordName && w.baseTag == rec.recordChangeTag -> {
+                AppLog.i(TAG) { "editor: our own background save of ${rec.recordName} landed; moving the base forward" }
+                load(w.record, null, draft = null, keepCurrentDraft = true)
+            }
+        }
+    }
+
     private val _attachments = MutableStateFlow<Map<String, AttachmentContent>>(emptyMap())
 
     /**

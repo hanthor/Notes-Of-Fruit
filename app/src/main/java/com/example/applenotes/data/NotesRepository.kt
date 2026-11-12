@@ -26,7 +26,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -145,6 +148,19 @@ class NotesRepository(
 
     /** Serialises draft-row writes with the "clear it once saved" check. */
     private val draftLock = Mutex()
+
+    /** The last write this app made to each note (recordName → write); see [ConfirmedWrite]. */
+    private val lastWrites = ConcurrentHashMap<String, ConfirmedWrite>()
+
+    private val _confirmedWrites = MutableSharedFlow<ConfirmedWrite>(extraBufferCapacity = 64)
+
+    /**
+     * Every write iCloud confirmed, from any path (editor, background worker,
+     * automation). The editor watches it for the open note, so a background
+     * save of its own draft moves the editor's base forward instead of
+     * looking like someone else's change on the next save.
+     */
+    val confirmedWrites: SharedFlow<ConfirmedWrite> = _confirmedWrites.asSharedFlow()
 
     init {
         externalScope.launch {
@@ -598,6 +614,7 @@ class NotesRepository(
         _notes.value = emptyList()
         _folders.value = emptyList()
         _pendingDrafts.value = emptyList()
+        lastWrites.clear()
         cacheLoaded = false
         draftScheduler.cancelAll()
         val previous = pendingClear
@@ -701,6 +718,13 @@ class NotesRepository(
          * otherwise throw [DraftSupersededException] without writing.
          */
         requirePendingDraft: String? = null,
+        /**
+         * [newBody] continues the note's editing session (the editor, or
+         * its outbox draft in the worker). False for writes that don't
+         * (automation): they are never used as the merge base of a later
+         * save, see [ConfirmedWrite.ownDraft].
+         */
+        draftLineage: Boolean = true,
     ): NoteRecord = externalScope.async {
         saveLock(record.recordName).withLock {
             if (requirePendingDraft != null) {
@@ -715,9 +739,10 @@ class NotesRepository(
                 saveDraftNote(record.recordName, pendingFolderRef, newBody, newSpans)
             } else {
                 withApi(idempotent = false) { client ->
-                    doSaveNote(client, record, newBody, isPureAppend, newSpans)
+                    doSaveNote(client, record, newBody, isPureAppend, newSpans, rebaseOntoOwnWrite = draftLineage)
                 }
             }
+            noteConfirmedWrite(record, updated, newBody, draftLineage)
             cacheBody(updated)
             clearDraftIfSaved(record.recordName, newBody, newSpans)
             updated
@@ -725,6 +750,22 @@ class NotesRepository(
     }.await()
 
     private fun saveLock(key: String): Mutex = saveLocks.getOrPut(key) { Mutex() }
+
+    private fun noteConfirmedWrite(base: NoteRecord, updated: NoteRecord, newBody: String, draftLineage: Boolean) {
+        val body = decodeNoteBody(updated) as? NoteBody.Editable ?: return
+        val write = ConfirmedWrite(
+            savedFor = base.recordName,
+            baseTag = base.recordChangeTag,
+            record = updated,
+            text = body.text,
+            spans = body.spans,
+            // Exactly the draft as sent (nothing merged in): a later save of
+            // the same draft lineage may use it as its merge base.
+            ownDraft = draftLineage && body.text == newBody,
+        )
+        lastWrites[updated.recordName] = write
+        _confirmedWrites.tryEmit(write)
+    }
 
     /**
      * Save a local draft ([draftKey] = "draft-<uuid>") that has no change tag.
@@ -916,9 +957,10 @@ class NotesRepository(
         newBody: String,
         isPureAppend: Boolean,
         newSpans: List<NoteBodyEditor.AttrSpan>?,
+        rebaseOntoOwnWrite: Boolean = true,
     ): NoteRecord {
         requireNotNull(record.recordChangeTag) { "modify needs a saved note" }
-        val updated = modifyWithRebase(client, replicaUuid(), record, newBody, isPureAppend, newSpans)
+        val updated = modifyWithRebase(client, replicaUuid(), record, newBody, isPureAppend, newSpans, rebaseOntoOwnWrite)
         return withBody(client, updated)
     }
 
@@ -963,11 +1005,23 @@ class NotesRepository(
         newBody: String,
         isPureAppend: Boolean,
         newSpans: List<NoteBodyEditor.AttrSpan>?,
+        rebaseOntoOwnWrite: Boolean,
     ): NoteRecord {
         val baseB64 = record.stringField("TextDataEncrypted")
             ?: error("No body field on this note.")
         val baseText = NoteBodyEditor.readVisibleTextFromBase64(baseB64)
             ?: NoteBodyEditor.readTextFromBase64(baseB64).orEmpty()
+        // Our own earlier write of this draft lineage, made over the same
+        // base (the worker sent the editor's outbox draft, or an autosave
+        // landed just before): that, not [record], is where this edit
+        // continues from. The server's history is linear, so whatever is
+        // there now was made on top of that write; merging against it keeps
+        // a "conflict" with the user's own earlier text from appearing.
+        val own = lastWrites[record.recordName]?.takeIf {
+            rebaseOntoOwnWrite && it.ownDraft && it.baseTag == record.recordChangeTag
+        }
+        val mergeBaseText = own?.text ?: baseText
+        val mergeBaseSpans = own?.spans ?: NoteBodyEditor.parseAttributeRunsFromBase64(baseB64)
         val now = clock() / 1000L
 
         // Pure-append edits go through the cheap APPEND path (one new
@@ -1026,7 +1080,8 @@ class NotesRepository(
                 throw EditConflictException(fresh, remoteBody.text.orEmpty())
             }
             val remoteText = remoteBody.text
-            val merged = TextMerge.merge(baseText, newBody, remoteText)
+            if (own != null) AppLog.i(TAG) { "save: CONFLICT after our own write; merging from that write" }
+            val merged = TextMerge.merge(mergeBaseText, newBody, remoteText)
             if (merged !is TextMerge.Clean) {
                 AppLog.i(TAG) { "save: edits overlap a remote change; not writing" }
                 throw EditConflictException(fresh, remoteText)
@@ -1034,8 +1089,8 @@ class NotesRepository(
             val mergedSpans = newSpans?.let {
                 NoteRebase.mergeSpans(
                     merged,
-                    baseText = baseText,
-                    baseSpans = NoteBodyEditor.parseAttributeRunsFromBase64(baseB64),
+                    baseText = mergeBaseText,
+                    baseSpans = mergeBaseSpans,
                     localText = newBody,
                     localSpans = it,
                     remoteText = remoteText,
@@ -1196,6 +1251,22 @@ class NotesRepository(
         }
     }
 }
+
+/**
+ * A write iCloud confirmed. [savedFor] / [baseTag] are the record the save
+ * was asked for (a "draft-<uuid>" key and null for a new note), [record] is
+ * the result, [text] / [spans] its content. [ownDraft]: the write is exactly
+ * the draft that was sent, from the editing session (editor or its outbox),
+ * with nothing merged in.
+ */
+data class ConfirmedWrite(
+    val savedFor: String,
+    val baseTag: String?,
+    val record: NoteRecord,
+    val text: String,
+    val spans: List<NoteBodyEditor.AttrSpan>,
+    val ownDraft: Boolean,
+)
 
 /** A note opened for the editor; [fromCache] = the saved offline copy, not a fresh lookup. */
 data class OpenedNote(val record: NoteRecord, val fromCache: Boolean)

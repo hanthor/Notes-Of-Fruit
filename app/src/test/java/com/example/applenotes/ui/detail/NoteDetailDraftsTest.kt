@@ -18,6 +18,7 @@ import com.example.applenotes.testing.visibleText
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -306,5 +307,103 @@ class NoteDetailDraftsTest {
         val vm = newVm()
         vm.open("o1", api.records.getValue("NOTE-A"), null, offlineCopy = true)
         assertTrue(vm.status.value.offlineCopy)
+    }
+
+    // ----- Our own background save is not "another device" -----
+
+    private fun noConflictAnd(vm: NoteDetailViewModel, text: String, recordName: String = "NOTE-H") {
+        assertNull(vm.status.value.conflict)
+        assertFalse(vm.status.value.saveFailed)
+        assertEquals(text, api.records.getValue(recordName).visibleText())
+        assertNull(draft(recordName))
+    }
+
+    /**
+     * Finding: the worker saved the editor's draft (R0 → R1) while the
+     * editor stayed open; the editor's next save used the stale R0 tag,
+     * CONFLICTed and merged base "hello" / local "hello world" / remote
+     * "hello wor" into a conflict dialog against the user's own text.
+     */
+    @Test
+    fun aBackgroundSaveOfTheOpenDraftIsNotAConflict() = runTest(main.dispatcher) {
+        api.put(noteRecord("NOTE-H", "hello"))
+        val vm = newVm()
+        vm.open("o1", api.records.getValue("NOTE-H"), null)
+        vm.onTitleChange("hello wor")
+        net.online.value = false
+        vm.autoSave() // ON_PAUSE while offline: handed to the worker…
+        assertEquals(listOf("NOTE-H"), scheduler.enqueued.distinct())
+        assertTrue(api.modifies.isEmpty())
+        net.online.value = true
+        // …which runs while the editor is still open.
+        assertEquals(com.example.applenotes.sync.DraftSyncer.Outcome.Done, com.example.applenotes.sync.DraftSyncer(repo).sync("NOTE-H"))
+        vm.onTitleChange("hello world")
+        vm.save(alsoExit = false)
+        noConflictAnd(vm, "hello world")
+        assertNull(vm.status.value.message)
+    }
+
+    /** The editor never heard of the worker's write: the repository rebases onto it. */
+    @Test
+    fun aSaveFromAStaleBaseRebasesOntoOurOwnLastWrite() = runTest(main.dispatcher) {
+        api.put(noteRecord("NOTE-H", "hello"))
+        val r0 = api.records.getValue("NOTE-H")
+        repo.saveNote(r0, null, "hello wor", isPureAppend = false, newSpans = null)
+        val saved = repo.saveNote(r0, null, "hello world", isPureAppend = false, newSpans = null)
+        assertEquals("hello world", saved.visibleText())
+        assertEquals("hello world", api.records.getValue("NOTE-H").visibleText())
+    }
+
+    /**
+     * A real remote edit after our write is still merged, not overwritten:
+     * the merge base is what we last wrote (the other device started from it).
+     */
+    @Test
+    fun aRemoteEditAfterOurOwnWriteStillGoesThroughTheMerge() = runTest(main.dispatcher) {
+        api.put(noteRecord("NOTE-H", "hello\nline two"))
+        val r0 = api.records.getValue("NOTE-H")
+        repo.saveNote(r0, null, "hello wor\nline two", isPureAppend = false, newSpans = null)
+        api.remoteEdit("NOTE-H", "hello wor\nline 2")
+        repo.saveNote(r0, null, "hello world\nline two", isPureAppend = false, newSpans = null)
+        assertEquals("hello world\nline 2", api.records.getValue("NOTE-H").visibleText())
+    }
+
+    /** A write by automation is not part of the editor's draft: never used as its merge base. */
+    @Test
+    fun anAutomationWriteIsNotTreatedAsTheEditorsOwn() = runTest(main.dispatcher) {
+        api.put(noteRecord("NOTE-H", "hello"))
+        val r0 = api.records.getValue("NOTE-H")
+        repo.saveNote(r0, null, "hello\nappended", isPureAppend = true, newSpans = null, draftLineage = false)
+        // Rebasing onto it would silently drop the appended line; the merge
+        // against the editor's real base reports the overlap instead.
+        try {
+            repo.saveNote(r0, null, "hello world", isPureAppend = false, newSpans = null)
+            org.junit.Assert.fail("expected a conflict")
+        } catch (e: com.example.applenotes.data.EditConflictException) {
+            // expected
+        }
+        assertEquals("hello\nappended", api.records.getValue("NOTE-H").visibleText())
+    }
+
+    /** ON_PAUSE lands while an autosave is in flight: the worker's copy follows the editor's write. */
+    @Test
+    fun pauseDuringAnInFlightAutosaveIsNotAConflict() = runTest(main.dispatcher) {
+        api.put(noteRecord("NOTE-H", "hello"))
+        val vm = newVm()
+        vm.open("o1", api.records.getValue("NOTE-H"), null)
+        vm.onTitleChange("hello wor")
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        api.gates["modifyNoteBody"] = gate
+        vm.save(alsoExit = false) // the autosave, in flight
+        vm.onTitleChange("hello world")
+        vm.autoSave() // ON_PAUSE: hand-off to the worker (row based on R0)
+        val worker = kotlinx.coroutines.CoroutineScope(main.dispatcher).async {
+            com.example.applenotes.sync.DraftSyncer(repo).sync("NOTE-H")
+        }
+        gate.complete(Unit)
+        advance(10)
+        worker.await()
+        noConflictAnd(vm, "hello world")
+        assertEquals(0, repo.pendingDrafts.value.count { it.conflict })
     }
 }

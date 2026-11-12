@@ -111,6 +111,7 @@ internal class AutomationProcessor(
             newBody = assembleFullBody(r.title, r.text),
             isPureAppend = false,
             newSpans = null,
+            draftLineage = false,
         )
         return AutomationResult.ok(saved.recordName)
     }
@@ -130,6 +131,8 @@ internal class AutomationProcessor(
             newBody = newBody,
             isPureAppend = true,
             newSpans = newSpans,
+            // Not part of any editing session: never a merge base for one.
+            draftLineage = false,
         )
         return AutomationResult.ok(saved.recordName)
     }
