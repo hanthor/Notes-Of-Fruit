@@ -1,5 +1,8 @@
 package com.example.applenotes.ui.detail
 
+import com.example.applenotes.R
+import com.example.applenotes.ui.common.UiText
+import com.example.applenotes.ui.common.uiText
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.SavedStateHandle
@@ -329,7 +332,7 @@ class NoteDetailViewModelTest {
         assertTrue(s.saveFailed)
         assertFalse(s.exitRequested)
         assertEquals("open-1", s.openId)
-        assertEquals("Couldn't save: HTTP 503", s.message!!.text)
+        assertEquals(uiText(R.string.detail_save_failed, UiText.Plain("HTTP 503")), s.message!!.text)
         assertEquals(NoteDetailViewModel.DetailAction.RetrySave(alsoExit = false), s.message!!.action)
         // The typed text is untouched and still counts as unsaved.
         assertEquals("milk\neggs\nbread", vm.bodyDraft.text)
@@ -487,7 +490,7 @@ class NoteDetailViewModelTest {
         api.failNext["lookupNote"] = RuntimeException("offline")
         restored.open("open-1", record = null, pendingFolderRef = null)
         assertTrue(restored.status.value.exitRequested)
-        assertEquals("Couldn't reopen the note: offline", restored.status.value.exitMessage)
+        assertEquals(uiText(R.string.detail_reopen_failed, UiText.Plain("offline")), restored.status.value.exitMessage)
     }
 
     // ----- #3: unsupported / undecodable notes open read-only -----

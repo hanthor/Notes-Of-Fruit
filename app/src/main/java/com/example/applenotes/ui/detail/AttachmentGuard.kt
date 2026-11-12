@@ -1,9 +1,11 @@
 package com.example.applenotes.ui.detail
 
+import com.example.applenotes.R
 import com.example.applenotes.export.ATTACHMENT_CHAR
+import com.example.applenotes.ui.common.UiText
 
 /** Snackbar shown when an edit that would remove an attachment is refused. */
-internal const val ATTACHMENT_DELETE_BLOCKED = "Attachments can't be removed from Android yet"
+internal val ATTACHMENT_DELETE_BLOCKED: UiText = UiText.Res(R.string.attachment_delete_blocked)
 
 /**
  * True when turning [oldText] into [newText] removes or replaces at least one

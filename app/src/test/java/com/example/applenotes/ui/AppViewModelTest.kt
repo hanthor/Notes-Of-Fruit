@@ -1,5 +1,8 @@
 package com.example.applenotes.ui
 
+import com.example.applenotes.R
+import com.example.applenotes.ui.common.UiText
+import com.example.applenotes.ui.common.uiText
 import androidx.lifecycle.SavedStateHandle
 import com.example.applenotes.data.NotesRepository
 import com.example.applenotes.testing.FakeAlphaGate
@@ -80,7 +83,7 @@ class AppViewModelTest {
     fun bootstrapFailureIsAFullScreenError() {
         auth.failOpen = IllegalStateException("cookies expired")
         val vm = newVm()
-        assertEquals(AppScreen.Error("cookies expired"), vm.screen.value)
+        assertEquals(AppScreen.Error(UiText.Plain("cookies expired")), vm.screen.value)
         vm.retryBootstrap()
         assertEquals(AppScreen.NotesList, vm.screen.value)
     }
@@ -163,7 +166,7 @@ class AppViewModelTest {
         assertEquals(AppScreen.NotesList, vm.screen.value)
         assertEquals(3, vm.listState.value.notes.size)
         val m = vm.listMessage.value!!
-        assertEquals("Couldn't refresh: HTTP 502", m.text)
+        assertEquals(uiText(R.string.list_refresh_failed, UiText.Plain("HTTP 502")), m.text)
         assertEquals(ListAction.RetryRefresh, m.action)
         vm.onListMessageAction(m)
         assertNull(vm.listMessage.value)
@@ -199,9 +202,10 @@ class AppViewModelTest {
     fun showListCanCarryAMessage() {
         val vm = newVm()
         vm.openNote(vm.listState.value.notes.first())
-        vm.showList("Couldn't reopen the note: offline")
+        val reason = uiText(R.string.detail_reopen_failed, UiText.Plain("offline"))
+        vm.showList(reason)
         assertEquals(AppScreen.NotesList, vm.screen.value)
-        assertEquals("Couldn't reopen the note: offline", vm.listMessage.value!!.text)
+        assertEquals(reason, vm.listMessage.value!!.text)
         assertNull(vm.listMessage.value!!.action)
     }
 }

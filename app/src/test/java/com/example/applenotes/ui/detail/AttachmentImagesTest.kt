@@ -138,7 +138,7 @@ class AttachmentImagesTest {
         val att = record("ATT-3", fields = mapOf("UTI" to str("public.mp3")))
         val c = decodeAttachment(att) as AttachmentContent.Generic
         assertNull(c.preview)
-        assertEquals("Audio", labelForAttachmentType(c.mime).second)
+        assertEquals(com.example.applenotes.R.string.attachment_type_audio, labelForAttachmentType(c.mime).second)
     }
 
     // ----- Sizing -----

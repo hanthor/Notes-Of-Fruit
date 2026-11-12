@@ -7,6 +7,8 @@ import kotlin.io.encoding.Base64
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
+import androidx.annotation.StringRes
+import com.example.applenotes.R
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -43,33 +45,22 @@ sealed interface NoteBody {
     ) : NoteBody
 }
 
-enum class ReadOnlyReason(val explanation: String) {
+/** Why a note is open read-only; [explanation] is the banner text (a string resource). */
+enum class ReadOnlyReason(@param:StringRes val explanation: Int) {
     /** NoteProtoKind.MERGABLE_DATA: Apple's newer body format. */
-    MODERN_FORMAT(
-        "This note uses Apple's newer note format, which this app can't edit yet. " +
-            "It's open read-only so it can't be damaged.",
-    ),
+    MODERN_FORMAT(R.string.read_only_modern_format),
 
     /** NoteProtoKind.UNKNOWN: not a body shape we recognise at all. */
-    UNRECOGNIZED_FORMAT(
-        "This note's format wasn't recognised, so it's open read-only and may not display correctly.",
-    ),
+    UNRECOGNIZED_FORMAT(R.string.read_only_unrecognized_format),
 
     /** Looks like NOTE_STORE_PROTO but its text couldn't be reconstructed. */
-    DECODE_FAILED(
-        "This note couldn't be fully decoded, so it's open read-only. " +
-            "What's shown may not match the note on your other devices.",
-    ),
+    DECODE_FAILED(R.string.read_only_decode_failed),
 
     /** An existing note whose record has no TextDataEncrypted field. */
-    MISSING_BODY(
-        "This note has no body data this app can read, so it's open read-only.",
-    ),
+    MISSING_BODY(R.string.read_only_missing_body),
 
     /** A password-protected ("locked") note; see [isLockedNote]. Never decrypted. */
-    LOCKED(
-        "This note is locked with a password. Notes of Fruit can't open locked notes yet.",
-    ),
+    LOCKED(R.string.read_only_locked),
 }
 
 /**

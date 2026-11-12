@@ -19,7 +19,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.example.applenotes.R
 
 /**
  * The list's sync status line (issues #12 / #13): a subtle "Updating…"
@@ -33,6 +38,7 @@ internal fun SyncStatusRow(syncing: Boolean, unsentCount: Int, onRetryUnsent: ()
         if (syncing) {
             LinearProgressIndicator(modifier = Modifier.fillMaxWidth().height(2.dp))
         }
+        val retryLabel = stringResource(R.string.unsent_changes_retry)
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -40,7 +46,7 @@ internal fun SyncStatusRow(syncing: Boolean, unsentCount: Int, onRetryUnsent: ()
         ) {
             if (syncing) {
                 Text(
-                    "Updating…",
+                    stringResource(R.string.sync_updating),
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
@@ -51,7 +57,9 @@ internal fun SyncStatusRow(syncing: Boolean, unsentCount: Int, onRetryUnsent: ()
             if (unsentCount > 0) {
                 AssistChip(
                     onClick = onRetryUnsent,
-                    label = { Text("$unsentCount unsent change${if (unsentCount == 1) "" else "s"}") },
+                    // "3 unsent changes, button, double-tap to send them again".
+                    modifier = Modifier.semantics { onClick(label = retryLabel) { onRetryUnsent(); true } },
+                    label = { Text(pluralStringResource(R.plurals.unsent_changes, unsentCount, unsentCount)) },
                     leadingIcon = {
                         Icon(
                             Icons.Default.CloudUpload,

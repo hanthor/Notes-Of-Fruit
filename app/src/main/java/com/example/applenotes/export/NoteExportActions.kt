@@ -3,7 +3,11 @@ package com.example.applenotes.export
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import androidx.compose.ui.platform.LocalResources
+import com.example.applenotes.R
 import com.example.applenotes.data.userMessage
+import com.example.applenotes.ui.common.UiText
+import com.example.applenotes.ui.common.uiText
 import com.example.applenotes.log.AppLog
 import android.webkit.WebView
 import android.widget.Toast
@@ -67,13 +71,18 @@ internal class NoteExportActions(
 @Composable
 internal fun rememberNoteExportActions(snapshot: () -> NoteSnapshot): NoteExportActions {
     val context = LocalContext.current
+    val resources = LocalResources.current
     val scope = rememberCoroutineScope()
     val imageLoader = remember(context) { AttachmentImageLoader.get(context) }
     suspend fun images(s: NoteSnapshot) = s.loadImages { imageLoader.bytes(it) }
     // Keeps the print WebView alive until the print dialog has its adapter.
     val printView = remember { mutableStateOf<WebView?>(null) }
 
-    fun toast(msg: String) = Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+    fun toast(result: Result<*>) {
+        val msg = result.exceptionOrNull()?.let { uiText(R.string.export_failed, userMessage(it)) }
+            ?: UiText.Res(R.string.export_done_single)
+        Toast.makeText(context, msg.resolve(resources), Toast.LENGTH_SHORT).show()
+    }
 
     fun writeSingle(uri: Uri?, format: ExportFormat) {
         if (uri == null) return
@@ -86,7 +95,7 @@ internal fun rememberNoteExportActions(snapshot: () -> NoteSnapshot): NoteExport
                 }
             }
             result.onFailure { AppLog.w(TAG, "export failed", it) }
-            toast(if (result.isSuccess) "Exported" else "Export failed: ${result.exceptionOrNull()?.let(::userMessage)}")
+            toast(result)
         }
     }
 
@@ -104,7 +113,7 @@ internal fun rememberNoteExportActions(snapshot: () -> NoteSnapshot): NoteExport
                 withContext(Dispatchers.IO) { writeWithImages(context, tree, s, images(s)) }
             }
             result.onFailure { AppLog.w(TAG, "export with images failed", it) }
-            toast(if (result.isSuccess) "Exported" else "Export failed: ${result.exceptionOrNull()?.let(::userMessage)}")
+            toast(result)
         }
     }
 
@@ -131,7 +140,7 @@ internal fun rememberNoteExportActions(snapshot: () -> NoteSnapshot): NoteExport
                             span.attachmentRecordName?.let { refs[it] }?.let { "<img src=\"${NoteHtml.escape(it)}\" alt=\"image\">" }
                         }
                     }
-                    printView.value = NotePrinter.print(context, s.title.ifBlank { "Note" }, html)
+                    printView.value = NotePrinter.print(context, s.title.ifBlank { resources.getString(R.string.print_job_untitled) }, html)
                 }
             },
         )

@@ -23,7 +23,10 @@ import com.example.applenotes.data.TRASH_RECORD_NAME
 import com.example.applenotes.integrations.IncomingRequest
 import com.example.applenotes.data.runCatchingCancellable
 import com.example.applenotes.data.userMessage
+import com.example.applenotes.R
 import com.example.applenotes.ui.common.UiMessage
+import com.example.applenotes.ui.common.UiText
+import com.example.applenotes.ui.common.uiText
 import com.example.applenotes.ui.detail.DraftPrefill
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -41,12 +44,12 @@ private const val TAG = "AppleNotesUi"
 sealed interface AppScreen {
     data object Splash : AppScreen
     data object Login : AppScreen
-    data class Loading(val msg: String) : AppScreen
+    data class Loading(val msg: UiText) : AppScreen
     /**
      * Full-screen error. Reserved for bootstrap (sign-in) failures.
      * [details] is the raw error text behind the "Details" button.
      */
-    data class Error(val msg: String, val details: String? = null) : AppScreen
+    data class Error(val msg: UiText, val details: String? = null) : AppScreen
     data object NotesList : AppScreen
 
     /**
@@ -206,7 +209,7 @@ class AppViewModel(
         viewModelScope.launch { runCatchingCancellable { repository.replicaUuid() } }
         // On launch, check for existing session cookies and try to restore.
         if (repository.hasSavedLogin()) {
-            bootstrap("Restoring session…")
+            bootstrap(UiText.Res(R.string.loading_restoring_session))
         } else {
             _screen.value = AppScreen.Login
         }
@@ -218,7 +221,7 @@ class AppViewModel(
      * the cookies) instead of another trip to the sign-in screen, which
      * could loop.
      */
-    private fun bootstrap(loadingMsg: String, afterSignIn: Boolean = false) {
+    private fun bootstrap(loadingMsg: UiText, afterSignIn: Boolean = false) {
         _screen.value = AppScreen.Loading(loadingMsg)
         viewModelScope.launch {
             // Issue #12: with a cached list, show it at once and sign in /
@@ -285,13 +288,17 @@ class AppViewModel(
                         is NotesError.AuthExpired -> signInAgain()
                         // The offline banner already says so; reconnecting retries.
                         is NotesError.Offline -> Unit
-                        else -> postListMessage("Couldn't update: ${userMessage(it)}", ListAction.RetryRefresh, errorDetails(it))
+                        else -> postListMessage(
+                            uiText(R.string.list_update_failed, userMessage(it)),
+                            ListAction.RetryRefresh,
+                            errorDetails(it),
+                        )
                     }
                 }
         }
     }
 
-    fun onCookiesArrived() = bootstrap("Signing in…", afterSignIn = true)
+    fun onCookiesArrived() = bootstrap(UiText.Res(R.string.loading_signing_in), afterSignIn = true)
 
     /**
      * Send the user to the sign-in screen because the session expired,
@@ -311,7 +318,7 @@ class AppViewModel(
      */
     private fun needsSignIn(e: Throwable) = e is NotesError.AuthExpired && repository.sessionExpired.value
 
-    fun retryBootstrap() = bootstrap("Retrying…")
+    fun retryBootstrap() = bootstrap(UiText.Res(R.string.loading_retrying))
 
     fun signOut() {
         _loginStaleToken.value = null
@@ -330,7 +337,7 @@ class AppViewModel(
     fun refresh() {
         // Don't hit the network (or blank the list) while offline.
         if (!online.value) {
-            postListMessage("You're offline. Check your connection and try again.", ListAction.RetryRefresh)
+            postListMessage(UiText.Res(R.string.error_offline), ListAction.RetryRefresh)
             return
         }
         // The cached list stays on screen (pull-to-refresh indicator; issue #12).
@@ -342,7 +349,7 @@ class AppViewModel(
                     AppLog.e(TAG, "refresh failed", it)
                     _refreshing.value = false
                     if (needsSignIn(it)) return@launch signInAgain()
-                    postListMessage("Couldn't refresh: ${userMessage(it)}", ListAction.RetryRefresh, errorDetails(it))
+                    postListMessage(uiText(R.string.list_refresh_failed, userMessage(it)), ListAction.RetryRefresh, errorDetails(it))
                 }
             _refreshing.value = false
         }
@@ -377,7 +384,7 @@ class AppViewModel(
     suspend fun searchCachedBodies(query: String): Set<String> = repository.searchCachedBodies(query)
 
     fun openNote(note: NoteSummary) {
-        _screen.value = AppScreen.Loading("Loading note…")
+        _screen.value = AppScreen.Loading(UiText.Res(R.string.loading_note))
         viewModelScope.launch {
             runCatchingCancellable { repository.openNote(note.recordName) }
                 .onSuccess { showDetail(it.record, pendingFolderRef = null, offlineCopy = it.fromCache) }
@@ -385,7 +392,11 @@ class AppViewModel(
                     AppLog.e(TAG, "lookupNote failed", it)
                     if (needsSignIn(it)) return@onFailure signInAgain()
                     _screen.value = AppScreen.NotesList
-                    postListMessage("Couldn't open the note: ${userMessage(it)}", ListAction.RetryOpen(note), errorDetails(it))
+                    postListMessage(
+                        uiText(R.string.list_open_failed, userMessage(it)),
+                        ListAction.RetryOpen(note),
+                        errorDetails(it),
+                    )
                 }
         }
     }
@@ -398,7 +409,7 @@ class AppViewModel(
      * nothing is written until the editor saves.
      */
     fun createNote(prefill: DraftPrefill?) {
-        _screen.value = AppScreen.Loading("Creating note…")
+        _screen.value = AppScreen.Loading(UiText.Res(R.string.loading_creating_note))
         val folder = selectedFolder.value.takeIf { it != TRASH_RECORD_NAME } ?: DEFAULT_FOLDER_RECORD_NAME
         viewModelScope.launch {
             runCatchingCancellable { repository.folderRefForNewNote(folder) }
@@ -430,7 +441,7 @@ class AppViewModel(
                     if (needsSignIn(it)) return@onFailure signInAgain()
                     _screen.value = AppScreen.NotesList
                     postListMessage(
-                        "Couldn't create a note: ${userMessage(it)}",
+                        uiText(R.string.list_create_failed, userMessage(it)),
                         if (prefill == null) ListAction.RetryCreate else ListAction.RetryCreatePrefilled(prefill),
                         errorDetails(it),
                     )
@@ -505,7 +516,11 @@ class AppViewModel(
                     openNote(matches[0])
                 } else {
                     postListMessage(
-                        if (matches.isEmpty()) "No note titled \"$wanted\"" else "${matches.size} notes are titled \"$wanted\"",
+                        if (matches.isEmpty()) {
+                            uiText(R.string.list_no_note_titled, wanted)
+                        } else {
+                            UiText.Plural(R.plurals.list_notes_titled, matches.size, listOf(matches.size, wanted))
+                        },
                         action = null,
                     )
                 }
@@ -536,14 +551,14 @@ class AppViewModel(
      * its cache in place when we saved, so the snippet for the just-edited
      * note already reflects our changes.
      */
-    fun showList(message: String? = null) {
+    fun showList(message: UiText? = null) {
         savedState.remove<String>(KEY_DETAIL_OPEN_ID)
         _screen.value = AppScreen.NotesList
         if (message != null) postListMessage(message, action = null)
         processPendingIncoming()
     }
 
-    private fun postListMessage(text: String, action: ListAction?, details: String? = null) {
+    private fun postListMessage(text: UiText, action: ListAction?, details: String? = null) {
         _listMessage.value = UiMessage(++messageCounter, text, action, details = details)
     }
 

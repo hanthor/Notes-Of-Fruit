@@ -21,7 +21,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
+import com.example.applenotes.R
 
 /**
  * A one-shot message for a snackbar, optionally with an action (e.g. Retry).
@@ -34,9 +37,9 @@ import androidx.compose.ui.text.font.FontFamily
  */
 data class UiMessage<A>(
     val id: Long,
-    val text: String,
+    val text: UiText,
     val action: A? = null,
-    val actionLabel: String? = if (action != null) "Retry" else null,
+    val actionLabel: UiText? = if (action != null) UiText.Res(R.string.action_retry) else null,
     val details: String? = null,
 )
 
@@ -59,12 +62,13 @@ fun <A> MessageSnackbarEffect(
 ) {
     val currentOnAction by rememberUpdatedState(onAction)
     val currentOnDismiss by rememberUpdatedState(onDismiss)
+    val resources = LocalResources.current
     LaunchedEffect(message?.id) {
         val m = message ?: return@LaunchedEffect
         val result = hostState.showSnackbar(
             DetailedVisuals(
-                message = m.text,
-                actionLabel = m.actionLabel,
+                message = m.text.resolve(resources),
+                actionLabel = m.actionLabel?.resolve(resources),
                 withDismissAction = m.action != null || m.details != null,
                 duration = if (m.action != null || m.details != null) {
                     SnackbarDuration.Indefinite
@@ -96,14 +100,14 @@ fun AppSnackbarHost(hostState: SnackbarHostState, modifier: Modifier = Modifier)
             Snackbar(
                 action = {
                     Row {
-                        TextButton(onClick = { shownDetails = details }) { Text("Details") }
+                        TextButton(onClick = { shownDetails = details }) { Text(stringResource(R.string.action_details)) }
                         data.visuals.actionLabel?.let { label ->
                             TextButton(onClick = { data.performAction() }) { Text(label) }
                         }
                     }
                 },
                 dismissAction = {
-                    TextButton(onClick = { data.dismiss() }) { Text("Dismiss") }
+                    TextButton(onClick = { data.dismiss() }) { Text(stringResource(R.string.action_dismiss)) }
                 },
             ) {
                 Text(data.visuals.message)
@@ -118,7 +122,7 @@ fun AppSnackbarHost(hostState: SnackbarHostState, modifier: Modifier = Modifier)
 fun ErrorDetailsDialog(details: String, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Error details") },
+        title = { Text(stringResource(R.string.error_details_title)) },
         text = {
             Text(
                 details,
@@ -126,6 +130,6 @@ fun ErrorDetailsDialog(details: String, onDismiss: () -> Unit) {
                 modifier = Modifier.verticalScroll(rememberScrollState()),
             )
         },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        confirmButton = { TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_close)) } },
     )
 }

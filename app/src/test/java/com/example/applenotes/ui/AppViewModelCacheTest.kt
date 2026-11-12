@@ -136,7 +136,7 @@ class AppViewModelCacheTest {
         repo.persistDraft(PendingDraft("NOTE-A", noteRecord("NOTE-A", "x"), null, "x y", "", "{}", 1))
         repo.persistDraft(PendingDraft("NOTE-C", null, "{}", "c", "", "{}", 2, conflict = true))
         assertEquals(2, vm.listState.value.unsentCount)
-        vm.onListMessageAction(com.example.applenotes.ui.common.UiMessage(1, "", ListAction.RetryUnsent))
+        vm.onListMessageAction(com.example.applenotes.ui.common.UiMessage(1, com.example.applenotes.ui.common.UiText.Plain(""), ListAction.RetryUnsent))
         // Conflicted drafts wait for the user instead.
         assertEquals(listOf("NOTE-A"), scheduler.enqueued)
     }

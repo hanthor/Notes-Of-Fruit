@@ -28,12 +28,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.example.applenotes.R
 
 @Composable
-internal fun CenteredSpinner(msg: String) {
+internal fun CenteredSpinner(msg: String, modifier: Modifier = Modifier) {
     Column(
-        modifier = Modifier.fillMaxSize(),
+        // One announcement ("Loading note…") instead of an unlabeled spinner.
+        modifier = modifier.fillMaxSize().semantics(mergeDescendants = true) {},
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -43,28 +50,36 @@ internal fun CenteredSpinner(msg: String) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 internal fun ErrorScreen(
-    message: String,
+    message: UiText,
     onRetry: () -> Unit,
     onSignOut: () -> Unit,
     details: String? = null,
 ) {
     var showDetails by remember { mutableStateOf(false) }
-    Scaffold(topBar = { TopAppBar(title = { Text("Notes of Fruit") }) }) { padding ->
+    Scaffold(topBar = { TopAppBar(title = { Text(stringResource(R.string.app_name)) }) }) { padding ->
         Column(
             modifier = Modifier.fillMaxSize().padding(padding).padding(20.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Something went wrong", style = MaterialTheme.typography.titleMedium)
-            Text(message, style = MaterialTheme.typography.bodySmall)
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = onRetry) { Text("Retry") }
-                Button(onClick = onSignOut) { Text("Sign in again") }
+            Text(
+                stringResource(R.string.error_screen_title),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.semantics { heading() },
+            )
+            Text(message.asString(), style = MaterialTheme.typography.bodySmall)
+            // FlowRow: the two buttons wrap instead of clipping at large font sizes.
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(onClick = onRetry) { Text(stringResource(R.string.action_retry)) }
+                Button(onClick = onSignOut) { Text(stringResource(R.string.action_sign_in_again)) }
             }
             if (details != null) {
-                TextButton(onClick = { showDetails = true }) { Text("Details") }
+                TextButton(onClick = { showDetails = true }) { Text(stringResource(R.string.action_details)) }
             }
         }
     }
@@ -93,25 +108,26 @@ internal fun OfflineBanner(modifier: Modifier = Modifier) {
                 contentDescription = null,
                 modifier = Modifier.padding(end = 8.dp).size(16.dp),
             )
-            Text("Offline", style = MaterialTheme.typography.labelMedium)
+            Text(stringResource(R.string.offline_banner), style = MaterialTheme.typography.labelMedium)
         }
     }
 }
 
-internal fun humanRelative(epochMs: Long): String {
-    val now = System.currentTimeMillis()
-    val diff = now - epochMs
-    val s = diff / 1000
+/** "just now", "5m", "3h", "2d", else a short localized date ("Mar 4"). */
+@Composable
+internal fun humanRelative(epochMs: Long): String = relativeTime(epochMs).asString()
+
+internal fun relativeTime(epochMs: Long, nowMs: Long = System.currentTimeMillis()): UiText {
+    val s = (nowMs - epochMs) / 1000
     return when {
-        s < 60 -> "just now"
-        s < 3600 -> "${s / 60}m"
-        s < 86_400 -> "${s / 3600}h"
-        s < 604_800 -> "${s / 86_400}d"
+        s < 60 -> UiText.Res(R.string.time_just_now)
+        s < 3600 -> UiText.Res(R.string.time_minutes_short, listOf((s / 60).toInt()))
+        s < 86_400 -> UiText.Res(R.string.time_hours_short, listOf((s / 3600).toInt()))
+        s < 604_800 -> UiText.Res(R.string.time_days_short, listOf((s / 86_400).toInt()))
         else -> {
-            val cal = java.util.Calendar.getInstance().apply { timeInMillis = epochMs }
-            val month = cal.getDisplayName(java.util.Calendar.MONTH, java.util.Calendar.SHORT, java.util.Locale.getDefault()) ?: "?"
-            val day = cal.get(java.util.Calendar.DAY_OF_MONTH)
-            "$month $day"
+            val format = android.text.format.DateFormat.getBestDateTimePattern(java.util.Locale.getDefault(), "MMMd")
+                ?: "MMM d"
+            UiText.Plain(java.text.SimpleDateFormat(format, java.util.Locale.getDefault()).format(java.util.Date(epochMs)))
         }
     }
 }

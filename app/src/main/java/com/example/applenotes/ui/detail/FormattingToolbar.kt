@@ -48,7 +48,19 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
+import com.example.applenotes.R
 import com.example.applenotes.proto.NoteBodyEditor
 
 @Composable
@@ -111,7 +123,7 @@ internal fun FormattingToolbar(
                 // Paragraph-style picker.
                 ToolbarPill(
                     label = paragraphStyleLabel(curStyle),
-                    icon = "Aa",
+                    icon = stringResource(R.string.format_style_icon),
                     selected = curStyle != NoteBodyEditor.ParagraphStyle.BODY,
                     onClick = { styleMenuOpen = true },
                 )
@@ -146,7 +158,7 @@ internal fun FormattingToolbar(
                 // List paragraph styles.
                 ToolbarIconButton(
                     icon = Icons.AutoMirrored.Filled.FormatListBulleted,
-                    contentDescription = "Bulleted list",
+                    contentDescription = stringResource(R.string.format_bulleted_list),
                     selected = curStyle == NoteBodyEditor.ParagraphStyle.BULLETED_LIST,
                     onClick = {
                         val target = if (curStyle == NoteBodyEditor.ParagraphStyle.BULLETED_LIST)
@@ -159,7 +171,7 @@ internal fun FormattingToolbar(
                 )
                 ToolbarIconButton(
                     icon = Icons.Filled.HorizontalRule,
-                    contentDescription = "Dashed list",
+                    contentDescription = stringResource(R.string.format_dashed_list),
                     selected = curStyle == NoteBodyEditor.ParagraphStyle.DASHED_LIST,
                     onClick = {
                         val target = if (curStyle == NoteBodyEditor.ParagraphStyle.DASHED_LIST)
@@ -172,7 +184,7 @@ internal fun FormattingToolbar(
                 )
                 ToolbarIconButton(
                     icon = Icons.Filled.FormatListNumbered,
-                    contentDescription = "Numbered list",
+                    contentDescription = stringResource(R.string.format_numbered_list),
                     selected = curStyle == NoteBodyEditor.ParagraphStyle.NUMBERED_LIST,
                     onClick = {
                         val target = if (curStyle == NoteBodyEditor.ParagraphStyle.NUMBERED_LIST)
@@ -185,7 +197,7 @@ internal fun FormattingToolbar(
                 )
                 ToolbarIconButton(
                     icon = Icons.Filled.CheckBoxOutlineBlank,
-                    contentDescription = "Checkbox",
+                    contentDescription = stringResource(R.string.format_checklist),
                     selected = curStyle == NoteBodyEditor.ParagraphStyle.CHECKBOX_LIST,
                     onClick = {
                         val target = if (curStyle == NoteBodyEditor.ParagraphStyle.CHECKBOX_LIST)
@@ -202,7 +214,7 @@ internal fun FormattingToolbar(
                 // Inline format toggles.
                 ToolbarIconButton(
                     icon = Icons.Filled.FormatBold,
-                    contentDescription = "Bold",
+                    contentDescription = stringResource(R.string.format_bold),
                     selected = isBold,
                     onClick = {
                         if (rangeStart < rangeEnd) {
@@ -214,7 +226,7 @@ internal fun FormattingToolbar(
                 )
                 ToolbarIconButton(
                     icon = Icons.Filled.FormatItalic,
-                    contentDescription = "Italic",
+                    contentDescription = stringResource(R.string.format_italic),
                     selected = isItalic,
                     onClick = {
                         if (rangeStart < rangeEnd) {
@@ -226,7 +238,7 @@ internal fun FormattingToolbar(
                 )
                 ToolbarIconButton(
                     icon = Icons.Filled.FormatUnderlined,
-                    contentDescription = "Underline",
+                    contentDescription = stringResource(R.string.format_underline),
                     selected = isUnderline,
                     onClick = {
                         if (rangeStart < rangeEnd) {
@@ -238,7 +250,7 @@ internal fun FormattingToolbar(
                 )
                 ToolbarIconButton(
                     icon = Icons.Filled.FormatStrikethrough,
-                    contentDescription = "Strikethrough",
+                    contentDescription = stringResource(R.string.format_strikethrough),
                     selected = isStrike,
                     onClick = {
                         if (rangeStart < rangeEnd) {
@@ -254,8 +266,10 @@ internal fun FormattingToolbar(
                 // Link.
                 ToolbarIconButton(
                     icon = Icons.Filled.Link,
-                    contentDescription = "Link",
+                    contentDescription = stringResource(R.string.format_link),
                     selected = curSpan?.linkUrl != null,
+                    // Opens a dialog rather than toggling.
+                    toggle = false,
                     onClick = { linkDialogOpen = true },
                 )
             }
@@ -266,12 +280,12 @@ internal fun FormattingToolbar(
         var urlText by remember { mutableStateOf(curSpan?.linkUrl ?: "https://") }
         AlertDialog(
             onDismissRequest = { linkDialogOpen = false },
-            title = { Text("Add link") },
+            title = { Text(stringResource(R.string.link_dialog_title)) },
             text = {
                 OutlinedTextField(
                     value = urlText,
                     onValueChange = { urlText = it },
-                    label = { Text("URL") },
+                    label = { Text(stringResource(R.string.link_dialog_url)) },
                     singleLine = true,
                 )
             },
@@ -283,7 +297,7 @@ internal fun FormattingToolbar(
                             fullBody, spans, rangeStart, rangeEnd, urlText.takeIf { it.isNotBlank() },
                         ))
                     }
-                }) { Text("Apply") }
+                }) { Text(stringResource(R.string.link_dialog_apply)) }
             },
             dismissButton = {
                 TextButton(onClick = {
@@ -291,23 +305,28 @@ internal fun FormattingToolbar(
                     if (rangeStart < rangeEnd && curSpan?.linkUrl != null) {
                         onSpansChange(NoteBodyEditor.setLink(fullBody, spans, rangeStart, rangeEnd, null))
                     }
-                }) { Text(if (curSpan?.linkUrl != null) "Remove" else "Cancel") }
+                }) {
+                    Text(stringResource(if (curSpan?.linkUrl != null) R.string.link_dialog_remove else R.string.action_cancel))
+                }
             },
         )
     }
 }
 
-private fun paragraphStyleLabel(style: NoteBodyEditor.ParagraphStyle): String = when (style) {
-    NoteBodyEditor.ParagraphStyle.TITLE -> "Title"
-    NoteBodyEditor.ParagraphStyle.HEADING -> "Heading"
-    NoteBodyEditor.ParagraphStyle.SUBHEADING -> "Subheading"
-    NoteBodyEditor.ParagraphStyle.BODY -> "Body"
-    NoteBodyEditor.ParagraphStyle.MONOSPACED -> "Monospaced"
-    NoteBodyEditor.ParagraphStyle.BULLETED_LIST -> "Bulleted"
-    NoteBodyEditor.ParagraphStyle.DASHED_LIST -> "Dashed"
-    NoteBodyEditor.ParagraphStyle.NUMBERED_LIST -> "Numbered"
-    NoteBodyEditor.ParagraphStyle.CHECKBOX_LIST -> "Checkbox"
-}
+@Composable
+private fun paragraphStyleLabel(style: NoteBodyEditor.ParagraphStyle): String = stringResource(
+    when (style) {
+        NoteBodyEditor.ParagraphStyle.TITLE -> R.string.style_title
+        NoteBodyEditor.ParagraphStyle.HEADING -> R.string.style_heading
+        NoteBodyEditor.ParagraphStyle.SUBHEADING -> R.string.style_subheading
+        NoteBodyEditor.ParagraphStyle.BODY -> R.string.style_body
+        NoteBodyEditor.ParagraphStyle.MONOSPACED -> R.string.style_monospaced
+        NoteBodyEditor.ParagraphStyle.BULLETED_LIST -> R.string.style_bulleted
+        NoteBodyEditor.ParagraphStyle.DASHED_LIST -> R.string.style_dashed
+        NoteBodyEditor.ParagraphStyle.NUMBERED_LIST -> R.string.style_numbered
+        NoteBodyEditor.ParagraphStyle.CHECKBOX_LIST -> R.string.style_checklist
+    },
+)
 
 @Composable
 private fun ToolbarPill(
@@ -326,13 +345,21 @@ private fun ToolbarPill(
         else MaterialTheme.colorScheme.onSurface,
         label = "pillFg",
     )
+    val description = stringResource(R.string.format_paragraph_style, label)
     androidx.compose.foundation.layout.Box(
         modifier = Modifier
-            .height(40.dp)
+            // Grows with the font size instead of clipping; 48dp touch target.
+            .minimumInteractiveComponentSize()
+            .heightIn(min = 40.dp)
             .clip(RoundedCornerShape(20.dp))
             .background(bg)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp),
+            .clickable(onClick = onClick, role = Role.DropdownList)
+            .clearAndSetSemantics {
+                contentDescription = description
+                role = Role.DropdownList
+                onClick { onClick(); true }
+            }
+            .padding(horizontal = 14.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -362,8 +389,11 @@ private fun ToolbarIconButton(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     contentDescription: String,
     selected: Boolean,
+    /** An on/off format (announced as a checkbox with its state); false = a plain button. */
+    toggle: Boolean = true,
     onClick: () -> Unit,
 ) {
+    val state = stringResource(if (selected) R.string.format_state_on else R.string.format_state_off)
     val bg by animateColorAsState(
         if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
         label = "iconBg",
@@ -375,15 +405,28 @@ private fun ToolbarIconButton(
     )
     androidx.compose.foundation.layout.Box(
         modifier = Modifier
+            // 40dp visual, 48dp touch target (issue #17).
+            .minimumInteractiveComponentSize()
             .size(40.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(bg)
-            .clickable(onClick = onClick),
+            .then(
+                if (toggle) {
+                    Modifier.toggleable(value = selected, role = Role.Checkbox, onValueChange = { onClick() })
+                } else {
+                    Modifier.clickable(role = Role.Button, onClick = onClick)
+                },
+            )
+            .semantics {
+                this.contentDescription = contentDescription
+                // The link button only says when the selection already has a link.
+                if (toggle || selected) stateDescription = state
+            },
         contentAlignment = Alignment.Center,
     ) {
         Icon(
             imageVector = icon,
-            contentDescription = contentDescription,
+            contentDescription = null,
             tint = fg,
             modifier = Modifier.size(22.dp),
         )

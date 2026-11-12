@@ -4,14 +4,18 @@ import android.content.ContentResolver
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
-import java.io.IOException
+import com.example.applenotes.R
+import com.example.applenotes.data.UserFacingIOException
+import com.example.applenotes.ui.common.UiText
+import com.example.applenotes.ui.common.uiText
 
 /** Storage Access Framework reads/writes used by export and import. */
 internal object SafIo {
 
     fun writeBytes(resolver: ContentResolver, uri: Uri, bytes: ByteArray) {
         // "wt" truncates when overwriting an existing document.
-        val out = resolver.openOutputStream(uri, "wt") ?: throw IOException("Couldn't open the file for writing")
+        val out = resolver.openOutputStream(uri, "wt")
+            ?: throw UserFacingIOException(UiText.Res(R.string.file_open_for_writing_failed), "openOutputStream returned null")
         out.use { it.write(bytes) }
     }
 
@@ -30,7 +34,7 @@ internal object SafIo {
         bytes: ByteArray,
     ): Uri {
         val uri = DocumentsContract.createDocument(resolver, parentDocument, mimeType, displayName)
-            ?: throw IOException("Couldn't create $displayName")
+            ?: throw UserFacingIOException(uiText(R.string.file_create_failed, displayName), "createDocument returned null")
         writeBytes(resolver, uri, bytes)
         return uri
     }
@@ -43,13 +47,16 @@ internal object SafIo {
 
     /** Read a text file, refusing anything over [maxBytes] or anything that looks binary. */
     fun readText(resolver: ContentResolver, uri: Uri, maxBytes: Int = 2 * 1024 * 1024): String {
-        val input = resolver.openInputStream(uri) ?: throw IOException("Couldn't open the file")
+        val input = resolver.openInputStream(uri)
+            ?: throw UserFacingIOException(UiText.Res(R.string.file_open_failed), "openInputStream returned null")
         val bytes = input.use { s ->
             val buf = s.readNBytesCompat(maxBytes + 1)
-            if (buf.size > maxBytes) throw IOException("The file is too large to import (over ${maxBytes / 1024 / 1024} MB)")
+            if (buf.size > maxBytes) {
+                throw UserFacingIOException(uiText(R.string.import_too_large, maxBytes / 1024 / 1024), "file too large")
+            }
             buf
         }
-        if (bytes.any { it == 0.toByte() }) throw IOException("That doesn't look like a text file")
+        if (bytes.any { it == 0.toByte() }) throw UserFacingIOException(UiText.Res(R.string.import_not_text), "binary file")
         return bytes.decodeToString()
     }
 
