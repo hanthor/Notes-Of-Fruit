@@ -79,7 +79,15 @@ you can't say you weren't warned.
 | Mid-text splice (insert/replace/delete) | Works (matches iCloud.com's slot-promotion pattern) |
 | Create new note (FAB → save) | Code path works (deferred-create + v4 UUID); end-to-end Mac round-trip not yet user-confirmed |
 | Auto-save on lifecycle pause | Works (lifecycle `ON_PAUSE` only — see `NoteDetailViewModel.autoSave` in [`ui/detail/`](app/src/main/java/com/example/applenotes/ui/detail/)) |
-| Share OUT (Android intent chooser) | Works (plaintext only) |
+| Share OUT (Android intent chooser) | Works — plain text plus an HTML version with the note's formatting (`EXTRA_HTML_TEXT`) |
+| Share IN / "Add to Notes" text selection | Opens a prefilled, unsaved draft (text only; images not yet) |
+| Launcher shortcuts | Static "New note"; the 4 most recently opened notes (title only); "Pin to home screen" from the editor |
+| Quick Settings tile | "New note" (asks to unlock first; no lock-screen capture) |
+| Note-taking role (`CREATE_NOTE`, Android 14+) | Declared; opens a new draft after unlock. Never shown over the lock screen |
+| Export (Markdown / HTML) and Print / PDF | One note from the editor menu; a whole folder from the drawer (read-only, progress + cancel) |
+| Import `.txt` / `.md` | Opens a draft; Markdown headings/lists/checkboxes/bold/italic become native formatting |
+| Automation intent API (Tasker etc.) | Create / append / open; off by default, permission-protected — see [docs/automation.md](docs/automation.md) |
+| `icloud.com/notes` links, widget, on-device search, DocumentsProvider | Not yet |
 | Delete | Uses CloudKit `forceDelete`; Mac surfaces as "Recently Deleted" (server-managed, not a hard wipe) |
 | Format display (paragraph styles + inline) | Works — Title / Heading / Subheading / Body / Monospaced; Bulleted / Dashed / Numbered / Checkbox; bold / italic / underline / strikethrough; clickable links |
 | Table attachments | Decoded from `MergeableDataEncrypted` (CRDT graph), rendered as a real grid; row/column order from `crRows`/`crColumns` (synthetic-tested only) |
@@ -156,6 +164,8 @@ that touches writes.
   limitations.
 - [docs/design-decisions.md](docs/design-decisions.md) — the original design
   decisions (attribute_runs vs Markdown, auto-save, new-note flow, …).
+- [docs/automation.md](docs/automation.md) — the automation intent API
+  (create / append / open notes from Tasker-style apps).
 - [docs/signing.md](docs/signing.md) — how releases are signed and how to
   rotate the key.
 - [docs/distribution.md](docs/distribution.md) — F-Droid / IzzyOnDroid

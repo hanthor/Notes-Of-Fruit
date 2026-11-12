@@ -177,7 +177,13 @@ class NoteDetailViewModel(
      * already open (re-composition after rotation). [record] == null means
      * "restore [openId] from saved state" (after process death).
      */
-    fun open(openId: String, record: NoteRecord?, pendingFolderRef: JsonElement?) {
+    fun open(
+        openId: String,
+        record: NoteRecord?,
+        pendingFolderRef: JsonElement?,
+        /** Initial content for a brand-new draft (share, import, …); ignored for saved notes. */
+        prefill: DraftPrefill? = null,
+    ) {
         if (_status.value.openId == openId) return
         attachmentsJob?.cancel()
         _attachments.value = emptyMap()
@@ -186,7 +192,8 @@ class NoteDetailViewModel(
             return
         }
         _status.value = Status(openId = openId)
-        load(record, pendingFolderRef, draft = null)
+        val draft = prefill?.takeIf { record.recordChangeTag == null }?.toSnapshot()
+        load(record, pendingFolderRef, draft = draft)
     }
 
     private fun restore(openId: String) {
@@ -434,8 +441,14 @@ class NoteDetailViewModel(
                 record?.recordName == rec.recordName
             result.onSuccess { updated ->
                 if (!stillHere) return@onSuccess
+                // createNote only writes plain text (NoteCreator has no
+                // attribute runs), so a draft that carries formatting (the
+                // toolbar used before the first save, or an imported
+                // Markdown file) needs one follow-up modify through the
+                // normal splice path to apply it.
+                val formattingPending = rec.recordChangeTag == null && hasRichFormatting(newBody, spans)
                 // Did the user keep typing while the save was in flight?
-                val changedSince = fullBodyForSave != newBody || spansDraft != spans
+                val changedSince = fullBodyForSave != newBody || spansDraft != spans || formattingPending
                 load(updated, null, draft = null, keepCurrentDraft = changedSince)
                 val exit = alsoExit || queuedExit == true
                 _status.update {
@@ -444,7 +457,7 @@ class NoteDetailViewModel(
                 when {
                     exit && !changedSince -> _status.update { it.copy(exitRequested = true) }
                     // Save the rest before leaving / for the queued request.
-                    changedSince && (exit || queuedExit != null) -> save(alsoExit = exit)
+                    changedSince && (exit || queuedExit != null || formattingPending) -> save(alsoExit = exit)
                 }
             }.onFailure { e ->
                 Log.e(TAG, "save failed", e)
@@ -578,4 +591,24 @@ internal fun assembleFullBody(title: String, body: String): String = when {
     title.isEmpty() -> body
     body.isEmpty() -> title
     else -> "$title\n$body"
+}
+
+/**
+ * True when [spans] (over [text]) carry anything beyond plain Body text and a
+ * Title-styled first line.
+ */
+internal fun hasRichFormatting(text: String, spans: List<NoteBodyEditor.AttrSpan>): Boolean {
+    val firstLineEnd = text.indexOf('\n').let { if (it < 0) text.length else it }
+    var offset = 0
+    for (s in spans) {
+        val styled = when (s.style) {
+            NoteBodyEditor.ParagraphStyle.BODY -> false
+            // Title on the first line is what every note has; elsewhere it's formatting.
+            NoteBodyEditor.ParagraphStyle.TITLE -> offset + s.length > firstLineEnd + 1
+            else -> true
+        }
+        if (styled || s.bold || s.italic || s.underline || s.strikethrough || s.linkUrl != null) return true
+        offset += s.length
+    }
+    return false
 }

@@ -29,7 +29,7 @@ internal data class DraftSnapshot(
 }
 
 @Serializable
-internal data class SavedSpan(
+data class SavedSpan(
     val length: Int,
     val style: String,
     val checked: Boolean = false,
