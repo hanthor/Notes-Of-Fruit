@@ -3,6 +3,12 @@ package com.example.applenotes.data
 import com.example.applenotes.client.NoteRecord
 import com.example.applenotes.proto.NoteBodyEditor
 import com.example.applenotes.proto.NoteProtoKind
+import kotlin.io.encoding.Base64
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /**
  * A note's body as the editor sees it. Separates "decoded cleanly (possibly
@@ -59,6 +65,62 @@ enum class ReadOnlyReason(val explanation: String) {
     MISSING_BODY(
         "This note has no body data this app can read, so it's open read-only.",
     ),
+
+    /** A password-protected ("locked") note; see [isLockedNote]. Never decrypted. */
+    LOCKED(
+        "This note is locked with a password. Notes of Fruit can't open locked notes yet.",
+    ),
+}
+
+/**
+ * Fields Apple's locked (password-protected) notes carry on the Note record,
+ * per public reverse-engineering of the Notes database (e.g.
+ * apple_cloud_notes_parser: ZCRYPTOINITIALIZATIONVECTOR, ZCRYPTOTAG,
+ * ZCRYPTOSALT, ZCRYPTOITERATIONCOUNT, ZCRYPTOWRAPPEDKEY). That the CloudKit
+ * record uses these names has NOT been verified against a real account.
+ */
+val LOCKED_NOTE_FIELDS = listOf(
+    "CryptoInitializationVector",
+    "CryptoTag",
+    "CryptoSalt",
+    "CryptoIterationCount",
+    "CryptoWrappedKey",
+)
+
+/** Possible names of a locked note's password hint field (unverified, like [LOCKED_NOTE_FIELDS]). */
+private val PASSWORD_HINT_FIELDS = listOf("PasswordHint", "PasswordHintEncrypted", "CryptoPasswordHint")
+
+private fun JsonElement?.hasValue(): Boolean {
+    val value = (this as? JsonObject)?.let { it["value"] } ?: this ?: return false
+    return when (value) {
+        is JsonNull -> false
+        is JsonPrimitive -> value.content.isNotEmpty()
+        is JsonArray -> value.isNotEmpty()
+        is JsonObject -> value.isNotEmpty()
+    }
+}
+
+/** True when [record] has any of the [LOCKED_NOTE_FIELDS] with a non-empty value. */
+fun isLockedNote(record: NoteRecord): Boolean =
+    LOCKED_NOTE_FIELDS.any { record.rawFields[it].hasValue() }
+
+/**
+ * A locked note's password hint, if a hint-like field is present and decodes
+ * to text. `ENCRYPTED_*` CloudKit fields arrive as base64 of the plaintext
+ * (see docs/protocol.md); plain STRING fields as-is.
+ */
+fun lockedNoteHint(record: NoteRecord): String? {
+    for (name in PASSWORD_HINT_FIELDS) {
+        val field = record.rawFields[name] as? JsonObject ?: continue
+        val raw = (field["value"] as? JsonPrimitive)?.takeIf { it.isString }?.content ?: continue
+        val encrypted = (field["type"] as? JsonPrimitive)?.content?.contains("ENCRYPTED") == true ||
+            name.endsWith("Encrypted")
+        val text = if (encrypted) runCatching { Base64.decode(raw).decodeToString() }.getOrNull() else raw
+        text?.trim()
+            ?.takeIf { it.isNotEmpty() && it.none { c -> c.isISOControl() } }
+            ?.let { return it.take(200) }
+    }
+    return null
 }
 
 /**
@@ -70,8 +132,13 @@ enum class ReadOnlyReason(val explanation: String) {
  * - NOTE_STORE_PROTO whose substring walk fails → read-only, showing the raw
  *   `note_text` if available ([ReadOnlyReason.DECODE_FAILED]).
  * - [NoteProtoKind.MERGABLE_DATA] / [NoteProtoKind.UNKNOWN] → read-only.
+ * - Checked first: a locked (password-protected) note → read-only
+ *   ([ReadOnlyReason.LOCKED]), body untouched.
  */
 fun decodeNoteBody(record: NoteRecord): NoteBody {
+    // A locked note's body is encrypted with the note's password: never try
+    // to decode (let alone decrypt) it.
+    if (isLockedNote(record)) return NoteBody.ReadOnly(ReadOnlyReason.LOCKED, text = null)
     val b64 = record.stringField("TextDataEncrypted")
     if (b64 == null) {
         return if (record.recordChangeTag == null) {

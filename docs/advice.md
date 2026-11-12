@@ -120,10 +120,13 @@ app/src/main/java/com/example/applenotes/
 │   ├── TextMerge.kt          Line-level three-way merge for save conflicts
 │   ├── NoteRebase.kt         Merge formatting, splice the merge onto the fresh proto, "Keep both"
 │   ├── Connectivity.kt       Online/offline flow (ConnectivityManager)
+│   ├── AttachmentCache.kt    Disk cache for attachment images (LRU, 100 MB) + small LRU map
+│   ├── AttachmentAssets.kt   CKAsset / PreviewImages JSON → download URL + cache key
 │   └── NoteBody.kt           decodeNoteBody(): Editable vs ReadOnly(reason)
 ├── export/                   Attribute runs → HTML / Markdown, Markdown → spans (import), SAF export, print
 ├── integrations/             Share-in / PROCESS_TEXT / shortcuts / QS tile / notes-role entry (IntegrationEntryActivity)
 ├── log/AppLog.kt              The only logcat access; release builds log no note content
+├── security/                 Optional app lock: policy (timeout), DataStore toggle, BiometricPrompt, lock screen
 ├── proto/
 │   ├── ProtobufWire.kt       Hand-rolled protobuf wire format (no schema dep)
 │   ├── Gzip.kt               gzip + zlib detect/compress/decompress
@@ -136,8 +139,10 @@ app/src/main/java/com/example/applenotes/
     ├── AppViewModel.kt       Navigation, sign-in, list, folder selection
     ├── list/                 Notes list + folder drawer
     ├── detail/               NoteDetailViewModel, editor, formatting toolbar, attachments
+    │                         (AttachmentImageLoader / ImageDecoding: off-main-thread, downsampled;
+    │                          AttachmentGuard: no deleting attachments; RemoteChangeWatcher)
     ├── login/                WebView sign-in
-    ├── settings/             Settings screen (automation toggle)
+    ├── settings/             Settings screen (automation toggle, app lock)
     └── common/               Shared screens, snackbar helper, alpha dialog
 
 app/src/debug/java/com/example/applenotes/
@@ -217,9 +222,14 @@ what isn't:
   collaborative notes?) use a different shape. We refuse to operate on those —
   see `NoteBodyEditor.probe`. Read-only support would be a starting point.
 - ~~**Image attachments display as `￼`.**~~ Resolved: image attachments are
-  fetched and rendered inline; other attachment types (sketches, maps, etc.)
-  still show a placeholder card. See the status table in the README.
+  fetched (preview inline, original on tap), cached on disk and rendered
+  inline; other attachment types (sketches, maps, etc.) show Apple's preview
+  image when the record has one, else a placeholder card. See the status
+  table in the README.
 - ~~**No formatting toolbar yet.**~~ Resolved: the format toolbar (paragraph
   styles, lists, inline B/I/U/S, links) shipped.
-- **No subscription / push.** Polls when the user opens the app. Background sync,
-  CloudKit subscriptions, and a send queue are all unimplemented.
+- **No subscription / push.** Polls when the user opens the app, plus a
+  once-a-minute `lookupNote` of the open note while its screen is visible
+  (`RemoteChangeWatcher`; it fetches the whole record, body included, since
+  `lookupNote` has no `desiredKeys`). Background sync, CloudKit
+  subscriptions, and a send queue are all unimplemented.

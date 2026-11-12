@@ -140,6 +140,36 @@ class NoteDetailViewModel(
     /** The open note was deleted: nothing of it goes to the outbox on the way out. */
     private var noteDeleted = false
 
+    // ----- "Updated on another device" (issue #16; RemoteChangeWatcher.kt) -----
+
+    private val remoteWatcher = RemoteChangeWatcher(repository::lookupNote, repository.online)
+
+    /** The server's newer version of the open note, found by [watchForRemoteChanges]; null if none. */
+    val remoteChange: StateFlow<NoteRecord?> = remoteWatcher.newer
+
+    private fun remotePollPaused(): Boolean = _status.value.let {
+        it.saving || it.deleting || it.loading || it.conflict != null || it.openId == null ||
+            it.savedDraft != null
+    }
+
+    /** Polls for remote changes until cancelled; the screen runs it while visible. */
+    suspend fun watchForRemoteChanges() = remoteWatcher.watch({ record }, ::remotePollPaused)
+
+    /** One poll now (tests). */
+    internal suspend fun checkForRemoteChange() = remoteWatcher.checkOnce({ record }, ::remotePollPaused)
+
+    /**
+     * Show the newer version. Only without unsaved changes: with a draft,
+     * the save path merges with the remote version instead.
+     */
+    fun reloadRemoteChange() {
+        val fresh = remoteChange.value ?: return
+        if (isModified || remotePollPaused() || fresh.recordName != record?.recordName) return
+        load(fresh, null, draft = null)
+    }
+
+    fun dismissRemoteChange() = remoteWatcher.clear()
+
     /** Why the last save failed, when that decides what happens next. */
     private enum class PendingRetry { NONE, WHEN_ONLINE, AFTER_SIGN_IN }
 
@@ -166,7 +196,7 @@ class NoteDetailViewModel(
      * Resolved attachment cards. For each AttrSpan with isAttachment +
      * recordName we kick off an async lookup, decode the result by attachment
      * type ("com.apple.notes.table" → table grid; "public.png/jpeg/heic" →
-     * image bytes), and feed the cache into FormattedNoteBody.
+     * image preview/original sources), and feed the cache into FormattedNoteBody.
      */
     val attachments: StateFlow<Map<String, AttachmentContent>> = _attachments.asStateFlow()
     private var attachmentsJob: Job? = null
@@ -506,6 +536,7 @@ class NoteDetailViewModel(
         keepCurrentDraft: Boolean = false,
     ) {
         record = rec
+        remoteWatcher.clear()
         pendingFolderRef = folderRef
         // Probe before anything else: only a cleanly decoded NOTE_STORE_PROTO
         // (or a brand-new draft) is editable. Everything else is shown
@@ -570,13 +601,11 @@ class NoteDetailViewModel(
             val fetcher: suspend (String) -> NoteRecord? = { rn ->
                 runCatchingCancellable { repository.lookupNote(rn) }.getOrNull()
             }
-            val assetFetcher: suspend (String) -> ByteArray? = { url ->
-                runCatchingCancellable { repository.fetchAssetBytes(url) }.getOrNull()
-            }
             for (rn in recordNames) {
                 if (_attachments.value.containsKey(rn)) continue
                 val rec = fetcher(rn) ?: continue
-                val content = runCatchingCancellable { decodeAttachment(rec, assetFetcher, fetcher) }
+                // Image bytes are downloaded (and cached) when shown, not here.
+                val content = runCatchingCancellable { decodeAttachment(rec, fetcher) }
                     .onFailure { AppLog.w(TAG, "decodeAttachment failed for $rn", it) }
                     .getOrNull()
                 if (content != null) {
@@ -590,16 +619,28 @@ class NoteDetailViewModel(
 
     fun onTitleChange(value: String) {
         if (isReadOnly) return
-        titleDraft = value.replace("\n", "")
+        val title = value.replace("\n", "")
+        if (rejectAttachmentRemoval(titleDraft, title)) return
+        titleDraft = title
         syncSpans()
         outbox.onEdited()
     }
 
     fun onBodyChange(value: TextFieldValue) {
         if (isReadOnly) return
+        // Keep the previous value (text + selection) when the edit would
+        // delete an attachment (issue #14; see AttachmentGuard.kt).
+        if (rejectAttachmentRemoval(bodyDraft.text, value.text)) return
         bodyDraft = value
         syncSpans()
         outbox.onEdited()
+    }
+
+    /** True (and a snackbar is shown) when [old] → [new] would remove an attachment. */
+    private fun rejectAttachmentRemoval(old: String, new: String): Boolean {
+        if (!removesAttachment(old, new)) return false
+        _status.update { it.copy(message = message(ATTACHMENT_DELETE_BLOCKED, null)) }
+        return true
     }
 
     /** Toolbar / link-dialog span mutations (full-body coordinates). */
@@ -958,6 +999,7 @@ class NoteDetailViewModel(
         outbox.reset()
         savedDraftRow = null
         attachmentsJob?.cancel()
+        remoteWatcher.clear()
         queuedSave = null
         pendingRetry = PendingRetry.NONE
         _status.value = Status()

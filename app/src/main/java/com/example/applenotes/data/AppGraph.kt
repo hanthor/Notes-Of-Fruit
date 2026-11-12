@@ -12,6 +12,8 @@ import io.ktor.client.engine.okhttp.OkHttp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.withContext
+import java.io.File
 
 /** First-launch alpha disclaimer acknowledgement (see [AlphaWarning]). */
 interface AlphaGate {
@@ -53,6 +55,11 @@ object AppGraph {
             connectivity = AndroidConnectivityMonitor(app),
             store = RoomNotesStore(NotesDatabase.open(app)),
             draftScheduler = WorkManagerDraftScheduler(app),
+            clearOtherLocalData = {
+                withContext(Dispatchers.IO) {
+                    AttachmentCache(FileCacheStore(File(app.cacheDir, ATTACHMENT_CACHE_DIR))).clear()
+                }
+            },
             // Main.immediate matches where these writes ran before the
             // refactor (the composable's scope): the proto builders are not
             // audited for thread-safety, and Ktor suspends off-thread anyway.
@@ -60,3 +67,6 @@ object AppGraph {
         )
     }
 }
+
+/** Directory under cacheDir holding downloaded attachment bytes (see AttachmentCache). */
+internal const val ATTACHMENT_CACHE_DIR = "attachments"

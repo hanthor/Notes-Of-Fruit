@@ -50,6 +50,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.applenotes.data.ReadOnlyReason
+import com.example.applenotes.data.lockedNoteHint
 import com.example.applenotes.export.NoteExportMenuItems
 import com.example.applenotes.export.NoteSnapshot
 import com.example.applenotes.export.rememberNoteExportActions
@@ -280,7 +281,14 @@ internal fun NoteDetailScreen(
                     status.offlineCopy && !online -> OfflineCopyBanner()
                     !online -> OfflineBanner()
                 }
-                vm.readOnlyReason?.let { ReadOnlyBanner(it) }
+                // "Updated on another device" polling + banner (issue #16). Not while
+                // the "Restore unsaved changes?" question is open (issue #13).
+                if (record.recordChangeTag != null && status.savedDraft == null) {
+                    RemoteChangeIndicator(vm, record.recordName)
+                }
+                vm.readOnlyReason?.let {
+                    ReadOnlyBanner(it, hint = if (it == ReadOnlyReason.LOCKED) lockedNoteHint(record) else null)
+                }
             }
         },
     ) { padding ->
@@ -446,7 +454,7 @@ internal fun NoteDetailScreen(
 
 /** Explains why the open note can't be edited (issue #3). */
 @Composable
-private fun ReadOnlyBanner(reason: ReadOnlyReason) {
+private fun ReadOnlyBanner(reason: ReadOnlyReason, hint: String? = null) {
     Surface(
         color = MaterialTheme.colorScheme.secondaryContainer,
         contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
@@ -461,7 +469,13 @@ private fun ReadOnlyBanner(reason: ReadOnlyReason) {
                 contentDescription = null,
                 modifier = Modifier.padding(end = 12.dp),
             )
-            Text(reason.explanation, style = MaterialTheme.typography.bodySmall)
+            Column {
+                Text(reason.explanation, style = MaterialTheme.typography.bodySmall)
+                // Locked notes (issue #16): Apple's password hint, if the record has one.
+                if (hint != null) {
+                    Text("Password hint: $hint", style = MaterialTheme.typography.bodySmall)
+                }
+            }
         }
     }
 }

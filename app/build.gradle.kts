@@ -155,6 +155,8 @@ dependencies {
   ksp(libs.androidx.room.compiler)
   // Background saves of unsent drafts (issue #13)
   implementation(libs.androidx.work.runtime.ktx)
+  // Optional app lock (fingerprint / face / device PIN); also brings androidx.fragment.
+  implementation(libs.androidx.biometric)
   // Tooling
   debugImplementation(libs.androidx.compose.ui.tooling)
   // Instrumented tests

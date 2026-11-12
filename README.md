@@ -88,11 +88,17 @@ you can't say you weren't warned.
 | Import `.txt` / `.md` | Opens a draft; Markdown headings/lists/checkboxes/bold/italic become native formatting |
 | Automation intent API (Tasker etc.) | Create / append / open; off by default, permission-protected — see [docs/automation.md](docs/automation.md) |
 | `icloud.com/notes` links, widget, on-device search, DocumentsProvider | Not yet |
+| App lock | Optional (Settings, off by default): fingerprint / face / screen lock on cold start and after more than a minute in the background; while on, notes are hidden from Recents and screenshots (`FLAG_SECURE`) |
+| Tablet / landscape list-detail layout | Not yet |
+| Move notes between folders, folder create/rename/delete, restore from Recently Deleted, pinning | Not yet — needs writes to Apple's schema that haven't been observed |
 | Delete | Uses CloudKit `forceDelete`; Mac surfaces as "Recently Deleted" (server-managed, not a hard wipe) |
 | Format display (paragraph styles + inline) | Works — Title / Heading / Subheading / Body / Monospaced; Bulleted / Dashed / Numbered / Checkbox; bold / italic / underline / strikethrough; clickable links |
 | Table attachments | Decoded from `MergeableDataEncrypted` (CRDT graph), rendered as a real grid; row/column order from `crRows`/`crColumns` (synthetic-tested only) |
-| Image attachments | Fetched as CKAsset bytes from the Media reference, rendered inline |
-| Other attachments (sketches, maps, etc.) | Rendered as a labeled placeholder card |
+| Image attachments | Apple's preview image inline, the original (Media reference) full screen on tap with pinch-zoom; decoded off the main thread at display size; cached on disk (100 MB, LRU). HEIC needs Android 9+ |
+| Other attachments (sketches, scans, maps, etc.) | Apple's preview image with a type label when the record has one, otherwise a labeled placeholder card |
+| "Updated on another device" | While a note is open, visible and online, its `recordChangeTag` is checked every 60 s (read-only lookup); a change shows a banner with Reload (only offered when there are no unsaved edits — otherwise saving merges) |
+| Locked (password-protected) notes | Detected by the `Crypto*` fields on the record and shown read-only with "This note is locked with a password…" (plus the password hint if present). Never decrypted. Field names from public reverse-engineering, not verified on a real account; the list can't show a lock icon yet (it doesn't fetch those fields) |
+| Removing attachments | Blocked: an edit that would delete an attachment (its `U+FFFC` character) is refused with "Attachments can't be removed from Android yet" (we can't verify that round-trips) |
 | Format input toolbar | Works — paragraph style picker, list toggles (bullet/dash/numbered/checkbox), inline B/I/U/S, link |
 | Tap-to-toggle checkbox | Works in formatted view (auto-saves) |
 | Conflict UX | On CONFLICT/oplock the edit is three-way merged (line level) onto the fresh record and spliced onto its proto; overlapping edits ask "Keep both" / "Discard my changes" (unit-tested; not yet round-tripped against a real concurrent Mac edit) |

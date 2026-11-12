@@ -31,7 +31,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.example.applenotes.automation.AutomationSettings
 
-/** Minimal settings: the automation API toggle (off by default). */
+/** Minimal settings: the automation API toggle and the app lock (both off by default). */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SettingsScreen(onBack: () -> Unit) {
@@ -86,6 +86,8 @@ internal fun SettingsScreen(onBack: () -> Unit) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            Spacer(Modifier.padding(top = 24.dp))
+            AppLockRow()
         }
     }
 }

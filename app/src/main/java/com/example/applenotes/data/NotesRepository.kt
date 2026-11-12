@@ -69,6 +69,8 @@ class NotesRepository(
     private val store: NotesStore = InMemoryNotesStore(),
     /** Runs background saves of unsent drafts (WorkManager in the app). */
     private val draftScheduler: DraftScheduler = DraftScheduler.None,
+    /** Also run on sign-out / account change: other on-device copies of note content (attachment cache). */
+    private val clearOtherLocalData: suspend () -> Unit = {},
 ) {
     /** Device connectivity (see [ConnectivityMonitor]); drives the offline indicator. */
     val online: StateFlow<Boolean> = connectivity.online
@@ -577,7 +579,10 @@ class NotesRepository(
         _pendingDrafts.value = emptyList()
         cacheLoaded = false
         draftScheduler.cancelAll()
-        externalScope.launch { safeStore("clear local data") { store.clearAll() } }
+        externalScope.launch {
+            safeStore("clear local data") { store.clearAll() }
+            safeStore("clear other local data") { clearOtherLocalData() }
+        }
     }
 
     /** Run a store operation; a storage failure is logged, never fatal (the cache is rebuildable). */
