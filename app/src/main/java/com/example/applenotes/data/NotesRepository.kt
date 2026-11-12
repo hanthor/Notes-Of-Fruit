@@ -10,6 +10,8 @@ import com.example.applenotes.client.NotesError
 import com.example.applenotes.client.extractReferenceRecordName
 import com.example.applenotes.proto.NoteAppender
 import com.example.applenotes.proto.NoteBodyEditor
+import com.example.applenotes.client.newNoteRecordName
+import com.example.applenotes.data.local.CreatedDraft
 import com.example.applenotes.data.local.InMemoryNotesStore
 import com.example.applenotes.data.local.NotesStore
 import com.example.applenotes.data.local.PendingDraft
@@ -709,32 +711,11 @@ class NotesRepository(
                     throw DraftSupersededException()
                 }
             }
-            // A local draft that was already created (by the editor or the
-            // background worker; the mapping is written the moment
-            // createNote returns): modify that note, never create it twice.
-            val createdName = if (record.recordChangeTag == null) {
-                runCatchingCancellable { store.createdRecordName(record.recordName) }.getOrNull()
-            } else {
-                null
-            }
-            val updated = if (createdName != null) {
-                AppLog.i(TAG) { "save: draft ${record.recordName} was already created; modifying it" }
-                saveLock(createdName).withLock {
-                    val created = withApi(idempotent = true) { it.lookupNote(createdName) }
-                    val createdBody = decodeNoteBody(created)
-                    if (createdBody is NoteBody.Editable && createdBody.text == newBody &&
-                        (newSpans == null || newSpans == createdBody.spans)
-                    ) {
-                        created
-                    } else {
-                        withApi(idempotent = false) { client ->
-                            doSaveNote(client, created, null, newBody, isPureAppend = false, newSpans)
-                        }
-                    }
-                }
+            val updated = if (record.recordChangeTag == null) {
+                saveDraftNote(record.recordName, pendingFolderRef, newBody, newSpans)
             } else {
                 withApi(idempotent = false) { client ->
-                    doSaveNote(client, record, pendingFolderRef, newBody, isPureAppend, newSpans)
+                    doSaveNote(client, record, newBody, isPureAppend, newSpans)
                 }
             }
             cacheBody(updated)
@@ -745,75 +726,157 @@ class NotesRepository(
 
     private fun saveLock(key: String): Mutex = saveLocks.getOrPut(key) { Mutex() }
 
+    /**
+     * Save a local draft ([draftKey] = "draft-<uuid>") that has no change tag.
+     *
+     * - Already created (by the editor or the background worker): modify that
+     *   note ([saveOverCreated]), never create it twice.
+     * - Otherwise create it, under a recordName chosen once per draft and
+     *   stored *before* the request goes out. When the answer is lost (a
+     *   timeout after the server committed, process death), the retry sends
+     *   the same name: CloudKit refuses it ([NotesError.AlreadyExists]), and
+     *   the note that exists is looked up and used instead of a duplicate.
+     *
+     * The created record is stored with the mapping as the merge base for
+     * later saves of the draft.
+     */
+    private suspend fun saveDraftNote(
+        draftKey: String,
+        pendingFolderRef: JsonElement?,
+        newBody: String,
+        newSpans: List<NoteBodyEditor.AttrSpan>?,
+    ): NoteRecord {
+        val known = runCatchingCancellable { store.createdDraft(draftKey) }.getOrNull()
+        if (known != null && known.confirmed) {
+            AppLog.i(TAG) { "save: draft $draftKey was already created; modifying it" }
+            return saveOverCreated(known, newBody, newSpans)
+        }
+        val folderRef = pendingFolderRef ?: error("Draft has no folderRef — refresh first.")
+        val recordName = known?.recordName ?: newNoteRecordName().also { name ->
+            // If this can't be stored, the create still goes out (a lost
+            // answer could then duplicate the note, as before).
+            safeStore("reserve record name") { store.putCreatedDraft(CreatedDraft(draftKey, name, confirmed = false)) }
+        }
+        val created = try {
+            withApi(idempotent = false) { client -> createNote(client, recordName, folderRef, newBody) }
+        } catch (e: NotesError.AlreadyExists) {
+            AppLog.i(TAG) { "save: $recordName already exists (an earlier create went through); using it" }
+            withApi(idempotent = true) { it.lookupNote(recordName) }
+        }
+        val entry = CreatedDraft(draftKey, created.recordName, confirmed = true, record = created)
+        // Remember the created note at once: a second save of this draft
+        // (worker vs. editor, or a retry) must modify it, not create another.
+        safeStore("record created draft") { store.putCreatedDraft(entry) }
+        addCreatedSummary(created.recordName, folderRef, newBody)
+        val createdBody = decodeNoteBody(created)
+        if (createdBody is NoteBody.Editable && createdBody.text == newBody) return created
+        // The note exists with other text (an earlier attempt sent an older
+        // version of the draft): bring it up to date through the modify path.
+        return saveOverCreated(entry, newBody, newSpans)
+    }
+
+    /**
+     * Save [newBody] over a note created from a draft. The base is the record
+     * our create (or our last write through this mapping) left, not the
+     * server's current one: an edit made on another device since then is
+     * merged through the CONFLICT path instead of being overwritten.
+     */
+    private suspend fun saveOverCreated(
+        entry: CreatedDraft,
+        newBody: String,
+        newSpans: List<NoteBodyEditor.AttrSpan>?,
+    ): NoteRecord = saveLock(entry.recordName).withLock {
+        val name = entry.recordName
+        val base = entry.record?.takeIf { it.recordChangeTag != null && it.stringField("TextDataEncrypted") != null }
+            ?: withApi(idempotent = true) { it.lookupNote(name) }
+        val baseBody = decodeNoteBody(base)
+        if (baseBody is NoteBody.Editable && baseBody.text == newBody &&
+            (newSpans == null || newSpans == baseBody.spans)
+        ) {
+            // Nothing of ours left to write; hand back the current version.
+            return@withLock runCatchingCancellable { withApi(idempotent = true) { it.lookupNote(name) } }
+                .getOrDefault(base)
+        }
+        val saved = withApi(idempotent = false) { client ->
+            doSaveNote(client, base, newBody, isPureAppend = false, newSpans)
+        }
+        safeStore("record created draft") { store.putCreatedDraft(entry.copy(record = saved)) }
+        saved
+    }
+
+    /**
+     * createNote with the typed content in one shot, matching iCloud.com's
+     * pattern: NoteCreator's proto already has the full content as a single
+     * substring + matching attribute_run, so Mac's notesync sees a
+     * self-consistent record on first sight.
+     */
+    private suspend fun createNote(
+        client: NotesApi,
+        recordName: String,
+        folderRef: JsonElement,
+        newBody: String,
+    ): NoteRecord {
+        val (newTitle, newSnippet) = computeTitleAndSnippet(newBody)
+        // The proto gets exactly what was typed (newBody), including an empty
+        // first line or a trailing newline. Title / body only fill the list
+        // fields: the first line and the rest, as before, except that a
+        // blank first line doesn't make a blank title (Apple's lists show
+        // the first non-blank line).
+        val firstNlIdx = newBody.indexOf('\n')
+        val firstLine = if (firstNlIdx < 0) newBody else newBody.substring(0, firstNlIdx)
+        val createTitle = firstLine.ifBlank { newTitle }
+        val createBody = if (firstNlIdx < 0) "" else newBody.substring(firstNlIdx + 1)
+        AppLog.v(TAG) {
+            "save (draft→createNote): title='${createTitle.take(30)}' " +
+                "body.len=${createBody.length} snippet='${newSnippet.take(30)}'"
+        }
+        val created = client.createNote(
+            title = createTitle,
+            body = createBody,
+            folderRef = folderRef,
+            ourReplicaUuid = replicaUuid(),
+            noteText = newBody,
+            recordName = recordName,
+        )
+        return withBody(client, created)
+    }
+
+    /** Pre-pend a summary of a just-created note so back-nav shows it without a refetch. */
+    private suspend fun addCreatedSummary(recordName: String, folderRef: JsonElement, text: String) {
+        val (title, snippet) = computeTitleAndSnippet(text)
+        val newSummary = NoteSummary(
+            recordName = recordName,
+            title = title,
+            snippet = snippet,
+            modificationTimestampMs = clock(),
+            deleted = false,
+            folderRecordName = extractReferenceRecordName(folderRef),
+        )
+        touchedDuringSync += recordName
+        _notes.update { listOf(newSummary) + it.filter { n -> n.recordName != recordName } }
+        val gen = generation
+        safeStore("cache created note") { if (gen == generation) store.upsertSummaries(listOf(newSummary)) }
+    }
+
+    /** The incremental modify path for a note that exists on the server. */
     private suspend fun doSaveNote(
         client: NotesApi,
         record: NoteRecord,
-        pendingFolderRef: JsonElement?,
         newBody: String,
         isPureAppend: Boolean,
         newSpans: List<NoteBodyEditor.AttrSpan>?,
     ): NoteRecord {
-        val uuid = replicaUuid()
-        val (newTitle, newSnippet) = computeTitleAndSnippet(newBody)
+        requireNotNull(record.recordChangeTag) { "modify needs a saved note" }
+        val updated = modifyWithRebase(client, replicaUuid(), record, newBody, isPureAppend, newSpans)
+        return withBody(client, updated)
+    }
 
-        val updated: NoteRecord
-
-        if (record.recordChangeTag == null) {
-            // DRAFT: this is the first save for a FAB-created
-            // note. Call createNote with the typed content in
-            // one shot — matching iCloud.com's pattern. The
-            // proto produced by NoteCreator already has the
-            // full content as a single substring + matching
-            // attribute_run, so Mac's notesync sees a
-            // self-consistent record on first sight.
-            val folderRef = pendingFolderRef
-                ?: error("Draft has no folderRef — refresh first.")
-            // The proto gets exactly what was typed (newBody), including
-            // an empty first line or a trailing newline. Title / body only
-            // fill the list fields: the first line and the rest, as
-            // before, except that a blank first line doesn't make a blank
-            // title (Apple's lists show the first non-blank line).
-            val firstNlIdx = newBody.indexOf('\n')
-            val firstLine = if (firstNlIdx < 0) newBody else newBody.substring(0, firstNlIdx)
-            val createTitle = firstLine.ifBlank { newTitle }
-            val createBody = if (firstNlIdx < 0) "" else newBody.substring(firstNlIdx + 1)
-            AppLog.v(TAG) {
-                "save (draft→createNote): title='${createTitle.take(30)}' " +
-                    "body.len=${createBody.length} snippet='${newSnippet.take(30)}'"
-            }
-            updated = client.createNote(
-                title = createTitle,
-                body = createBody,
-                folderRef = folderRef,
-                ourReplicaUuid = uuid,
-                noteText = newBody,
-            )
-            // Remember the created note at once: a second save of this
-            // draft (worker vs. editor, or a retry) must modify it, not
-            // create another one.
-            safeStore("record created draft") { store.putCreatedRecordName(record.recordName, updated.recordName) }
-            // Pre-pend a fresh summary into the cache so back-nav
-            // shows the new note immediately without a refetch.
-            val folderRecordName = extractReferenceRecordName(folderRef)
-            val newSummary = NoteSummary(
-                recordName = updated.recordName,
-                title = newTitle,
-                snippet = newSnippet,
-                modificationTimestampMs = clock(),
-                deleted = false,
-                folderRecordName = folderRecordName,
-            )
-            touchedDuringSync += updated.recordName
-            _notes.update { listOf(newSummary) + it.filter { n -> n.recordName != updated.recordName } }
-            val gen = generation
-            safeStore("cache created note") { if (gen == generation) store.upsertSummaries(listOf(newSummary)) }
-        } else {
-            // EXISTING NOTE: incremental modify path.
-            updated = modifyWithRebase(client, uuid, record, newBody, isPureAppend, newSpans)
-        }
-        // The editor re-decodes the returned record. If CloudKit didn't echo
-        // the body field, fetch it so a just-saved note doesn't look body-less
-        // (and therefore read-only).
+    /**
+     * The editor re-decodes the returned record. If CloudKit didn't echo the
+     * body field, fetch it so a just-saved note doesn't look body-less (and
+     * therefore read-only).
+     */
+    private suspend fun withBody(client: NotesApi, updated: NoteRecord): NoteRecord {
         if (updated.stringField("TextDataEncrypted") == null) {
             runCatchingCancellable { client.lookupNote(updated.recordName) }
                 .getOrNull()

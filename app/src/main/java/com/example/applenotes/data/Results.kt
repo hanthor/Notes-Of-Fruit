@@ -45,6 +45,8 @@ internal fun userMessage(e: Throwable): UiText = when (e) {
     is NotesError.Offline -> uiText(R.string.error_offline)
     is NotesError.Throttled -> uiText(R.string.error_throttled, retryHint(e.retryAfterMs))
     is NotesError.Conflict -> uiText(R.string.error_conflict)
+    // Normally handled (a retried create that had gone through); shown only if it escapes.
+    is NotesError.AlreadyExists -> uiText(R.string.error_conflict)
     is NotesError.Server -> e.code?.let { uiText(R.string.error_server_with_code, e.status, it) }
         ?: uiText(R.string.error_server, e.status)
     is NotesError.Decode -> uiText(R.string.error_decode)

@@ -12,6 +12,8 @@ import androidx.room.RoomDatabase
 import androidx.room.Transaction
 import androidx.room.Upsert
 import androidx.room.withTransaction
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import com.example.applenotes.client.FolderSummary
 import com.example.applenotes.client.NoteRecord
 import com.example.applenotes.client.NoteSummary
@@ -98,7 +100,13 @@ internal fun PendingDraft.toEntity() = PendingDraftEntity(
 )
 
 @Entity(tableName = "created_draft")
-data class CreatedDraftEntity(@PrimaryKey val draftId: String, val recordName: String)
+data class CreatedDraftEntity(
+    @PrimaryKey val draftId: String,
+    val recordName: String,
+    /** Rows from schema 1 were written only after a successful create. */
+    @ColumnInfo(defaultValue = "1") val confirmed: Boolean = true,
+    @ColumnInfo(name = "record_json") val recordJson: String? = null,
+)
 
 @Dao
 interface NotesDao {
@@ -163,8 +171,8 @@ interface NotesDao {
     @Query("SELECT * FROM pending_draft ORDER BY updated_ms")
     fun observeDrafts(): Flow<List<PendingDraftEntity>>
 
-    @Query("SELECT recordName FROM created_draft WHERE draftId = :draftId")
-    suspend fun createdRecordName(draftId: String): String?
+    @Query("SELECT * FROM created_draft WHERE draftId = :draftId")
+    suspend fun createdDraft(draftId: String): CreatedDraftEntity?
 
     @Upsert
     suspend fun putCreated(row: CreatedDraftEntity)
@@ -212,7 +220,7 @@ interface NotesDao {
         PendingDraftEntity::class,
         CreatedDraftEntity::class,
     ],
-    version = 1,
+    version = 2,
     exportSchema = true,
 )
 abstract class NotesDatabase : RoomDatabase() {
@@ -221,8 +229,18 @@ abstract class NotesDatabase : RoomDatabase() {
     companion object {
         const val NAME = "notes-cache.db"
 
+        /** 1 → 2: created_draft remembers unconfirmed creates and the created record. */
+        val MIGRATION_1_2 = object : Migration(1, 2) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `created_draft` ADD COLUMN `confirmed` INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE `created_draft` ADD COLUMN `record_json` TEXT")
+            }
+        }
+
         fun open(context: Context): NotesDatabase =
-            Room.databaseBuilder(context.applicationContext, NotesDatabase::class.java, NAME).build()
+            Room.databaseBuilder(context.applicationContext, NotesDatabase::class.java, NAME)
+                .addMigrations(MIGRATION_1_2)
+                .build()
     }
 }
 
@@ -281,9 +299,12 @@ class RoomNotesStore(private val db: NotesDatabase) : NotesStore {
     override suspend fun allDrafts() = dao.drafts().map { it.toDraft() }
     override fun observeDrafts(): Flow<List<PendingDraft>> = dao.observeDrafts().map { rows -> rows.map { it.toDraft() } }
 
-    override suspend fun createdRecordName(draftId: String) = dao.createdRecordName(draftId)
-    override suspend fun putCreatedRecordName(draftId: String, recordName: String) =
-        dao.putCreated(CreatedDraftEntity(draftId, recordName))
+    override suspend fun createdDraft(draftId: String): CreatedDraft? = dao.createdDraft(draftId)?.let {
+        CreatedDraft(it.draftId, it.recordName, it.confirmed, StoreCodec.decodeRecord(it.recordJson))
+    }
+    override suspend fun putCreatedDraft(entry: CreatedDraft) = dao.putCreated(
+        CreatedDraftEntity(entry.draftId, entry.recordName, entry.confirmed, entry.record?.let { StoreCodec.encodeRecord(it) }),
+    )
 
     override suspend fun clearAll() = dao.clearAll()
 

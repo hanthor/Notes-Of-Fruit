@@ -17,6 +17,9 @@ import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import com.example.applenotes.client.NotesError
 import org.junit.Before
 import org.junit.Test
 import kotlin.io.encoding.Base64
@@ -69,6 +72,92 @@ class NotesRepositoryCreateTest {
         // The list shows the first non-blank line as the title, like Apple's clients.
         assertEquals("foo", repo.notes.value.first { it.recordName == saved.recordName }.title)
         assertEquals("foo", api.creates.single().title)
+    }
+
+    private fun createdNotes() = api.records.keys.filter { it != "NOTE-A" }
+
+    /** Finding: the server committed the create but the answer was lost; the retry made a second note. */
+    @Test
+    fun aCreateRetriedAfterALostAnswerMakesExactlyOneNote() = runTest {
+        val repo = newRepo()
+        repo.signIn()
+        api.loseResponse["createNote"] = NotesError.Offline()
+        try {
+            repo.saveNote(stub(), folder, "Groceries\napples", isPureAppend = false, newSpans = null)
+            fail("expected Offline")
+        } catch (e: NotesError.Offline) {
+            // the answer never arrived
+        }
+        assertEquals(1, createdNotes().size)
+        // Retry (editor Retry / back online / worker): same recordName, refused, looked up.
+        val saved = repo.saveNote(stub(), folder, "Groceries\napples", isPureAppend = false, newSpans = null)
+        assertEquals(1, createdNotes().size)
+        assertEquals(createdNotes().single(), saved.recordName)
+        assertEquals(2, api.creates.size)
+        assertEquals(api.creates[0].recordName, api.creates[1].recordName)
+        assertEquals("Groceries\napples", saved.visibleText())
+        assertTrue(api.modifies.isEmpty())
+        assertEquals(saved.recordName, store.createdRecordName("draft-1"))
+        // A third save modifies, never creates.
+        repo.saveNote(stub(), folder, "Groceries\napples\npears", isPureAppend = false, newSpans = null)
+        assertEquals(2, api.creates.size)
+        assertEquals("Groceries\napples\npears", api.records.getValue(saved.recordName).visibleText())
+    }
+
+    /** The lost create carried an older version of the draft: the retry brings the note up to date. */
+    @Test
+    fun aRetryWithNewerTextUpdatesTheNoteThatWasCreated() = runTest {
+        val repo = newRepo()
+        repo.signIn()
+        api.loseResponse["createNote"] = NotesError.Offline()
+        runCatching { repo.saveNote(stub(), folder, "Groceries\napples", isPureAppend = false, newSpans = null) }
+        val saved = repo.saveNote(stub(), folder, "Groceries\napples\npears", isPureAppend = false, newSpans = null)
+        assertEquals(1, createdNotes().size)
+        assertEquals("Groceries\napples\npears", api.records.getValue(saved.recordName).visibleText())
+        checkProto(api.records.getValue(saved.recordName), "Groceries\napples\npears")
+    }
+
+    /** A create that failed before reaching the server is re-sent under the same name. */
+    @Test
+    fun aCreateThatNeverArrivedIsResentUnderTheSameName() = runTest {
+        val repo = newRepo()
+        repo.signIn()
+        api.failNext["createNote"] = NotesError.Offline()
+        runCatching { repo.saveNote(stub(), folder, "Hi", isPureAppend = false, newSpans = null) }
+        assertEquals(0, createdNotes().size)
+        val saved = repo.saveNote(stub(), folder, "Hi", isPureAppend = false, newSpans = null)
+        assertEquals(1, createdNotes().size)
+        assertEquals(api.creates[0].recordName, saved.recordName)
+    }
+
+    /** Finding: a leftover draft row saved after a create overwrote edits made on another device. */
+    @Test
+    fun aLeftoverDraftAfterACreateMergesWithRemoteEdits() = runTest {
+        val repo = newRepo()
+        repo.signIn()
+        val created = repo.saveNote(stub(), folder, "Groceries\napples", isPureAppend = false, newSpans = null)
+        // The Mac edits the new note's title.
+        api.remoteEdit(created.recordName, "Groceries list\napples")
+        // The worker / a retry saves the editor's leftover row of the draft.
+        repo.saveNote(stub(), folder, "Groceries\napples\npears", isPureAppend = false, newSpans = null)
+        val now = api.records.getValue(created.recordName)
+        assertEquals("Groceries list\napples\npears", now.visibleText())
+        assertEquals(1, api.conflicts)
+    }
+
+    @Test
+    fun aLeftoverDraftOverlappingARemoteEditIsAConflictNotAnOverwrite() = runTest {
+        val repo = newRepo()
+        repo.signIn()
+        val created = repo.saveNote(stub(), folder, "Groceries\napples", isPureAppend = false, newSpans = null)
+        api.remoteEdit(created.recordName, "Groceries\nred apples")
+        try {
+            repo.saveNote(stub(), folder, "Groceries\ngreen apples", isPureAppend = false, newSpans = null)
+            fail("expected EditConflictException")
+        } catch (e: EditConflictException) {
+            // nothing written
+        }
+        assertEquals("Groceries\nred apples", api.records.getValue(created.recordName).visibleText())
     }
 
     @Test

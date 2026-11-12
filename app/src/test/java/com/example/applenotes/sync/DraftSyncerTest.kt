@@ -159,15 +159,15 @@ class DraftSyncerTest {
         assertEquals(DraftSyncer.Outcome.Done, DraftSyncer(repo).sync("draft-1"))
         assertEquals(1, api.creates.size)
         assertNull(store.getDraft("draft-1"))
-        assertEquals("CREATED-1", store.createdRecordName("draft-1"))
+        assertEquals(api.created(), store.createdRecordName("draft-1"))
 
         // The editor still holds the never-saved stub and saves it again
         // (it was open while the worker ran): that modifies, never re-creates.
         val stub = NoteRecord("draft-1", "Note", null, emptyMap())
         val saved = repo.saveNote(stub, folderRef("DefaultFolder-CloudKit"), "Groceries\napples\npears", false, null)
         assertEquals(1, api.creates.size)
-        assertEquals("CREATED-1", saved.recordName)
-        assertEquals("Groceries\napples\npears", api.records.getValue("CREATED-1").visibleText())
+        assertEquals(api.created(), saved.recordName)
+        assertEquals("Groceries\napples\npears", api.records.getValue(api.created()).visibleText())
     }
 
     @Test

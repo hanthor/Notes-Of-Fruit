@@ -156,14 +156,14 @@ class NoteDetailViewModelTest {
         assertArrayEquals(REPLICA_UUID, c.uuid)
         assertTrue(api.modifies.isEmpty())
         // The new note is pre-pended to the list cache.
-        assertEquals("CREATED-1", repo.notes.value.first().recordName)
+        assertEquals(api.created(), repo.notes.value.first().recordName)
         assertEquals("New idea", repo.notes.value.first().title)
         // The editor switched to the real record: the next save modifies.
-        assertEquals("CREATED-1", vm.record!!.recordName)
+        assertEquals(api.created(), vm.record!!.recordName)
         vm.type("details, more")
         vm.save(alsoExit = false)
         assertEquals(1, api.creates.size)
-        assertEquals("CREATED-1", api.modifies.single().recordName)
+        assertEquals(api.created(), api.modifies.single().recordName)
     }
 
     @Test
@@ -478,8 +478,8 @@ class NoteDetailViewModelTest {
         vm.save(alsoExit = false)   // e.g. Save button
         gate.complete(Unit)
         assertEquals(1, api.creates.size)
-        assertEquals("CREATED-1", api.modifies.single().recordName)
-        assertEquals("Title\nbody", api.records.getValue("CREATED-1").visibleText())
+        assertEquals(api.created(), api.modifies.single().recordName)
+        assertEquals("Title\nbody", api.records.getValue(api.created()).visibleText())
     }
 
     @Test
@@ -591,7 +591,7 @@ class NoteDetailViewModelTest {
         vm.open("open-d", com.example.applenotes.client.NoteRecord("draft-1", "Note", null, emptyMap()), folderRef("F"))
         vm.type("\nfoo")
         vm.save(alsoExit = false)
-        val created = api.records.values.single { it.recordName.startsWith("CREATED") }
+        val created = api.records.getValue(api.created())
         assertEquals("\nfoo", created.visibleText())
         val s = vm.status.value
         assertNull(s.message)

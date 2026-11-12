@@ -79,7 +79,7 @@ class PrefilledDraftTest {
         // through the normal splice path, then the editor exits.
         assertEquals(1, api.creates.size)
         assertEquals(1, api.modifies.size)
-        val saved = api.records.getValue("CREATED-1")
+        val saved = api.records.getValue(api.created())
         assertEquals("Groceries\nmilk\nbold line", saved.visibleText())
         val spans = NoteBodyEditor.parseAttributeRunsFromBase64(saved.stringField("TextDataEncrypted")!!)
         val chars = NoteBodyEditor.expandSpansToChars(saved.visibleText()!!, spans)

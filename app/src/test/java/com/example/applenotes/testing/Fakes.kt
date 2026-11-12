@@ -99,6 +99,7 @@ class FakeNotesApi : NotesApi {
         val folderRef: JsonElement,
         val uuid: ByteArray,
         val noteText: String,
+        val recordName: String,
     )
 
     val modifies = mutableListOf<Modify>()
@@ -232,12 +233,17 @@ class FakeNotesApi : NotesApi {
         folderRef: JsonElement,
         ourReplicaUuid: ByteArray,
         noteText: String,
+        recordName: String,
     ): NoteRecord {
         enter("createNote")
-        creates += Create(title, body, folderRef, ourReplicaUuid, noteText)
+        creates += Create(title, body, folderRef, ourReplicaUuid, noteText, recordName)
+        if (recordName in records) {
+            throw com.example.applenotes.client.NotesError.AlreadyExists("serverErrorCode=EXISTS")
+        }
+        ++createCounter
         val text = noteText
         val rec = NoteRecord(
-            recordName = "CREATED-${++createCounter}",
+            recordName = recordName,
             recordType = "Note",
             recordChangeTag = "tag-${++tagCounter}",
             rawFields = mapOf(
@@ -246,8 +252,16 @@ class FakeNotesApi : NotesApi {
             ),
         )
         put(rec)
+        // The server committed, but the answer never arrives (timeout).
+        loseResponse.remove("createNote")?.let { throw it }
         return rec
     }
+
+    /** Operation name → error thrown AFTER the call took effect on the "server". */
+    val loseResponse = mutableMapOf<String, Throwable>()
+
+    /** recordName of the n-th successful create (0-based). */
+    fun created(n: Int = 0): String = creates.map { it.recordName }.distinct()[n]
 
     override suspend fun modifyNoteBody(
         recordName: String,

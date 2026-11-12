@@ -47,6 +47,15 @@ sealed class NotesError(message: String, cause: Throwable? = null) : Exception(m
         override val details: String? = null,
     ) : NotesError("Record changed on the server (CONFLICT)")
 
+    /**
+     * A create was refused because a record with that recordName already
+     * exists (serverErrorCode EXISTS; also a CONFLICT answer to a create).
+     * For a retried create with the same recordName this means the earlier
+     * attempt was committed after all: look the record up and carry on.
+     */
+    class AlreadyExists(override val details: String? = null) :
+        NotesError("Record already exists (EXISTS)")
+
     /** CloudKit asked us to slow down. [retryAfterMs] comes from `retryAfter` / Retry-After when given. */
     class Throttled(
         val retryAfterMs: Long?,
@@ -78,6 +87,13 @@ object CloudKitErrors {
     private val AUTH_STATUSES = setOf(401, 421, 450)
     private val AUTH_CODES = setOf("AUTHENTICATION_FAILED", "AUTHENTICATION_REQUIRED")
     private val THROTTLE_CODES = setOf("THROTTLED", "REQUEST_RATE_LIMITED", "TRY_AGAIN_LATER")
+
+    /**
+     * "The resource that you attempted to create already exists": EXISTS in
+     * CloudKit Web Services' error list; RECORD_EXISTS is accepted too in
+     * case a server spells it the way CKError does.
+     */
+    private val EXISTS_CODES = setOf("EXISTS", "RECORD_EXISTS")
     private const val MAX_DETAILS = 4000
 
     /** Null for a 2xx status; otherwise the typed error for this response. */
@@ -92,6 +108,7 @@ object CloudKitErrors {
             status in AUTH_STATUSES || code in AUTH_CODES -> NotesError.AuthExpired(details)
             status == 429 || code in THROTTLE_CODES || (status == 503 && retryAfterSec != null) ->
                 NotesError.Throttled(retryAfterSec?.times(1000), details)
+            code in EXISTS_CODES -> NotesError.AlreadyExists(details)
             status == 409 || code == "CONFLICT" -> NotesError.Conflict(details = details)
             else -> NotesError.Server(status, code, details)
         }
@@ -103,6 +120,7 @@ object CloudKitErrors {
         return when {
             code == "CONFLICT" || reason?.contains("oplock", ignoreCase = true) == true ->
                 NotesError.Conflict(details = details)
+            code in EXISTS_CODES -> NotesError.AlreadyExists(details)
             code in AUTH_CODES -> NotesError.AuthExpired(details)
             code in THROTTLE_CODES -> NotesError.Throttled(retryAfterSec?.times(1000), details)
             else -> NotesError.Server(200, code, details)
