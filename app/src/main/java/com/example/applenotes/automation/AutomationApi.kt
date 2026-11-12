@@ -1,5 +1,6 @@
 package com.example.applenotes.automation
 
+import com.example.applenotes.export.stripAttachmentChars
 import com.example.applenotes.integrations.isPlausibleRecordName
 
 /**
@@ -63,7 +64,9 @@ internal data class AutomationExtras(
 
 internal fun parseAutomationRequest(action: String?, e: AutomationExtras): Parsed {
     val title = e.title?.trim()?.takeIf { it.isNotEmpty() }
-    val text = e.text?.replace("\r\n", "\n")
+    // Text from another app can't carry an attachment: a stray U+FFFC would
+    // pose as one (see stripAttachmentChars).
+    val text = e.text?.replace("\r\n", "\n")?.let(::stripAttachmentChars)
     val recordName = e.recordName?.trim()?.takeIf { it.isNotEmpty() }
     if (title != null && title.length > AutomationApi.MAX_TITLE_CHARS) return Parsed.Invalid("title is too long")
     if (text != null && text.length > AutomationApi.MAX_TEXT_CHARS) return Parsed.Invalid("text is too long")
@@ -77,10 +80,11 @@ internal fun parseAutomationRequest(action: String?, e: AutomationExtras): Parse
 
     return when (action) {
         AutomationApi.ACTION_CREATE_NOTE -> {
-            if (title == null && text.isNullOrBlank()) return Parsed.Invalid("title or text is required")
-            if (title != null && title.contains('\n')) return Parsed.Invalid("title must be a single line")
+            val newTitle = title?.let(::stripAttachmentChars)?.trim()?.takeIf { it.isNotEmpty() }
+            if (newTitle == null && text.isNullOrBlank()) return Parsed.Invalid("title or text is required")
+            if (newTitle != null && newTitle.contains('\n')) return Parsed.Invalid("title must be a single line")
             val folder = e.folder?.trim()?.takeIf { it.isNotEmpty() }
-            Parsed.Ok(AutomationRequest.Create(title.orEmpty(), text?.trim('\n').orEmpty(), folder))
+            Parsed.Ok(AutomationRequest.Create(newTitle.orEmpty(), text?.trim('\n').orEmpty(), folder))
         }
         AutomationApi.ACTION_APPEND_TO_NOTE -> {
             target()?.let { return Parsed.Invalid(it) }

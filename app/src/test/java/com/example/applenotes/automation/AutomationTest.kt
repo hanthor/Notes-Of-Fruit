@@ -77,6 +77,21 @@ class AutomationTest {
         )
     }
 
+    /** A stray U+FFFC from the calling app would pose as an attachment. */
+    @Test
+    fun objectReplacementCharsAreStripped() {
+        assertEquals(
+            Parsed.Ok(AutomationRequest.Create("T", "ab", null)),
+            parse(AutomationApi.ACTION_CREATE_NOTE, AutomationExtras(title = "T\uFFFC", text = "a\uFFFCb")),
+        )
+        assertTrue(parse(AutomationApi.ACTION_CREATE_NOTE, AutomationExtras(title = "\uFFFC", text = "\uFFFC")) is Parsed.Invalid)
+        assertEquals(
+            Parsed.Ok(AutomationRequest.Append(null, "Shopping", "eggs")),
+            parse(AutomationApi.ACTION_APPEND_TO_NOTE, AutomationExtras(title = "Shopping", text = "eg\uFFFCgs")),
+        )
+        assertTrue(parse(AutomationApi.ACTION_APPEND_TO_NOTE, AutomationExtras(title = "Shopping", text = "\uFFFC")) is Parsed.Invalid)
+    }
+
     @Test
     fun appendAndOpenNeedExactlyOneTarget() {
         val append = AutomationApi.ACTION_APPEND_TO_NOTE
