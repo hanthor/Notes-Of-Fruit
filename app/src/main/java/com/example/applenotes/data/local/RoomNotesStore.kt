@@ -75,6 +75,7 @@ data class PendingDraftEntity(
     @ColumnInfo(name = "snapshot_json") val snapshotJson: String,
     @ColumnInfo(name = "updated_ms") val updatedAtMs: Long,
     val conflict: Boolean,
+    val account: String? = null,
 )
 
 internal fun PendingDraftEntity.toDraft() = PendingDraft(
@@ -86,6 +87,7 @@ internal fun PendingDraftEntity.toDraft() = PendingDraft(
     snapshotJson = snapshotJson,
     updatedAtMs = updatedAtMs,
     conflict = conflict,
+    account = account,
 )
 
 internal fun PendingDraft.toEntity() = PendingDraftEntity(
@@ -97,6 +99,7 @@ internal fun PendingDraft.toEntity() = PendingDraftEntity(
     snapshotJson = snapshotJson,
     updatedAtMs = updatedAtMs,
     conflict = conflict,
+    account = account,
 )
 
 @Entity(tableName = "created_draft")
@@ -220,7 +223,7 @@ interface NotesDao {
         PendingDraftEntity::class,
         CreatedDraftEntity::class,
     ],
-    version = 2,
+    version = 3,
     exportSchema = true,
 )
 abstract class NotesDatabase : RoomDatabase() {
@@ -237,9 +240,16 @@ abstract class NotesDatabase : RoomDatabase() {
             }
         }
 
+        /** 2 → 3: unsent drafts remember which account they were typed in. */
+        val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `pending_draft` ADD COLUMN `account` TEXT")
+            }
+        }
+
         fun open(context: Context): NotesDatabase =
             Room.databaseBuilder(context.applicationContext, NotesDatabase::class.java, NAME)
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
     }
 }

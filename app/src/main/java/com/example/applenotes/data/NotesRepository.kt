@@ -108,6 +108,17 @@ class NotesRepository(
     /** True while the list is being refreshed from iCloud (the "Updating…" indicator). */
     val syncing: StateFlow<Boolean> = _syncing.asStateFlow()
 
+    private val _account = MutableStateFlow<String?>(null)
+
+    /**
+     * Fingerprint of the iCloud account the cache, drafts and session belong
+     * to (from the cache before the session is up); null when nobody is
+     * signed in. Changes when a different Apple ID signs in: whatever is
+     * still in memory for the previous one (an open editor, a pending
+     * request) must then be dropped, never written into the new account.
+     */
+    val account: StateFlow<String?> = _account.asStateFlow()
+
     private val _pendingDrafts = MutableStateFlow<List<PendingDraft>>(emptyList())
 
     /** Edits not yet confirmed by iCloud (the outbox), oldest first. */
@@ -288,7 +299,9 @@ class NotesRepository(
                 .onFailure { AppLog.e(TAG, "reading the note cache failed", it) }
                 .getOrDefault(emptyList())
             val folders = runCatchingCancellable { store.loadFolders() }.getOrDefault(emptyList())
+            val cachedAccount = runCatchingCancellable { store.getMeta(StoreMeta.ACCOUNT) }.getOrNull()
             if (gen == generation) {
+                if (_account.value == null) _account.value = cachedAccount
                 if (_notes.value.isEmpty()) _notes.value = sortNotes(notes.filter { !it.deleted })
                 if (_folders.value.isEmpty()) _folders.value = folders
                 cacheLoaded = true
@@ -572,6 +585,7 @@ class NotesRepository(
             clearLocalData().join()
         }
         safeStore("store account") { store.setMeta(StoreMeta.ACCOUNT, account) }
+        _account.value = account
     }
 
     /** Search the visible text of cached (previously opened) note bodies. */
@@ -614,6 +628,7 @@ class NotesRepository(
         _notes.value = emptyList()
         _folders.value = emptyList()
         _pendingDrafts.value = emptyList()
+        _account.value = null
         lastWrites.clear()
         cacheLoaded = false
         draftScheduler.cancelAll()
@@ -725,8 +740,18 @@ class NotesRepository(
          * save, see [ConfirmedWrite.ownDraft].
          */
         draftLineage: Boolean = true,
+        /**
+         * The account the edit was made in ([account] when the editor opened
+         * the note). The save is refused with [AccountChangedException],
+         * writing nothing, if another account is signed in by now.
+         */
+        expectedAccount: String? = null,
     ): NoteRecord = externalScope.async {
         saveLock(record.recordName).withLock {
+            if (expectedAccount != null) {
+                currentApi() // opens the session (and adopts its account) if needed
+                if (_account.value != expectedAccount) throw AccountChangedException()
+            }
             if (requirePendingDraft != null) {
                 val row = runCatchingCancellable { store.getDraft(requirePendingDraft) }.getOrNull()
                 if (row == null || row.conflict || row.fullText != newBody ||
@@ -1193,6 +1218,10 @@ class NotesRepository(
         return externalScope.launch {
             draftLock.withLock {
                 if (gen != generation) return@withLock
+                if (draft.account != null && draft.account != _account.value) {
+                    AppLog.w(TAG, "not storing a draft from another account")
+                    return@withLock
+                }
                 runCatchingCancellable { store.putDraft(draft) }
                     .onFailure { AppLog.e(TAG, "saving an unsent draft to disk failed", it) }
             }
@@ -1270,6 +1299,9 @@ data class ConfirmedWrite(
 
 /** A note opened for the editor; [fromCache] = the saved offline copy, not a fresh lookup. */
 data class OpenedNote(val record: NoteRecord, val fromCache: Boolean)
+
+/** The save was for an account that is no longer signed in; nothing was written. */
+class AccountChangedException : Exception("Signed in to a different iCloud account")
 
 /** A background save found the outbox entry changed or gone by the time it ran; nothing was written. */
 class DraftSupersededException : Exception("The unsent draft changed or was already saved")

@@ -78,9 +78,12 @@ internal class AutomationProcessor(
 
     private suspend fun execute(request: AutomationRequest): AutomationResult {
         ensureSignedIn()
+        // Every write below is for the account signed in now; if another
+        // Apple ID signs in meanwhile, the save is refused, not redirected.
+        val account = repository.account.value
         return when (request) {
-            is AutomationRequest.Create -> create(request)
-            is AutomationRequest.Append -> append(request)
+            is AutomationRequest.Create -> create(request, account)
+            is AutomationRequest.Append -> append(request, account)
             is AutomationRequest.Open -> AutomationResult.ok(resolve(request.recordName, request.title))
         }
     }
@@ -91,7 +94,7 @@ internal class AutomationProcessor(
         repository.signIn()
     }
 
-    private suspend fun create(r: AutomationRequest.Create): AutomationResult {
+    private suspend fun create(r: AutomationRequest.Create, account: String?): AutomationResult {
         val folderRecordName = r.folderName?.let { findFolder(it) }
         val folderRef = repository.folderRefForNewNote(folderRecordName ?: DEFAULT_FOLDER_RECORD_NAME)
         if (folderRecordName != null && extractReferenceRecordName(folderRef) != folderRecordName) {
@@ -112,11 +115,12 @@ internal class AutomationProcessor(
             isPureAppend = false,
             newSpans = null,
             draftLineage = false,
+            expectedAccount = account,
         )
         return AutomationResult.ok(saved.recordName)
     }
 
-    private suspend fun append(r: AutomationRequest.Append): AutomationResult {
+    private suspend fun append(r: AutomationRequest.Append, account: String?): AutomationResult {
         val recordName = resolve(r.recordName, r.title)
         val record = repository.lookupNote(recordName)
         if (record.rawFields["Folder"]?.let { extractReferenceRecordName(it) } == TRASH_RECORD_NAME) {
@@ -133,6 +137,7 @@ internal class AutomationProcessor(
             newSpans = newSpans,
             // Not part of any editing session: never a merge base for one.
             draftLineage = false,
+            expectedAccount = account,
         )
         return AutomationResult.ok(saved.recordName)
     }

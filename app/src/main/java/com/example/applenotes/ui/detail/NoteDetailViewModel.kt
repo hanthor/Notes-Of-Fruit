@@ -203,6 +203,34 @@ class NoteDetailViewModel(
 
     init {
         viewModelScope.launch { repository.confirmedWrites.collect(::onConfirmedWrite) }
+        // Another Apple ID signed in: the draft in memory is the previous
+        // account's (its copy on disk was already deleted). Drop it.
+        viewModelScope.launch {
+            repository.account.collect { now ->
+                val mine = openedAccount
+                if (now != null && mine != null && now != mine && _status.value.openId != null) dropForAccountChange()
+            }
+        }
+    }
+
+    /**
+     * The account the open note belongs to ([NotesRepository.account] when
+     * it was opened). Drafts are stamped with it and saves carry it, so
+     * nothing typed here can end up in another account.
+     */
+    private var openedAccount: String? = null
+
+    private fun dropForAccountChange() {
+        AppLog.w(TAG, "editor: a different iCloud account signed in; dropping the open note's draft")
+        noteDeleted = true // nothing of it goes to the outbox on the way out
+        close()
+        // Don't keep the previous account's text in memory either.
+        titleDraft = ""
+        bodyDraft = TextFieldValue("")
+        spansDraft = emptyList()
+        attrSpans = emptyList()
+        originalBody = ""
+        prevFullBody = ""
     }
 
     /**
@@ -344,6 +372,13 @@ class NoteDetailViewModel(
         offlineCopy: Boolean = false,
     ) {
         if (_status.value.openId == openId) {
+            val now = repository.account.value
+            if (now != null && openedAccount != null && now != openedAccount) {
+                // Re-signed in with a different Apple ID: never save this draft there.
+                dropForAccountChange()
+                _status.value = Status(openId = openId, exitRequested = true)
+                return
+            }
             // Back from re-signing in after the session expired: the draft
             // is still here; save it now.
             if (pendingRetry == PendingRetry.AFTER_SIGN_IN && repository.isSignedIn &&
@@ -364,6 +399,7 @@ class NoteDetailViewModel(
             restore(openId)
             return
         }
+        openedAccount = repository.account.value
         _status.value = Status(openId = openId, offlineCopy = offlineCopy)
         savedState.remove<Boolean>(KEY_CONFLICT)
         val draft = prefill?.takeIf { record.recordChangeTag == null }?.toSnapshot()
@@ -432,6 +468,7 @@ class NoteDetailViewModel(
     private fun currentPendingDraft(): PendingDraft? {
         val rec = record ?: return null
         if (noteDeleted || _status.value.deleting) return null
+        if (openedAccount != null && repository.account.value != openedAccount) return null
         if (isReadOnly || !isModified) return null
         if (rec.recordChangeTag == null && pendingFolderRef == null) return null
         return PendingDraft(
@@ -450,6 +487,7 @@ class NoteDetailViewModel(
             ).encode(),
             updatedAtMs = clock(),
             conflict = _status.value.conflict != null,
+            account = openedAccount,
         )
     }
 
@@ -487,6 +525,15 @@ class NoteDetailViewModel(
             _status.value = Status(openId = openId, exitRequested = true)
             return
         }
+        val stamped = savedState.get<String>(KEY_ACCOUNT)
+        val now = repository.account.value
+        if (stamped != null && now != null && stamped != now) {
+            // Saved state of a note from the previous account: drop it.
+            close()
+            _status.value = Status(openId = openId, exitRequested = true)
+            return
+        }
+        openedAccount = stamped ?: now
         val tag = savedState.get<String>(KEY_RECORD_TAG)
         val draft = DraftSnapshot.decodeOrNull(savedState.get<String>(KEY_DRAFT))
         if (tag == null) {
@@ -789,7 +836,7 @@ class NoteDetailViewModel(
         _status.update { it.copy(saving = true, message = null) }
         viewModelScope.launch {
             val result = runCatchingCancellable {
-                repository.saveNote(rec, folderRef, newBody, pureAppend, spans)
+                repository.saveNote(rec, folderRef, newBody, pureAppend, spans, expectedAccount = openedAccount)
             }
             val created = result.getOrNull()
             if (rec.recordChangeTag == null && rec.recordName in deletedDrafts && created?.recordChangeTag != null) {
@@ -808,6 +855,10 @@ class NoteDetailViewModel(
             // was already patched by the repository either way.
             val stillHere = _status.value.openId == openId &&
                 record?.recordName == rec.recordName
+            if (result.exceptionOrNull() is com.example.applenotes.data.AccountChangedException) {
+                if (stillHere) dropForAccountChange()
+                return@launch
+            }
             result.onSuccess { updated ->
                 if (!stillHere) return@onSuccess
                 pendingRetry = PendingRetry.NONE
@@ -1083,6 +1134,8 @@ class NoteDetailViewModel(
         savedState.remove<String>(KEY_DRAFT)
         savedState.remove<String>(KEY_BASE)
         savedState.remove<Boolean>(KEY_CONFLICT)
+        savedState.remove<String>(KEY_ACCOUNT)
+        openedAccount = null
     }
 
     // ----- Saved state -----
@@ -1093,6 +1146,7 @@ class NoteDetailViewModel(
         savedState[KEY_RECORD_NAME] = rec.recordName
         savedState[KEY_RECORD_TAG] = rec.recordChangeTag
         savedState[KEY_FOLDER_REF] = pendingFolderRef?.toString()
+        savedState[KEY_ACCOUNT] = openedAccount
     }
 
     /**
@@ -1143,6 +1197,7 @@ class NoteDetailViewModel(
         internal const val KEY_DRAFT = "detail.draft"
         internal const val KEY_BASE = "detail.base"
         internal const val KEY_CONFLICT = "detail.conflict"
+        internal const val KEY_ACCOUNT = "detail.account"
         private const val MAX_SAVED_DRAFT_CHARS = 100_000
 
         fun factory(context: Context): ViewModelProvider.Factory {

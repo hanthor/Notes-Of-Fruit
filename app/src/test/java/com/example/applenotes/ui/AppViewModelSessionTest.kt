@@ -90,6 +90,28 @@ class AppViewModelSessionTest {
         assertEquals(AppScreen.Detail(detail.openId, record = null), vm.screen.value)
     }
 
+    /** Finding: a different Apple ID after the expiry reopened account A's note in account B. */
+    @Test
+    fun signingInWithAnotherAppleIdDropsTheOpenNoteAndPendingRequests() {
+        val vm = newVm()
+        vm.openNote(vm.listState.value.notes.single())
+        vm.signInAgain()
+        vm.handleIncoming(
+            com.example.applenotes.integrations.IncomingRequest.NewDraft(
+                com.example.applenotes.ui.detail.DraftPrefill.ofText("shared while signed out"),
+            ),
+        )
+        // Someone else signs in.
+        api.accountId = "dsid-2"
+        api.records.clear()
+        api.put(noteRecord("OTHER-1", "Other account"))
+        vm.onCookiesArrived()
+        assertEquals(AppScreen.NotesList, vm.screen.value)
+        assertNull(savedState.get<String>(AppViewModel.KEY_DETAIL_OPEN_ID))
+        assertTrue(!vm.hasPendingIncoming)
+        assertEquals(listOf("OTHER-1"), vm.listState.value.notes.map { it.recordName })
+    }
+
     @Test
     fun listRefreshWithAnUnrecoverableSessionGoesToSignIn() {
         val vm = newVm()

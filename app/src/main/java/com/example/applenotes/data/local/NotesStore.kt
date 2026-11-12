@@ -98,6 +98,12 @@ data class PendingDraft(
     val updatedAtMs: Long,
     /** A background save found overlapping remote edits; resolved in the editor. */
     val conflict: Boolean = false,
+    /**
+     * Fingerprint of the iCloud account the draft was typed in (see
+     * NotesRepository.account); null for rows written before this existed.
+     * A draft is never persisted or saved under a different account.
+     */
+    val account: String? = null,
 ) {
     val isNewNote: Boolean get() = baseRecord == null
 }

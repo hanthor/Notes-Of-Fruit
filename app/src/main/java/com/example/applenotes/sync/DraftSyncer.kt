@@ -84,6 +84,7 @@ class DraftSyncer(private val repository: NotesRepository) {
                 isPureAppend = false,
                 newSpans = spans,
                 requirePendingDraft = draft.key,
+                expectedAccount = draft.account,
             )
             // A new note's formatting follow-up is the repository's (see
             // NotesRepository.saveNote): applied right away, or kept in the
@@ -95,6 +96,11 @@ class DraftSyncer(private val repository: NotesRepository) {
             throw e
         } catch (e: DraftSupersededException) {
             throw e
+        } catch (e: com.example.applenotes.data.AccountChangedException) {
+            // Typed in another account: never sent, and not kept either.
+            AppLog.w(TAG, "dropping an unsent draft from another account")
+            repository.discardDraft(draft.key)
+            Outcome.Done
         } catch (e: EditConflictException) {
             AppLog.i(TAG) { "unsent draft ${draft.key} overlaps a remote edit; keeping it for the editor" }
             repository.markDraftConflict(draft.key)
