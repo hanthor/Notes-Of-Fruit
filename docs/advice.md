@@ -223,5 +223,8 @@ what isn't:
   table in the README.
 - ~~**No formatting toolbar yet.**~~ Resolved: the format toolbar (paragraph
   styles, lists, inline B/I/U/S, links) shipped.
-- **No subscription / push.** Polls when the user opens the app. Background sync,
-  CloudKit subscriptions, and a send queue are all unimplemented.
+- **No subscription / push.** Polls when the user opens the app, plus a
+  once-a-minute `lookupNote` of the open note while its screen is visible
+  (`RemoteChangeWatcher`; it fetches the whole record, body included, since
+  `lookupNote` has no `desiredKeys`). Background sync, CloudKit
+  subscriptions, and a send queue are all unimplemented.

@@ -93,6 +93,7 @@ you can't say you weren't warned.
 | Table attachments | Decoded from `MergeableDataEncrypted` (CRDT graph), rendered as a real grid; row/column order from `crRows`/`crColumns` (synthetic-tested only) |
 | Image attachments | Apple's preview image inline, the original (Media reference) full screen on tap with pinch-zoom; decoded off the main thread at display size; cached on disk (100 MB, LRU). HEIC needs Android 9+ |
 | Other attachments (sketches, scans, maps, etc.) | Apple's preview image with a type label when the record has one, otherwise a labeled placeholder card |
+| "Updated on another device" | While a note is open, visible and online, its `recordChangeTag` is checked every 60 s (read-only lookup); a change shows a banner with Reload (only offered when there are no unsaved edits — otherwise saving merges) |
 | Locked (password-protected) notes | Detected by the `Crypto*` fields on the record and shown read-only with "This note is locked with a password…" (plus the password hint if present). Never decrypted. Field names from public reverse-engineering, not verified on a real account; the list can't show a lock icon yet (it doesn't fetch those fields) |
 | Removing attachments | Blocked: an edit that would delete an attachment (its `U+FFFC` character) is refused with "Attachments can't be removed from Android yet" (we can't verify that round-trips) |
 | Format input toolbar | Works — paragraph style picker, list toggles (bullet/dash/numbered/checkbox), inline B/I/U/S, link |

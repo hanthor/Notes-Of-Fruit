@@ -277,6 +277,8 @@ internal fun NoteDetailScreen(
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
                 if (!online) OfflineBanner()
+                // "Updated on another device" polling + banner (issue #16).
+                if (record.recordChangeTag != null) RemoteChangeIndicator(vm, record.recordName)
                 vm.readOnlyReason?.let {
                     ReadOnlyBanner(it, hint = if (it == ReadOnlyReason.LOCKED) lockedNoteHint(record) else null)
                 }

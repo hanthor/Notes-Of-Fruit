@@ -108,6 +108,35 @@ class NoteDetailViewModel(
     /** Device connectivity, for the offline indicator. */
     val online: StateFlow<Boolean> = repository.online
 
+    // ----- "Updated on another device" (issue #16; RemoteChangeWatcher.kt) -----
+
+    private val remoteWatcher = RemoteChangeWatcher(repository::lookupNote, repository.online)
+
+    /** The server's newer version of the open note, found by [watchForRemoteChanges]; null if none. */
+    val remoteChange: StateFlow<NoteRecord?> = remoteWatcher.newer
+
+    private fun remotePollPaused(): Boolean = _status.value.let {
+        it.saving || it.deleting || it.loading || it.conflict != null || it.openId == null
+    }
+
+    /** Polls for remote changes until cancelled; the screen runs it while visible. */
+    suspend fun watchForRemoteChanges() = remoteWatcher.watch({ record }, ::remotePollPaused)
+
+    /** One poll now (tests). */
+    internal suspend fun checkForRemoteChange() = remoteWatcher.checkOnce({ record }, ::remotePollPaused)
+
+    /**
+     * Show the newer version. Only without unsaved changes: with a draft,
+     * the save path merges with the remote version instead.
+     */
+    fun reloadRemoteChange() {
+        val fresh = remoteChange.value ?: return
+        if (isModified || remotePollPaused() || fresh.recordName != record?.recordName) return
+        load(fresh, null, draft = null)
+    }
+
+    fun dismissRemoteChange() = remoteWatcher.clear()
+
     /** Why the last save failed, when that decides what happens next. */
     private enum class PendingRetry { NONE, WHEN_ONLINE, AFTER_SIGN_IN }
 
@@ -359,6 +388,7 @@ class NoteDetailViewModel(
         keepCurrentDraft: Boolean = false,
     ) {
         record = rec
+        remoteWatcher.clear()
         pendingFolderRef = folderRef
         // Probe before anything else: only a cleanly decoded NOTE_STORE_PROTO
         // (or a brand-new draft) is editable. Everything else is shown
@@ -800,6 +830,7 @@ class NoteDetailViewModel(
     /** The screen navigated away; forget the open note. */
     fun close() {
         attachmentsJob?.cancel()
+        remoteWatcher.clear()
         queuedSave = null
         pendingRetry = PendingRetry.NONE
         _status.value = Status()
