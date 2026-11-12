@@ -275,7 +275,11 @@ internal fun NoteDetailScreen(
                 if (saving) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
-                if (!online) OfflineBanner()
+                when {
+                    // Issue #12: opened from the cache because there's no network.
+                    status.offlineCopy && !online -> OfflineCopyBanner()
+                    !online -> OfflineBanner()
+                }
                 vm.readOnlyReason?.let { ReadOnlyBanner(it) }
             }
         },
@@ -384,7 +388,7 @@ internal fun NoteDetailScreen(
             },
             dismissButton = {
                 Row {
-                    TextButton(onClick = { showUnsavedDialog = false; onBack() }) {
+                    TextButton(onClick = { showUnsavedDialog = false; vm.discardUnsavedChanges(); onBack() }) {
                         Text("Discard")
                     }
                     TextButton(onClick = { showUnsavedDialog = false }) { Text("Keep editing") }
@@ -416,6 +420,11 @@ internal fun NoteDetailScreen(
                 TextButton(onClick = { vm.discardLocalChanges() }) { Text("Discard my changes") }
             },
         )
+    }
+
+    // Issue #13: an unsent draft from an earlier session.
+    status.savedDraft?.let {
+        RestoreDraftDialog(it, onRestore = vm::restoreSavedDraft, onDiscard = vm::discardSavedDraft)
     }
 
     if (showDeleteDialog) {

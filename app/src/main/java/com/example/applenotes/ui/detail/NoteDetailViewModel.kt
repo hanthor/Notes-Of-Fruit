@@ -24,6 +24,8 @@ import com.example.applenotes.data.EditConflictException
 import com.example.applenotes.data.NoteRebase
 import com.example.applenotes.data.TextMerge
 import com.example.applenotes.data.decodeNoteBody
+import com.example.applenotes.data.local.PendingDraft
+import com.example.applenotes.data.local.spansSignature
 import com.example.applenotes.data.errorDetails
 import com.example.applenotes.data.retryHint
 import com.example.applenotes.data.runCatchingCancellable
@@ -57,6 +59,10 @@ class NoteDetailViewModel(
     private val repository: NotesRepository,
     private val savedState: SavedStateHandle,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Debounce of the on-disk draft (issue #13). */
+    draftPersistDelayMs: Long = DRAFT_PERSIST_DELAY_MS,
+    /** Debounce of the network autosave; null turns it off (issue #13). */
+    autosaveDelayMs: Long? = AUTOSAVE_DELAY_MS,
 ) : ViewModel() {
 
     data class Status(
@@ -85,7 +91,17 @@ class NoteDetailViewModel(
          * changes", and saving is blocked until the user picks one.
          */
         val conflict: EditConflict? = null,
+        /** Opened from the offline cache: the "Offline — showing saved copy" banner (issue #12). */
+        val offlineCopy: Boolean = false,
+        /**
+         * An unsent draft of this note from an earlier session is on disk and
+         * differs from iCloud's copy: ask "Restore unsaved changes?" (issue #13).
+         */
+        val savedDraft: SavedDraftPrompt? = null,
     )
+
+    /** [conflict]: a background save already found that it overlaps a change from another device. */
+    data class SavedDraftPrompt(val savedAtMs: Long, val conflict: Boolean)
 
     /** [fresh] is the server's current record, [remoteText] its visible text. */
     data class EditConflict(val fresh: NoteRecord, val remoteText: String)
@@ -107,6 +123,22 @@ class NoteDetailViewModel(
 
     /** Device connectivity, for the offline indicator. */
     val online: StateFlow<Boolean> = repository.online
+
+    /** Disk draft + autosave timing (issue #13); see [EditorOutbox]. */
+    private val outbox = EditorOutbox(
+        repository,
+        viewModelScope,
+        persistDelayMs = draftPersistDelayMs,
+        autosaveDelayMs = autosaveDelayMs,
+        current = ::currentPendingDraft,
+        autosave = ::autosaveIfIdle,
+    )
+
+    /** The on-disk draft behind [Status.savedDraft]. */
+    private var savedDraftRow: PendingDraft? = null
+
+    /** The open note was deleted: nothing of it goes to the outbox on the way out. */
+    private var noteDeleted = false
 
     /** Why the last save failed, when that decides what happens next. */
     private enum class PendingRetry { NONE, WHEN_ONLINE, AFTER_SIGN_IN }
@@ -227,6 +259,8 @@ class NoteDetailViewModel(
         pendingFolderRef: JsonElement?,
         /** Initial content for a brand-new draft (share, import, …); ignored for saved notes. */
         prefill: DraftPrefill? = null,
+        /** [record] is the offline cached copy (issue #12). */
+        offlineCopy: Boolean = false,
     ) {
         if (_status.value.openId == openId) {
             // Back from re-signing in after the session expired: the draft
@@ -242,14 +276,127 @@ class NoteDetailViewModel(
         pendingRetry = PendingRetry.NONE
         attachmentsJob?.cancel()
         _attachments.value = emptyMap()
+        outbox.reset()
+        savedDraftRow = null
+        noteDeleted = false
         if (record == null) {
             restore(openId)
             return
         }
-        _status.value = Status(openId = openId)
+        _status.value = Status(openId = openId, offlineCopy = offlineCopy)
         savedState.remove<Boolean>(KEY_CONFLICT)
         val draft = prefill?.takeIf { record.recordChangeTag == null }?.toSnapshot()
         load(record, pendingFolderRef, draft = draft)
+        if (record.recordChangeTag != null) checkForSavedDraft(openId, record.recordName)
+    }
+
+    // ----- Unsent drafts on disk (issue #13) -----
+
+    /**
+     * Look for an unsent draft of the note just opened. One that matches
+     * what iCloud has is stale (it was saved after all) and is dropped;
+     * anything else is offered with "Restore unsaved changes?".
+     */
+    private fun checkForSavedDraft(openId: String, recordName: String) {
+        outbox.holdWrites = true
+        viewModelScope.launch {
+            val row = repository.pendingDraft(recordName)
+            if (_status.value.openId != openId) return@launch
+            val readable = row?.let { DraftSnapshot.decodeOrNull(it.snapshotJson) }
+            when {
+                row == null || readable == null -> outbox.holdWrites = false
+                !row.conflict && row.fullText == originalBody && row.spansSignature == spansSignature(attrSpans) -> {
+                    repository.discardDraft(row.key)
+                    outbox.holdWrites = false
+                }
+                else -> {
+                    savedDraftRow = row
+                    _status.update { it.copy(savedDraft = SavedDraftPrompt(row.updatedAtMs, row.conflict)) }
+                }
+            }
+        }
+    }
+
+    /**
+     * Put the unsent draft back in the editor and save it. When the note
+     * changed since the draft was written (or a background save already hit
+     * a conflict), the draft is re-opened on the record it was based on, so
+     * the save goes through the CONFLICT three-way merge rather than
+     * overwriting the newer version.
+     */
+    fun restoreSavedDraft() {
+        val row = savedDraftRow ?: return
+        val snapshot = DraftSnapshot.decodeOrNull(row.snapshotJson) ?: return
+        val current = record ?: return
+        savedDraftRow = null
+        outbox.holdWrites = false
+        _status.update { it.copy(savedDraft = null) }
+        val base = row.baseRecord
+        val onto = if (base != null && (base.recordChangeTag != current.recordChangeTag || row.conflict)) base else current
+        load(onto, null, snapshot)
+        outbox.writeNow()
+        if (online.value) save(alsoExit = false)
+    }
+
+    /** Drop the unsent draft and keep iCloud's version. */
+    fun discardSavedDraft() {
+        val row = savedDraftRow ?: return
+        savedDraftRow = null
+        outbox.holdWrites = false
+        _status.update { it.copy(savedDraft = null) }
+        viewModelScope.launch { repository.discardDraft(row.key) }
+    }
+
+    /** The draft as it should be on disk, or null when nothing is unsaved. */
+    private fun currentPendingDraft(): PendingDraft? {
+        val rec = record ?: return null
+        if (isReadOnly || !isModified) return null
+        if (rec.recordChangeTag == null && pendingFolderRef == null) return null
+        return PendingDraft(
+            key = rec.recordName,
+            baseRecord = rec.takeIf { it.recordChangeTag != null },
+            folderRefJson = pendingFolderRef?.toString(),
+            fullText = fullBodyForSave,
+            spansSignature = spansSignature(spansDraft),
+            snapshotJson = DraftSnapshot(
+                title = titleDraft,
+                body = bodyDraft.text,
+                selectionStart = bodyDraft.selection.start,
+                selectionEnd = bodyDraft.selection.end,
+                spans = spansDraft.map { SavedSpan.of(it) },
+                viewMode = viewMode,
+            ).encode(),
+            updatedAtMs = clock(),
+            conflict = _status.value.conflict != null,
+        )
+    }
+
+    /** The debounced network autosave: only when online, idle and nothing blocks a save. */
+    private fun autosaveIfIdle() {
+        val s = _status.value
+        if (!online.value || s.saving || s.conflict != null || s.savedDraft != null || isReadOnly) return
+        if (!isModified) return
+        // Never create an empty note.
+        if (record?.recordChangeTag == null && fullBodyForSave.isBlank()) return
+        save(alsoExit = false)
+    }
+
+    /**
+     * Leaving the editor: unsaved changes go to the background worker (and
+     * stay on disk), so they outlive the activity and the process.
+     */
+    private fun handOffUnsaved() {
+        val s = _status.value
+        if (s.openId == null || s.savedDraft != null || noteDeleted) return
+        outbox.handOff()
+    }
+
+    /** "Discard" in the unsaved-changes dialog: drop the draft (memory and disk) before leaving. */
+    fun discardUnsavedChanges() {
+        val rec = record ?: return
+        pendingRetry = PendingRetry.NONE
+        load(rec, pendingFolderRef, draft = null)
+        outbox.afterSaveOrDiscard(alsoForget = listOf(rec.recordName))
     }
 
     private fun restore(openId: String) {
@@ -445,12 +592,14 @@ class NoteDetailViewModel(
         if (isReadOnly) return
         titleDraft = value.replace("\n", "")
         syncSpans()
+        outbox.onEdited()
     }
 
     fun onBodyChange(value: TextFieldValue) {
         if (isReadOnly) return
         bodyDraft = value
         syncSpans()
+        outbox.onEdited()
     }
 
     /** Toolbar / link-dialog span mutations (full-body coordinates). */
@@ -458,6 +607,7 @@ class NoteDetailViewModel(
         if (isReadOnly) return
         spansDraft = spans
         persistDraft()
+        outbox.onEdited()
     }
 
     fun enterEditMode() {
@@ -529,6 +679,9 @@ class NoteDetailViewModel(
             queuedSave = openId to (alreadyExits || alsoExit)
             return
         }
+        // The disk draft must hold exactly what is being saved, so the
+        // repository can drop it once iCloud confirms (issue #13).
+        outbox.writeNow()
         val newBody = fullBodyForSave
         val pureAppend = isPureAppendOverride ?: isPureAppend
         val spans = spansDraft
@@ -587,6 +740,10 @@ class NoteDetailViewModel(
                 } else {
                     load(updated, null, draft = null, keepCurrentDraft = changedSince)
                 }
+                // Saved: drop the disk draft, or re-write it with whatever
+                // is still unsaved (typed during the save) under the
+                // record's (possibly new, after a create) name.
+                outbox.afterSaveOrDiscard(alsoForget = listOf(rec.recordName))
                 if (conflict != null) {
                     _status.update { it.copy(saving = false) }
                     showConflict(conflict)
@@ -698,7 +855,9 @@ class NoteDetailViewModel(
         pendingRetry = PendingRetry.NONE
         _status.update { it.copy(conflict = null, saveFailed = false, message = null) }
         savedState.remove<Boolean>(KEY_CONFLICT)
+        val oldKey = record?.recordName
         load(c.fresh, null, draft = null)
+        outbox.afterSaveOrDiscard(alsoForget = listOfNotNull(oldKey))
     }
 
     /**
@@ -710,6 +869,7 @@ class NoteDetailViewModel(
     private fun showConflict(c: EditConflict) {
         savedState[KEY_CONFLICT] = true
         _status.update { it.copy(saveFailed = true, conflict = c, message = null) }
+        outbox.writeNow()
     }
 
     /**
@@ -736,6 +896,7 @@ class NoteDetailViewModel(
 
     /** Lifecycle ON_PAUSE auto-save (best effort, not navigating). Skipped while offline. */
     fun autoSave() {
+        handOffUnsaved()
         if (!online.value) return
         if (isModified && !isReadOnly && !_status.value.saving) save(alsoExit = false)
     }
@@ -746,6 +907,7 @@ class NoteDetailViewModel(
         // Draft (never saved to iCloud): just discard locally, no network
         // call needed.
         if (rec.recordChangeTag == null) {
+            discardUnsavedChanges()
             _status.update { it.copy(exitRequested = true) }
             return
         }
@@ -753,6 +915,9 @@ class NoteDetailViewModel(
         viewModelScope.launch {
             runCatchingCancellable { repository.deleteNote(rec) }
                 .onSuccess {
+                    // The repository dropped the note's disk draft; don't hand
+                    // the editor's copy to the worker on the way out.
+                    if (_status.value.openId == openId) noteDeleted = true
                     updateIfOpen(openId) { it.copy(deleting = false, exitRequested = true) }
                 }
                 .onFailure { e ->
@@ -789,6 +954,9 @@ class NoteDetailViewModel(
 
     /** The screen navigated away; forget the open note. */
     fun close() {
+        handOffUnsaved()
+        outbox.reset()
+        savedDraftRow = null
         attachmentsJob?.cancel()
         queuedSave = null
         pendingRetry = PendingRetry.NONE
