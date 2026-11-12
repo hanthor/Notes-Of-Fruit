@@ -44,7 +44,19 @@ class AutomationTest {
         repo = NotesRepository(auth, { REPLICA_UUID }, CoroutineScope(SupervisorJob() + main.dispatcher))
     }
 
-    private fun processor() = AutomationProcessor(gate, repo)
+    private val caller = CallerResolution.Identified(TASKER, CallerSource.REFERRER)
+    private val allowList = InMemoryAllowListStore(
+        AllowListState(approved = listOf(AllowedApp(TASKER, listOf(TASKER_CERT), "Tasker", 1L))),
+    )
+
+    private fun processor() = AutomationProcessor(
+        gate,
+        repo,
+        AutomationAccess(allowList, FakePackages(VerifiedCaller(TASKER, listOf(TASKER_CERT), "Tasker")), { }),
+    )
+
+    private suspend fun AutomationProcessor.handle(action: String?, extras: AutomationExtras) =
+        handle(action, extras, caller)
 
     // ----- Parsing / validation -----
 

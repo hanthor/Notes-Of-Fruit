@@ -1,24 +1,32 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <!--
-        Automation API permission (docs/automation.md). protectionLevel
-        "dangerous": an automation app must declare
-        <uses-permission android:name="io.github.hanthor.notesoffruit.permission.AUTOMATE"/>
-        and the user must grant it at runtime. It guards AutomationReceiver and
-        AutomationActivity, which can create notes and append text WITHOUT the
-        editor being shown. The name uses ${applicationId} so the debug build
-        (".debug") defines its own permission: two differently-signed packages
-        can't define the same permission name.
+        Automation allow-list (docs/automation.md): "‹App› wants to add notes"
+        notification when an app that isn't allowed yet calls the API. Asked
+        for when the user turns automation on (Android 13+).
     -->
-    <permission
-        android:name="${applicationId}.permission.AUTOMATE"
-        android:description="@string/permission_automate_description"
-        android:label="@string/permission_automate_label"
-        android:protectionLevel="dangerous" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+        Package visibility for the automation allow-list. On Android 11+ the
+        system hides the referrer of an activity launch, and PackageManager
+        hides an app's signing certificates, unless the calling app is
+        visible to us. Apps with a launcher icon covers Tasker, MacroDroid,
+        Automate and Tasker App Factory exports, without QUERY_ALL_PACKAGES.
+        Notes of Fruit never lists installed apps; it only looks up the one
+        package that called it.
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <!--
         Backup is OFF, on purpose. The app's private data holds:
@@ -130,17 +138,31 @@
         </service>
 
         <!--
-            Automation API, headless writes (CREATE_NOTE, APPEND_TO_NOTE).
-            exported="true" so automation apps can reach it, but only senders
-            holding the dangerous AUTOMATE permission (user-granted) get
-            through, and the receiver also refuses everything while the in-app
-            "Allow automation apps" toggle is off (the default). No delete or
-            overwrite actions exist.
+            Automation API (docs/automation.md). exported="true" with NO
+            android:permission, on purpose: stock automation apps (Tasker,
+            MacroDroid, Automate) can't hold a custom permission their own
+            manifest doesn't declare, so a permission made the API unusable.
+            Instead every call has to pass, in code:
+              1. the in-app "Allow automation apps" toggle (off by default);
+              2. caller identification: the receiver trusts only the creator
+                 package of the caller's result_pending_intent (unforgeable)
+                 or, on Android 14+, a sender that opted in to sharing its
+                 identity; the activity trusts launchedFromPackage (14+,
+                 opt-in), callingPackage (startActivityForResult) or the
+                 system referrer (Android 11+, and only when the intent has
+                 no EXTRA_REFERRER override). Unidentified callers are
+                 refused;
+              3. the per-app allow-list in Settings -> Allowed apps, keyed by
+                 package name AND signing-certificate SHA-256. Unknown apps
+                 are recorded as pending (no request content kept) and the
+                 user is notified; nothing is written.
+            No delete, overwrite or read-back actions exist.
         -->
+        <!-- ExportedReceiver: no permission on purpose, see above. -->
         <receiver
             android:name=".automation.AutomationReceiver"
             android:exported="true"
-            android:permission="${applicationId}.permission.AUTOMATE">
+            tools:ignore="ExportedReceiver">
             <intent-filter>
                 <action android:name="io.github.hanthor.notesoffruit.action.CREATE_NOTE" />
                 <action android:name="io.github.hanthor.notesoffruit.action.APPEND_TO_NOTE" />
@@ -148,23 +170,38 @@
         </receiver>
 
         <!--
-            Automation API, OPEN_NOTE (shows the note in the app). An activity
-            because receivers can't start activities from the background. Same
-            protection as AutomationReceiver: AUTOMATE permission + toggle.
+            Automation API as an activity: OPEN_NOTE (a receiver can't start
+            activities from the background) and CREATE_NOTE / APPEND_TO_NOTE
+            for apps that can only start activities without a PendingIntent.
+            Invisible; finishes in onCreate. Same three checks as above.
         -->
         <activity
             android:name=".automation.AutomationActivity"
             android:excludeFromRecents="true"
             android:exported="true"
             android:noHistory="true"
-            android:permission="${applicationId}.permission.AUTOMATE"
             android:taskAffinity=""
             android:theme="@android:style/Theme.NoDisplay">
             <intent-filter>
                 <action android:name="io.github.hanthor.notesoffruit.action.OPEN_NOTE" />
+                <action android:name="io.github.hanthor.notesoffruit.action.CREATE_NOTE" />
+                <action android:name="io.github.hanthor.notesoffruit.action.APPEND_TO_NOTE" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <!--
+            Target of the "‹App› wants to add notes" notification: opens
+            Settings -> Allowed apps. Not exported; only our own notification's
+            PendingIntent starts it.
+        -->
+        <activity
+            android:name=".automation.AutomationReviewActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay" />
 
         <!--
             "Recent notes" home-screen widget (Glance). exported="true" is

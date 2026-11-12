@@ -86,6 +86,9 @@ sealed interface AppScreen {
 
     /** The minimal settings screen (automation toggle). */
     data object Settings : AppScreen
+
+    /** Settings → Allowed apps: the automation allow-list (issue #21). */
+    data object AllowedApps : AppScreen
 }
 
 /**
@@ -98,6 +101,7 @@ sealed interface PendingSwitch {
     data class Open(val note: NoteSummary) : PendingSwitch
     data object Create : PendingSwitch
     data object Settings : PendingSwitch
+    data object AllowedApps : PendingSwitch
 }
 
 /** Snackbar actions offered by the list screen. */
@@ -521,7 +525,7 @@ class AppViewModel(
     internal fun handleIncoming(request: IncomingRequest) {
         val s = _screen.value
         val ready = repository.isSignedIn &&
-            (s == AppScreen.NotesList || s == AppScreen.Settings || (s is AppScreen.Detail && s.record != null))
+            (s == AppScreen.NotesList || s == AppScreen.Settings || s == AppScreen.AllowedApps || (s is AppScreen.Detail && s.record != null))
         if (ready) {
             pendingIncoming = null
             process(request)
@@ -543,6 +547,8 @@ class AppViewModel(
         when (request) {
             is IncomingRequest.NewDraft -> createNote(request.prefill)
             is IncomingRequest.OpenNote -> openNoteByRecordName(request.recordName)
+            IncomingRequest.ReviewAutomationApps ->
+                if (_screen.value is AppScreen.Detail) requestSwitch(PendingSwitch.AllowedApps) else showAllowedApps()
             is IncomingRequest.OpenNoteByTitle -> {
                 val wanted = request.title.trim()
                 val matches = repository.notes.value.filter {
@@ -580,6 +586,10 @@ class AppViewModel(
 
     fun showSettings() {
         _screen.value = AppScreen.Settings
+    }
+
+    fun showAllowedApps() {
+        _screen.value = AppScreen.AllowedApps
     }
 
     // ----- Two-pane list + detail (issue #16) -----
@@ -660,6 +670,7 @@ class AppViewModel(
             is PendingSwitch.Open -> openNote(switch.note)
             PendingSwitch.Create -> createNote()
             PendingSwitch.Settings -> showSettings()
+            PendingSwitch.AllowedApps -> showAllowedApps()
             null -> processPendingIncoming()
         }
     }
