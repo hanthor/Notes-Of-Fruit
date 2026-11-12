@@ -1,5 +1,8 @@
 package com.example.applenotes.ui.detail
 
+import com.example.applenotes.R
+import com.example.applenotes.ui.common.UiText
+import com.example.applenotes.ui.common.uiText
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.SavedStateHandle
@@ -68,7 +71,7 @@ class NoteDetailErrorsTest {
 
         val s = vm.status.value
         assertTrue(s.saveFailed)
-        assertEquals("You're offline. Your changes are kept on this device until you retry.", s.message!!.text)
+        assertEquals(UiText.Res(R.string.detail_save_offline), s.message!!.text)
         assertNotNull("raw error behind Details", s.message!!.details)
         assertEquals("milk\neggs", vm.bodyDraft.text)
         assertTrue(savedState.get<String>(NoteDetailViewModel.KEY_DRAFT)!!.contains("eggs"))
@@ -94,8 +97,9 @@ class NoteDetailErrorsTest {
 
         val m = vm.status.value.message!!
         assertEquals(NoteDetailViewModel.DetailAction.SignIn, m.action)
-        assertEquals("Sign in", m.actionLabel)
-        assertTrue(m.text.contains("kept"))
+        assertEquals(UiText.Res(R.string.action_sign_in), m.actionLabel)
+        // "Your iCloud session expired. Your changes are kept; sign in again to save them."
+        assertEquals(UiText.Res(R.string.detail_save_session_expired), m.text)
         assertTrue(repo.sessionExpired.value)
         assertEquals("milk\neggs", vm.bodyDraft.text)
         assertTrue(api.modifies.isEmpty())
@@ -118,7 +122,8 @@ class NoteDetailErrorsTest {
         vm.save(alsoExit = false)
         val m = vm.status.value.message!!
         assertEquals(NoteDetailViewModel.DetailAction.RetrySave(alsoExit = false), m.action)
-        assertTrue(m.text, m.text.contains("5s"))
+        // "… Try again in 5 seconds."
+        assertEquals(uiText(R.string.detail_save_throttled, UiText.Plural(R.plurals.retry_hint_seconds, 5)), m.text)
         vm.onMessageAction(m)
         assertEquals("Shopping\nmilk\neggs", api.records.getValue("NOTE-A").visibleText())
     }
@@ -130,7 +135,10 @@ class NoteDetailErrorsTest {
         api.failNext["modifyNoteBody"] = NotesError.Server(500, "INTERNAL_ERROR", "{\"reason\":\"boom\"}")
         vm.save(alsoExit = false)
         val m = vm.status.value.message!!
-        assertEquals("Couldn't save: iCloud returned an error (HTTP 500, INTERNAL_ERROR).", m.text)
+        assertEquals(
+            uiText(R.string.detail_save_failed, uiText(R.string.error_server_with_code, 500, "INTERNAL_ERROR")),
+            m.text,
+        )
         assertTrue(m.details!!.contains("boom"))
     }
 }

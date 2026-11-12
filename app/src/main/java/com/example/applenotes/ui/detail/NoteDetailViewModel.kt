@@ -27,7 +27,10 @@ import com.example.applenotes.data.decodeNoteBody
 import com.example.applenotes.data.local.PendingDraft
 import com.example.applenotes.data.local.spansSignature
 import com.example.applenotes.data.errorDetails
+import com.example.applenotes.R
 import com.example.applenotes.data.retryHint
+import com.example.applenotes.ui.common.UiText
+import com.example.applenotes.ui.common.uiText
 import com.example.applenotes.data.runCatchingCancellable
 import com.example.applenotes.data.userMessage
 import com.example.applenotes.proto.NoteBodyEditor
@@ -84,7 +87,7 @@ class NoteDetailViewModel(
         /** Set when the screen should navigate back to the list. */
         val exitRequested: Boolean = false,
         /** Optional snackbar text for the list after [exitRequested]. */
-        val exitMessage: String? = null,
+        val exitMessage: UiText? = null,
         /**
          * The draft overlaps a change made on another device (issue #4).
          * Nothing was written; the screen asks "Keep both" or "Discard my
@@ -478,7 +481,7 @@ class NoteDetailViewModel(
                             s.copy(
                                 loading = false,
                                 exitRequested = true,
-                                exitMessage = "Couldn't reopen the note: ${userMessage(it)}",
+                                exitMessage = uiText(R.string.detail_reopen_failed, userMessage(it)),
                             )
                         }
                     }
@@ -685,7 +688,7 @@ class NoteDetailViewModel(
     private var queuedSave: Pair<String, Boolean>? = null
     private var messageCounter = 0L
 
-    private fun message(text: String, action: DetailAction?, details: String? = null) =
+    private fun message(text: UiText, action: DetailAction?, details: String? = null) =
         UiMessage(++messageCounter, text, action, details = details)
 
     /** Update [status] only if [openId] is still the open note. */
@@ -797,7 +800,7 @@ class NoteDetailViewModel(
                         saveFailed = false,
                         lastSavedAtMs = clock(),
                         message = if (mergedRemote) {
-                            message("Saved, together with changes made on another device.", null)
+                            message(UiText.Res(R.string.detail_saved_merged), null)
                         } else {
                             it.message
                         },
@@ -844,30 +847,28 @@ class NoteDetailViewModel(
     private fun saveFailureMessage(e: Throwable, retry: DetailAction.RetrySave): UiMessage<DetailAction> =
         when (e) {
             is NotesError.Offline -> message(
-                "You're offline. Your changes are kept on this device until you retry.",
+                UiText.Res(R.string.detail_save_offline),
                 retry,
                 details = errorDetails(e),
             )
             is NotesError.AuthExpired -> UiMessage(
                 ++messageCounter,
-                "Your iCloud session expired. Your changes are kept; sign in again to save them.",
+                UiText.Res(R.string.detail_save_session_expired),
                 DetailAction.SignIn,
-                actionLabel = "Sign in",
+                actionLabel = UiText.Res(R.string.action_sign_in),
                 details = errorDetails(e),
             )
             is NotesError.Conflict -> message(
-                "This note keeps changing on another device, so your changes weren't saved yet. " +
-                    "They're kept here; try again in a moment.",
+                UiText.Res(R.string.detail_save_conflict),
                 retry,
                 details = errorDetails(e),
             )
             is NotesError.Throttled -> message(
-                "iCloud is busy, so your changes weren't saved yet. They're kept here." +
-                    retryHint(e.retryAfterMs),
+                uiText(R.string.detail_save_throttled, retryHint(e.retryAfterMs)),
                 retry,
                 details = errorDetails(e),
             )
-            else -> message("Couldn't save: ${userMessage(e)}", retry, details = errorDetails(e))
+            else -> message(uiText(R.string.detail_save_failed, userMessage(e)), retry, details = errorDetails(e))
         }
 
     /**
@@ -968,7 +969,7 @@ class NoteDetailViewModel(
                         it.copy(
                             deleting = false,
                             message = message(
-                                "Couldn't delete: ${userMessage(e)}",
+                                uiText(R.string.detail_delete_failed, userMessage(e)),
                                 DetailAction.RetryDelete,
                                 details = errorDetails(e),
                             ),

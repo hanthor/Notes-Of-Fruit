@@ -49,6 +49,13 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import com.example.applenotes.R
 import com.example.applenotes.data.ReadOnlyReason
 import com.example.applenotes.data.lockedNoteHint
 import com.example.applenotes.export.NoteExportMenuItems
@@ -71,15 +78,25 @@ internal fun NoteDetailScreen(
     onBack: () -> Unit,
     /** Go to sign-in after the session expired, keeping this note and its draft open. */
     onSignIn: () -> Unit = {},
+    /**
+     * Two-pane switching (issue #16): non-null asks the screen to leave
+     * exactly as Back does (save-on-leave, unsaved-changes dialog).
+     */
+    leaveRequest: Long? = null,
+    onLeaveRequestHandled: () -> Unit = {},
+    /** The user chose to stay on this note after a [leaveRequest] ("Keep editing"). */
+    onLeaveCancelled: () -> Unit = {},
+    /** Shown next to the list: Close instead of Back in the app bar. */
+    inTwoPane: Boolean = false,
 ) {
     val status by vm.status.collectAsStateWithLifecycle()
     val record = vm.record
     if (status.loading || record == null) {
-        CenteredSpinner("Loading note…")
+        CenteredSpinner(stringResource(R.string.loading_note))
         return
     }
     if (status.deleting) {
-        CenteredSpinner("Deleting…")
+        CenteredSpinner(stringResource(R.string.loading_deleting))
         return
     }
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -106,6 +123,8 @@ internal fun NoteDetailScreen(
         NoteSnapshot.of(vm.titleDraft, vm.fullBodyForSave, vm.spansDraft, vm.attachments.value)
     }
     var menuOpen by remember { mutableStateOf(false) }
+    val titleFieldLabel = stringResource(R.string.detail_title_field)
+    val bodyFieldLabel = stringResource(R.string.detail_body_field)
 
     // Auto-save on lifecycle ON_PAUSE (app backgrounded, screen turns off,
     // another activity covers us, etc.). Best-effort fire-and-forget — the
@@ -128,12 +147,12 @@ internal fun NoteDetailScreen(
         }
     }
     val savedAgoText: String? = lastSavedAtMs?.let { savedAt ->
-        val deltaSec = (nowMs - savedAt) / 1000
+        val deltaSec = ((nowMs - savedAt) / 1000).toInt()
         when {
-            deltaSec < 5 -> "Saved"
-            deltaSec < 60 -> "Saved ${deltaSec}s ago"
-            deltaSec < 3600 -> "Saved ${deltaSec / 60}m ago"
-            else -> "Saved ${deltaSec / 3600}h ago"
+            deltaSec < 5 -> stringResource(R.string.detail_saved)
+            deltaSec < 60 -> stringResource(R.string.detail_saved_seconds_ago, deltaSec)
+            deltaSec < 3600 -> stringResource(R.string.detail_saved_minutes_ago, deltaSec / 60)
+            else -> stringResource(R.string.detail_saved_hours_ago, deltaSec / 3600)
         }
     }
 
@@ -172,6 +191,12 @@ internal fun NoteDetailScreen(
     androidx.activity.compose.BackHandler {
         onBackOrSave()
     }
+    val currentOnBackOrSave by rememberUpdatedState(onBackOrSave)
+    LaunchedEffect(leaveRequest) {
+        if (leaveRequest == null) return@LaunchedEffect
+        onLeaveRequestHandled()
+        currentOnBackOrSave()
+    }
 
     Scaffold(
         modifier = Modifier.imePadding(),
@@ -181,7 +206,11 @@ internal fun NoteDetailScreen(
                 TopAppBar(
                     navigationIcon = {
                         IconButton(onClick = onBackOrSave) {
-                            Icon(Icons.AutoMirrored.Default.ArrowBack, contentDescription = "Back")
+                            if (inTwoPane) {
+                                Icon(Icons.Default.Close, contentDescription = stringResource(R.string.detail_close_note))
+                            } else {
+                                Icon(Icons.AutoMirrored.Default.ArrowBack, contentDescription = stringResource(R.string.action_back))
+                            }
                         }
                     },
                     title = {
@@ -201,7 +230,7 @@ internal fun NoteDetailScreen(
                                 decorationBox = { inner ->
                                     if (titleDraft.isEmpty()) {
                                         Text(
-                                            "Untitled",
+                                            stringResource(R.string.note_untitled),
                                             style = MaterialTheme.typography.titleLarge.copy(
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                                 fontWeight = FontWeight.Bold,
@@ -210,12 +239,14 @@ internal fun NoteDetailScreen(
                                     }
                                     inner()
                                 },
-                                modifier = Modifier.fillMaxWidth(),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .semantics { contentDescription = titleFieldLabel },
                             )
                             val pill = when {
-                                readOnly -> "Read-only"
-                                saving -> "Saving…"
-                                isModified -> "Unsaved"
+                                readOnly -> stringResource(R.string.detail_status_read_only)
+                                saving -> stringResource(R.string.detail_status_saving)
+                                isModified -> stringResource(R.string.detail_status_unsaved)
                                 savedAgoText != null -> savedAgoText
                                 else -> null
                             }
@@ -235,7 +266,7 @@ internal fun NoteDetailScreen(
                                 enabled = !saving,
                                 onClick = { vm.save(alsoExit = false) },
                             ) {
-                                Icon(Icons.Default.Check, contentDescription = "Save")
+                                Icon(Icons.Default.Check, contentDescription = stringResource(R.string.action_save))
                             }
                         }
                         IconButton(
@@ -243,10 +274,10 @@ internal fun NoteDetailScreen(
                             // note's formatting (export/NoteHtml.kt).
                             onClick = exportActions.share,
                         ) {
-                            Icon(Icons.Default.Share, contentDescription = "Share")
+                            Icon(Icons.Default.Share, contentDescription = stringResource(R.string.action_share))
                         }
                         IconButton(onClick = { menuOpen = true }) {
-                            Icon(Icons.Default.MoreVert, contentDescription = "More")
+                            Icon(Icons.Default.MoreVert, contentDescription = stringResource(R.string.action_more))
                         }
                         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                             NoteExportMenuItems(
@@ -258,7 +289,7 @@ internal fun NoteDetailScreen(
                                     if (!ok) {
                                         android.widget.Toast.makeText(
                                             shareContext,
-                                            "Your launcher doesn't support pinned shortcuts",
+                                            R.string.detail_pin_unsupported,
                                             android.widget.Toast.LENGTH_SHORT,
                                         ).show()
                                     }
@@ -266,7 +297,7 @@ internal fun NoteDetailScreen(
                                 onDismiss = { menuOpen = false },
                             )
                             DropdownMenuItem(
-                                text = { Text("Delete note") },
+                                text = { Text(stringResource(R.string.detail_menu_delete)) },
                                 leadingIcon = { Icon(Icons.Default.Delete, contentDescription = null) },
                                 onClick = { menuOpen = false; showDeleteDialog = true },
                             )
@@ -311,7 +342,7 @@ internal fun NoteDetailScreen(
                         // Auto-saves the toggle so check state persists.
                         vm.toggleCheckbox(bodyParaStart)
                     }),
-                    emptyPlaceholder = if (readOnly) "Nothing to show." else "Start typing…",
+                    emptyPlaceholder = stringResource(if (readOnly) R.string.detail_nothing_to_show else R.string.detail_start_typing),
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth(),
@@ -326,7 +357,8 @@ internal fun NoteDetailScreen(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 16.dp),
+                        .padding(horizontal = 20.dp, vertical = 16.dp)
+                        .semantics { contentDescription = bodyFieldLabel },
                     textStyle = MaterialTheme.typography.bodyLarge.copy(
                         color = MaterialTheme.colorScheme.onSurface,
                     ),
@@ -335,7 +367,7 @@ internal fun NoteDetailScreen(
                     decorationBox = { inner ->
                         if (bodyDraft.text.isEmpty()) {
                             Text(
-                                "Start typing…",
+                                stringResource(R.string.detail_start_typing),
                                 style = MaterialTheme.typography.bodyLarge.copy(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 ),
@@ -366,12 +398,13 @@ internal fun NoteDetailScreen(
             ) {
                 val modDate = record.stringField("ModificationDate")?.toLongOrNull()
                 Text(
-                    text = modDate?.let { "Modified ${humanRelative(it)}" } ?: "—",
+                    text = modDate?.let { stringResource(R.string.detail_modified, humanRelative(it)) } ?: "—",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f, fill = false),
                 )
                 Text(
-                    text = "${bodyDraft.text.length} chars",
+                    text = pluralStringResource(R.plurals.detail_char_count, bodyDraft.text.length, bodyDraft.text.length),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -381,25 +414,22 @@ internal fun NoteDetailScreen(
 
     if (showUnsavedDialog) {
         AlertDialog(
-            onDismissRequest = { showUnsavedDialog = false },
-            title = { Text("Changes not saved") },
-            text = {
-                Text(
-                    "The last save to iCloud failed. Try again, or leave and " +
-                        "discard your unsaved changes to this note.",
-                )
-            },
+            onDismissRequest = { showUnsavedDialog = false; onLeaveCancelled() },
+            title = { Text(stringResource(R.string.unsaved_dialog_title)) },
+            text = { Text(stringResource(R.string.unsaved_dialog_text)) },
             confirmButton = {
                 TextButton(onClick = { showUnsavedDialog = false; vm.save(alsoExit = true) }) {
-                    Text("Retry")
+                    Text(stringResource(R.string.action_retry))
                 }
             },
             dismissButton = {
                 Row {
                     TextButton(onClick = { showUnsavedDialog = false; vm.discardUnsavedChanges(); onBack() }) {
-                        Text("Discard")
+                        Text(stringResource(R.string.action_discard))
                     }
-                    TextButton(onClick = { showUnsavedDialog = false }) { Text("Keep editing") }
+                    TextButton(onClick = { showUnsavedDialog = false; onLeaveCancelled() }) {
+                        Text(stringResource(R.string.unsaved_dialog_keep_editing))
+                    }
                 }
             },
         )
@@ -412,20 +442,15 @@ internal fun NoteDetailScreen(
         AlertDialog(
             onDismissRequest = {},
             properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
-            title = { Text("This note changed on another device") },
-            text = {
-                Text(
-                    "Your edits overlap a change made elsewhere, so nothing was saved. " +
-                        "Keep both adds your version below the other device's text, " +
-                        "clearly marked, so nothing is lost. Discard my changes shows " +
-                        "the other device's version instead.",
-                )
-            },
+            title = { Text(stringResource(R.string.conflict_dialog_title)) },
+            text = { Text(stringResource(R.string.conflict_dialog_text)) },
             confirmButton = {
-                TextButton(onClick = { vm.keepBoth() }) { Text("Keep both") }
+                TextButton(onClick = { vm.keepBoth() }) { Text(stringResource(R.string.conflict_keep_both)) }
             },
             dismissButton = {
-                TextButton(onClick = { vm.discardLocalChanges() }) { Text("Discard my changes") }
+                TextButton(onClick = { vm.discardLocalChanges() }) {
+                    Text(stringResource(R.string.conflict_discard_mine))
+                }
             },
         )
     }
@@ -438,15 +463,15 @@ internal fun NoteDetailScreen(
     if (showDeleteDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
-            title = { Text("Delete this note?") },
-            text = { Text("This moves the note to Recently Deleted in iCloud Notes.") },
+            title = { Text(stringResource(R.string.delete_dialog_title)) },
+            text = { Text(stringResource(R.string.delete_dialog_text)) },
             confirmButton = {
                 TextButton(onClick = { showDeleteDialog = false; vm.delete() }) {
-                    Text("Delete")
+                    Text(stringResource(R.string.action_delete))
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showDeleteDialog = false }) { Text("Cancel") }
+                TextButton(onClick = { showDeleteDialog = false }) { Text(stringResource(R.string.action_cancel)) }
             },
         )
     }
@@ -470,10 +495,10 @@ private fun ReadOnlyBanner(reason: ReadOnlyReason, hint: String? = null) {
                 modifier = Modifier.padding(end = 12.dp),
             )
             Column {
-                Text(reason.explanation, style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(reason.explanation), style = MaterialTheme.typography.bodySmall)
                 // Locked notes (issue #16): Apple's password hint, if the record has one.
                 if (hint != null) {
-                    Text("Password hint: $hint", style = MaterialTheme.typography.bodySmall)
+                    Text(stringResource(R.string.read_only_password_hint, hint), style = MaterialTheme.typography.bodySmall)
                 }
             }
         }

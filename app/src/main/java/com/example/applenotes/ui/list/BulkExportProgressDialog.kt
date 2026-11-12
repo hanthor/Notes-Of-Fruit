@@ -9,17 +9,19 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.example.applenotes.R
 
 /** Progress for a folder export; Cancel stops before the next note. */
 @Composable
 internal fun BulkExportProgressDialog(done: Int, total: Int, onCancel: () -> Unit) {
     AlertDialog(
         onDismissRequest = {},
-        title = { Text("Exporting notes") },
+        title = { Text(stringResource(R.string.export_progress_title)) },
         text = {
             Column {
-                Text("$done of $total")
+                Text(stringResource(R.string.export_progress_count, done, total))
                 LinearProgressIndicator(
                     progress = { if (total == 0) 0f else done.toFloat() / total },
                     modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
@@ -27,6 +29,6 @@ internal fun BulkExportProgressDialog(done: Int, total: Int, onCancel: () -> Uni
             }
         },
         confirmButton = {},
-        dismissButton = { TextButton(onClick = onCancel) { Text("Cancel") } },
+        dismissButton = { TextButton(onClick = onCancel) { Text(stringResource(R.string.action_cancel)) } },
     )
 }

@@ -23,7 +23,10 @@ import com.example.applenotes.data.TRASH_RECORD_NAME
 import com.example.applenotes.integrations.IncomingRequest
 import com.example.applenotes.data.runCatchingCancellable
 import com.example.applenotes.data.userMessage
+import com.example.applenotes.R
 import com.example.applenotes.ui.common.UiMessage
+import com.example.applenotes.ui.common.UiText
+import com.example.applenotes.ui.common.uiText
 import com.example.applenotes.ui.detail.DraftPrefill
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -41,12 +44,16 @@ private const val TAG = "AppleNotesUi"
 sealed interface AppScreen {
     data object Splash : AppScreen
     data object Login : AppScreen
-    data class Loading(val msg: String) : AppScreen
+    /**
+     * [inDetailPane]: loading a note to open (or a new draft). On a wide
+     * window the list stays on screen and only the detail pane spins.
+     */
+    data class Loading(val msg: UiText, val inDetailPane: Boolean = false) : AppScreen
     /**
      * Full-screen error. Reserved for bootstrap (sign-in) failures.
      * [details] is the raw error text behind the "Details" button.
      */
-    data class Error(val msg: String, val details: String? = null) : AppScreen
+    data class Error(val msg: UiText, val details: String? = null) : AppScreen
     data object NotesList : AppScreen
 
     /**
@@ -79,6 +86,18 @@ sealed interface AppScreen {
 
     /** The minimal settings screen (automation toggle). */
     data object Settings : AppScreen
+}
+
+/**
+ * Where to go once the open note has been left (two-pane mode, issue #16):
+ * picking another note, "New note" or Settings while a note is open first
+ * runs the editor's normal leave path (save-on-leave, unsaved-changes
+ * dialog), and only then switches.
+ */
+sealed interface PendingSwitch {
+    data class Open(val note: NoteSummary) : PendingSwitch
+    data object Create : PendingSwitch
+    data object Settings : PendingSwitch
 }
 
 /** Snackbar actions offered by the list screen. */
@@ -170,6 +189,25 @@ class AppViewModel(
             base.copy(syncing = syncing, refreshing = refreshing, unsentCount = drafts.size)
         }.stateIn(viewModelScope, SharingStarted.Eagerly, NotesListUiState())
 
+    private val _twoPane = MutableStateFlow(false)
+
+    /** The window is wide enough for list + note side by side (set by the UI; issue #16). */
+    val twoPane: StateFlow<Boolean> = _twoPane.asStateFlow()
+
+    private val _detailLeaveRequest = MutableStateFlow<Long?>(null)
+    private var leaveRequestCounter = 0L
+
+    /**
+     * Non-null: the open note should leave exactly as if Back was pressed
+     * (two-pane switching). The detail screen runs its back path and calls
+     * [onDetailLeaveRequestHandled]; [showList] then performs [pendingSwitch].
+     */
+    val detailLeaveRequest: StateFlow<Long?> = _detailLeaveRequest.asStateFlow()
+
+    /** What to show after the open note has been left (see [PendingSwitch]). */
+    internal var pendingSwitch: PendingSwitch? = null
+        private set
+
     /** Last automatic (resume / reconnect) refresh attempt, for throttling. */
     private var lastAutoRefreshMs: Long? = null
 
@@ -206,7 +244,7 @@ class AppViewModel(
         viewModelScope.launch { runCatchingCancellable { repository.replicaUuid() } }
         // On launch, check for existing session cookies and try to restore.
         if (repository.hasSavedLogin()) {
-            bootstrap("Restoring session…")
+            bootstrap(UiText.Res(R.string.loading_restoring_session))
         } else {
             _screen.value = AppScreen.Login
         }
@@ -218,7 +256,7 @@ class AppViewModel(
      * the cookies) instead of another trip to the sign-in screen, which
      * could loop.
      */
-    private fun bootstrap(loadingMsg: String, afterSignIn: Boolean = false) {
+    private fun bootstrap(loadingMsg: UiText, afterSignIn: Boolean = false) {
         _screen.value = AppScreen.Loading(loadingMsg)
         viewModelScope.launch {
             // Issue #12: with a cached list, show it at once and sign in /
@@ -285,13 +323,17 @@ class AppViewModel(
                         is NotesError.AuthExpired -> signInAgain()
                         // The offline banner already says so; reconnecting retries.
                         is NotesError.Offline -> Unit
-                        else -> postListMessage("Couldn't update: ${userMessage(it)}", ListAction.RetryRefresh, errorDetails(it))
+                        else -> postListMessage(
+                            uiText(R.string.list_update_failed, userMessage(it)),
+                            ListAction.RetryRefresh,
+                            errorDetails(it),
+                        )
                     }
                 }
         }
     }
 
-    fun onCookiesArrived() = bootstrap("Signing in…", afterSignIn = true)
+    fun onCookiesArrived() = bootstrap(UiText.Res(R.string.loading_signing_in), afterSignIn = true)
 
     /**
      * Send the user to the sign-in screen because the session expired,
@@ -311,10 +353,11 @@ class AppViewModel(
      */
     private fun needsSignIn(e: Throwable) = e is NotesError.AuthExpired && repository.sessionExpired.value
 
-    fun retryBootstrap() = bootstrap("Retrying…")
+    fun retryBootstrap() = bootstrap(UiText.Res(R.string.loading_retrying))
 
     fun signOut() {
         _loginStaleToken.value = null
+        cancelPendingSwitch()
         // Don't carry content shared before sign-out into another account.
         pendingIncoming = null
         repository.signOut()
@@ -330,7 +373,7 @@ class AppViewModel(
     fun refresh() {
         // Don't hit the network (or blank the list) while offline.
         if (!online.value) {
-            postListMessage("You're offline. Check your connection and try again.", ListAction.RetryRefresh)
+            postListMessage(UiText.Res(R.string.error_offline), ListAction.RetryRefresh)
             return
         }
         // The cached list stays on screen (pull-to-refresh indicator; issue #12).
@@ -342,7 +385,7 @@ class AppViewModel(
                     AppLog.e(TAG, "refresh failed", it)
                     _refreshing.value = false
                     if (needsSignIn(it)) return@launch signInAgain()
-                    postListMessage("Couldn't refresh: ${userMessage(it)}", ListAction.RetryRefresh, errorDetails(it))
+                    postListMessage(uiText(R.string.list_refresh_failed, userMessage(it)), ListAction.RetryRefresh, errorDetails(it))
                 }
             _refreshing.value = false
         }
@@ -353,7 +396,7 @@ class AppViewModel(
      * quietly, at most once a minute, never offline, never before sign-in.
      */
     fun onAppResumed(reconnected: Boolean = false) {
-        if (!online.value || _screen.value != AppScreen.NotesList) return
+        if (!online.value || !listVisible()) return
         if (repository.sessionExpired.value) return
         val now = System.currentTimeMillis()
         val last = maxOf(lastAutoRefreshMs ?: 0L, repository.lastSyncAtMs ?: 0L)
@@ -377,7 +420,7 @@ class AppViewModel(
     suspend fun searchCachedBodies(query: String): Set<String> = repository.searchCachedBodies(query)
 
     fun openNote(note: NoteSummary) {
-        _screen.value = AppScreen.Loading("Loading note…")
+        _screen.value = AppScreen.Loading(UiText.Res(R.string.loading_note), inDetailPane = true)
         viewModelScope.launch {
             runCatchingCancellable { repository.openNote(note.recordName) }
                 .onSuccess { showDetail(it.record, pendingFolderRef = null, offlineCopy = it.fromCache) }
@@ -385,7 +428,11 @@ class AppViewModel(
                     AppLog.e(TAG, "lookupNote failed", it)
                     if (needsSignIn(it)) return@onFailure signInAgain()
                     _screen.value = AppScreen.NotesList
-                    postListMessage("Couldn't open the note: ${userMessage(it)}", ListAction.RetryOpen(note), errorDetails(it))
+                    postListMessage(
+                        uiText(R.string.list_open_failed, userMessage(it)),
+                        ListAction.RetryOpen(note),
+                        errorDetails(it),
+                    )
                 }
         }
     }
@@ -398,7 +445,7 @@ class AppViewModel(
      * nothing is written until the editor saves.
      */
     fun createNote(prefill: DraftPrefill?) {
-        _screen.value = AppScreen.Loading("Creating note…")
+        _screen.value = AppScreen.Loading(UiText.Res(R.string.loading_creating_note), inDetailPane = true)
         val folder = selectedFolder.value.takeIf { it != TRASH_RECORD_NAME } ?: DEFAULT_FOLDER_RECORD_NAME
         viewModelScope.launch {
             runCatchingCancellable { repository.folderRefForNewNote(folder) }
@@ -430,7 +477,7 @@ class AppViewModel(
                     if (needsSignIn(it)) return@onFailure signInAgain()
                     _screen.value = AppScreen.NotesList
                     postListMessage(
-                        "Couldn't create a note: ${userMessage(it)}",
+                        uiText(R.string.list_create_failed, userMessage(it)),
                         if (prefill == null) ListAction.RetryCreate else ListAction.RetryCreatePrefilled(prefill),
                         errorDetails(it),
                     )
@@ -505,7 +552,11 @@ class AppViewModel(
                     openNote(matches[0])
                 } else {
                     postListMessage(
-                        if (matches.isEmpty()) "No note titled \"$wanted\"" else "${matches.size} notes are titled \"$wanted\"",
+                        if (matches.isEmpty()) {
+                            uiText(R.string.list_no_note_titled, wanted)
+                        } else {
+                            UiText.Plural(R.plurals.list_notes_titled, matches.size, listOf(matches.size, wanted))
+                        },
                         action = null,
                     )
                 }
@@ -531,19 +582,89 @@ class AppViewModel(
         _screen.value = AppScreen.Settings
     }
 
+    // ----- Two-pane list + detail (issue #16) -----
+
+    /** Called by the UI whenever the window width class changes. */
+    fun setTwoPane(enabled: Boolean) {
+        _twoPane.value = enabled
+        // Back to one pane: a half-done switch would surprise later.
+        if (!enabled) cancelPendingSwitch()
+    }
+
+    /** The notes list is on screen (alone, or next to a note in two-pane mode). */
+    private fun listVisible(): Boolean = when (val s = _screen.value) {
+        AppScreen.NotesList -> true
+        is AppScreen.Detail -> _twoPane.value
+        is AppScreen.Loading -> _twoPane.value && s.inDetailPane
+        else -> false
+    }
+
+    /**
+     * A note tapped in the list. With a note open next to the list, that
+     * note is left first through its normal back path (saving it, or asking
+     * about unsaved changes); otherwise the note opens straight away.
+     */
+    fun selectNote(note: NoteSummary) {
+        val s = _screen.value
+        if (s is AppScreen.Detail) {
+            if (s.record?.recordName == note.recordName) return
+            requestSwitch(PendingSwitch.Open(note))
+        } else {
+            openNote(note)
+        }
+    }
+
+    /** "New note" (FAB), leaving the open note first in two-pane mode. */
+    fun requestCreateNote() {
+        if (_screen.value is AppScreen.Detail) requestSwitch(PendingSwitch.Create) else createNote()
+    }
+
+    /** Drawer → Settings, leaving the open note first in two-pane mode. */
+    fun requestSettings() {
+        if (_screen.value is AppScreen.Detail) requestSwitch(PendingSwitch.Settings) else showSettings()
+    }
+
+    private fun requestSwitch(target: PendingSwitch) {
+        pendingSwitch = target
+        _detailLeaveRequest.value = ++leaveRequestCounter
+    }
+
+    /** The detail screen started its back path for [detailLeaveRequest]. */
+    fun onDetailLeaveRequestHandled() {
+        _detailLeaveRequest.value = null
+    }
+
+    /**
+     * The open note stays (the save failed, a conflict / restore question is
+     * up, or the user chose "Keep editing"): forget the switch, so a later
+     * Back just closes the note.
+     */
+    fun cancelPendingSwitch() {
+        pendingSwitch = null
+        _detailLeaveRequest.value = null
+    }
+
     /**
      * Back to the cached list. No network round trip — the repository patched
      * its cache in place when we saved, so the snippet for the just-edited
      * note already reflects our changes.
      */
-    fun showList(message: String? = null) {
+    fun showList(message: UiText? = null) {
         savedState.remove<String>(KEY_DETAIL_OPEN_ID)
         _screen.value = AppScreen.NotesList
         if (message != null) postListMessage(message, action = null)
-        processPendingIncoming()
+        val switch = pendingSwitch
+        pendingSwitch = null
+        _detailLeaveRequest.value = null
+        when (switch) {
+            is PendingSwitch.Open -> openNote(switch.note)
+            PendingSwitch.Create -> createNote()
+            PendingSwitch.Settings -> showSettings()
+            null -> processPendingIncoming()
+        }
     }
 
-    private fun postListMessage(text: String, action: ListAction?, details: String? = null) {
+    private fun postListMessage(text: UiText, action: ListAction?, details: String? = null) {
         _listMessage.value = UiMessage(++messageCounter, text, action, details = details)
     }
 

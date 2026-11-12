@@ -14,7 +14,10 @@ import com.example.applenotes.data.AppGraph
 import com.example.applenotes.data.NotesRepository
 import com.example.applenotes.data.decodeNoteBody
 import com.example.applenotes.data.runCatchingCancellable
+import com.example.applenotes.R
 import com.example.applenotes.data.userMessage
+import com.example.applenotes.ui.common.UiText
+import com.example.applenotes.ui.common.uiText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -69,7 +72,7 @@ class BulkExportViewModel(private val repository: NotesRepository) : ViewModel()
         val done: Int = 0,
         val total: Int = 0,
         /** Shown once the export ends (finished, cancelled or failed). */
-        val message: String? = null,
+        val message: UiText? = null,
     )
 
     private val _state = MutableStateFlow(State())
@@ -92,14 +95,17 @@ class BulkExportViewModel(private val repository: NotesRepository) : ViewModel()
                     },
                     onProgress = { done, total -> _state.value = _state.value.copy(done = done, total = total) },
                 )
-                "Exported ${r.written} note${if (r.written == 1) "" else "s"}" +
-                    if (r.failed > 0) " (${r.failed} couldn't be exported)" else ""
+                if (r.failed > 0) {
+                    UiText.Plural(R.plurals.export_done_with_failures, r.written, listOf(r.written, r.failed))
+                } else {
+                    UiText.Plural(R.plurals.export_done, r.written)
+                }
             } catch (e: CancellationException) {
-                _state.value = State(message = "Export cancelled")
+                _state.value = State(message = UiText.Res(R.string.export_cancelled))
                 throw e
             } catch (e: Exception) {
                 AppLog.w(TAG, "bulk export failed", e)
-                "Export failed: ${userMessage(e)}"
+                uiText(R.string.export_failed, userMessage(e))
             }
             _state.value = State(message = message)
         }

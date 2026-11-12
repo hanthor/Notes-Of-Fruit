@@ -33,7 +33,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.res.stringResource
+import com.example.applenotes.R
 import com.example.applenotes.proto.NoteBodyEditor
 
 /**
@@ -54,7 +63,7 @@ internal fun FormattedNoteBody(
     modifier: Modifier = Modifier,
     attachmentContent: Map<String, AttachmentContent> = emptyMap(),
     onToggleCheckbox: ((paragraphCharStart: Int) -> Unit)? = null,
-    emptyPlaceholder: String = "Start typing…",
+    emptyPlaceholder: String,
 ) {
     // Map each char index -> (style, checked). Walk attrSpans in order and
     // assign each char its span's style. Total span lengths usually match
@@ -91,11 +100,13 @@ internal fun FormattedNoteBody(
         out
     }
 
+    // "Double-tap to edit note" for screen readers.
+    val editLabel = stringResource(R.string.detail_edit_note)
     Column(
         modifier = modifier
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 20.dp, vertical = 16.dp)
-            .then(if (onTap != null) Modifier.clickable(onClick = onTap) else Modifier),
+            .then(if (onTap != null) Modifier.clickable(onClickLabel = editLabel, onClick = onTap) else Modifier),
     ) {
         var listCounter = 0
         for (range in paragraphs) {
@@ -146,7 +157,7 @@ internal fun FormattedNoteBody(
                                 fontWeight = FontWeight.Bold,
                             ),
                             color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier.padding(bottom = 8.dp),
+                            modifier = Modifier.padding(bottom = 8.dp).semantics { heading() },
                         )
                     }
                 }
@@ -157,7 +168,7 @@ internal fun FormattedNoteBody(
                             fontWeight = FontWeight.SemiBold,
                         ),
                         color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp),
+                        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp).semantics { heading() },
                     )
                 }
                 NoteBodyEditor.ParagraphStyle.SUBHEADING -> {
@@ -167,7 +178,7 @@ internal fun FormattedNoteBody(
                             fontWeight = FontWeight.SemiBold,
                         ),
                         color = MaterialTheme.colorScheme.onSurface,
-                        modifier = Modifier.padding(top = 6.dp, bottom = 2.dp),
+                        modifier = Modifier.padding(top = 6.dp, bottom = 2.dp).semantics { heading() },
                     )
                 }
                 NoteBodyEditor.ParagraphStyle.MONOSPACED -> {
@@ -187,26 +198,41 @@ internal fun FormattedNoteBody(
                 }
                 NoteBodyEditor.ParagraphStyle.CHECKBOX_LIST -> {
                     val checked = firstSpan?.checked ?: false
+                    val paragraphStart = range.first
                     Row(verticalAlignment = Alignment.Top) {
+                        // The box is the toggle (tapping the text still opens
+                        // the editor). For screen readers it is a checkbox
+                        // labelled with the item's text (issue #17), so the
+                        // text itself isn't announced a second time unless it
+                        // carries links, which need their own actions.
                         Icon(
                             if (checked) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
-                            contentDescription = if (checked) "Checked" else "Unchecked",
+                            contentDescription = null,
                             tint = if (checked) MaterialTheme.colorScheme.primary
                                 else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier
-                                .padding(end = 8.dp, top = 2.dp)
-                                .size(28.dp)
+                                .minimumInteractiveComponentSize()
                                 .clip(RoundedCornerShape(6.dp))
-                                .clickable(enabled = onToggleCheckbox != null) {
-                                    onToggleCheckbox?.invoke(range.first)
-                                },
+                                .toggleable(
+                                    value = checked,
+                                    enabled = onToggleCheckbox != null,
+                                    role = Role.Checkbox,
+                                    onValueChange = { onToggleCheckbox?.invoke(paragraphStart) },
+                                )
+                                .semantics { contentDescription = annotated.text }
+                                .padding(2.dp)
+                                .size(28.dp),
                         )
+                        val hasLinks = annotated.getLinkAnnotations(0, annotated.length).isNotEmpty()
                         Text(
                             annotated,
                             style = MaterialTheme.typography.bodyLarge.copy(
                                 color = if (checked) MaterialTheme.colorScheme.onSurfaceVariant
                                     else MaterialTheme.colorScheme.onSurface,
                             ),
+                            modifier = Modifier
+                                .padding(top = 12.dp)
+                                .then(if (hasLinks) Modifier else Modifier.clearAndSetSemantics {}),
                         )
                     }
                 }

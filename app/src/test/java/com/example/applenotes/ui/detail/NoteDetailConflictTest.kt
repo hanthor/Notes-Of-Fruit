@@ -1,5 +1,8 @@
 package com.example.applenotes.ui.detail
 
+import com.example.applenotes.R
+import com.example.applenotes.ui.common.UiText
+import com.example.applenotes.ui.common.uiText
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.lifecycle.SavedStateHandle
@@ -74,7 +77,7 @@ class NoteDetailConflictTest {
         val s = vm.status.value
         assertNull(s.conflict)
         assertFalse(s.saveFailed)
-        assertEquals("Saved, together with changes made on another device.", s.message!!.text)
+        assertEquals(UiText.Res(R.string.detail_saved_merged), s.message!!.text)
     }
 
     @Test

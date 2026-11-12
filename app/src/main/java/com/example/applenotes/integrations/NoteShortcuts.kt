@@ -24,7 +24,8 @@ internal object NoteShortcuts {
     private fun shortcutId(recordName: String) = ID_PREFIX + recordName
 
     private fun build(context: Context, recordName: String, title: String?, rank: Int = 0): ShortcutInfoCompat {
-        val label = title?.trim()?.takeIf { it.isNotEmpty() }?.take(40) ?: UNTITLED
+        val label = title?.trim()?.takeIf { it.isNotEmpty() }?.take(40)
+            ?: context.getString(R.string.shortcut_untitled_note)
         val intent = Intent(context, IntegrationEntryActivity::class.java)
             .setAction(EntryActions.OPEN_NOTE_SHORTCUT)
             .putExtra(EntryActions.EXTRA_RECORD_NAME, recordName)
@@ -37,8 +38,6 @@ internal object NoteShortcuts {
             .setRank(rank)
             .build()
     }
-
-    private const val UNTITLED = "Untitled note"
 
     /** The user opened a saved note: make it the first of the recent-note shortcuts. */
     fun reportOpened(context: Context, recordName: String, title: String?) {
@@ -66,7 +65,7 @@ internal object NoteShortcuts {
                 .filter { it.startsWith(ID_PREFIX) && it.removePrefix(ID_PREFIX) !in existingRecordNames }
             if (stale.isNotEmpty()) {
                 ShortcutManagerCompat.removeDynamicShortcuts(context, stale)
-                ShortcutManagerCompat.disableShortcuts(context, stale, "This note was deleted")
+                ShortcutManagerCompat.disableShortcuts(context, stale, context.getString(R.string.shortcut_disabled_deleted))
             }
         }.onFailure { AppLog.w(TAG, "couldn't prune shortcuts", it) }
     }
@@ -78,7 +77,9 @@ internal object NoteShortcuts {
                 ShortcutManagerCompat.getShortcuts(context, ShortcutManagerCompat.FLAG_MATCH_PINNED).map { it.id }
             ShortcutManagerCompat.removeAllDynamicShortcuts(context)
             val noteIds = ids.filter { it.startsWith(ID_PREFIX) }.distinct()
-            if (noteIds.isNotEmpty()) ShortcutManagerCompat.disableShortcuts(context, noteIds, "Signed out")
+            if (noteIds.isNotEmpty()) {
+                ShortcutManagerCompat.disableShortcuts(context, noteIds, context.getString(R.string.shortcut_disabled_signed_out))
+            }
         }.onFailure { AppLog.w(TAG, "couldn't clear shortcuts", it) }
         ShortcutToken.rotate(context)
     }

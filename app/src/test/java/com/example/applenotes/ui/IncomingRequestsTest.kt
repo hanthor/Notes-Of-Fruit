@@ -1,5 +1,8 @@
 package com.example.applenotes.ui
 
+import com.example.applenotes.R
+import com.example.applenotes.ui.common.UiText
+import com.example.applenotes.ui.common.uiText
 import androidx.lifecycle.SavedStateHandle
 import com.example.applenotes.data.NotesRepository
 import com.example.applenotes.integrations.IncomingRequest
@@ -138,7 +141,7 @@ class IncomingRequestsTest {
         vm.showList()
         vm.handleIncoming(IncomingRequest.OpenNoteByTitle("Trashed"))
         assertEquals(AppScreen.NotesList, vm.screen.value)
-        assertEquals("No note titled \"Trashed\"", vm.listMessage.value!!.text)
+        assertEquals(uiText(R.string.list_no_note_titled, "Trashed"), vm.listMessage.value!!.text)
     }
 
     @Test

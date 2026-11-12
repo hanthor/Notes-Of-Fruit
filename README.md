@@ -44,6 +44,10 @@ keep it updated straight from GitHub Releases:
    `notes-of-fruit-v.*\.apk` so the `.sha256` file is ignored).
 4. Tap **Add**, then **Install**.
 
+You can also turn on **Settings → Check for updates** in the app: once a day
+it asks GitHub whether a newer release exists and shows a notice. It's off by
+default and sends nothing but a plain request to `api.github.com`.
+
 The app is not on F-Droid or IzzyOnDroid yet; see
 [docs/distribution.md](docs/distribution.md).
 
@@ -96,7 +100,10 @@ you can't say you weren't warned.
 | Files app / document picker | Read-only "Notes of Fruit" location (DocumentsProvider): folders → notes as Markdown (`.md`), generated on demand from the cache or one lookup; no write, delete or rename. Hidden while the app lock is on or signed out. Not yet tried on a device |
 | `icloud.com/notes` links | Not yet |
 | App lock | Optional (Settings, off by default): fingerprint / face / screen lock on cold start and after more than a minute in the background; while on, notes are hidden from Recents and screenshots (`FLAG_SECURE`) |
-| Tablet / landscape list-detail layout | Not yet |
+| Tablet / landscape list-detail layout | At 840 dp and wider (tablets in landscape, open foldables) the list and the open note sit side by side; picking another note saves the open one first, through the same path as Back. Not yet tried on a device |
+| Accessibility / translation | Every user-visible string is in `res/values/strings.xml` (plurals for counts), ready for translations; formatting buttons and checklist boxes announce their on/off state, headings are marked as headings, touch targets are at least 48 dp. Not yet checked with TalkBack on a device |
+| Update check | Optional (Settings, off by default): at most once a day asks GitHub for the latest release and shows "Version X is available". No account data or cookies are sent; debug builds never check |
+| Diagnostic report | Settings → "Copy diagnostic report": versions, device model, signed in yes/no and counts only, for bug reports. Never note titles, text, Apple ID or cookies |
 | Move notes between folders, folder create/rename/delete, restore from Recently Deleted, pinning | Not yet — needs writes to Apple's schema that haven't been observed |
 | Delete | Uses CloudKit `forceDelete`; Mac surfaces as "Recently Deleted" (server-managed, not a hard wipe) |
 | Format display (paragraph styles + inline) | Works — Title / Heading / Subheading / Body / Monospaced; Bulleted / Dashed / Numbered / Checkbox; bold / italic / underline / strikethrough; clickable links |

@@ -11,6 +11,7 @@ import com.example.applenotes.data.decodeNoteBody
 import com.example.applenotes.data.runCatchingCancellable
 import com.example.applenotes.data.userMessage
 import com.example.applenotes.proto.NoteBodyEditor
+import com.example.applenotes.ui.common.UiText
 import com.example.applenotes.ui.detail.assembleFullBody
 
 /** What an automation call reports back through `result_pending_intent`. */
@@ -30,6 +31,11 @@ internal data class AutomationResult(val success: Boolean, val recordName: Strin
 internal class AutomationProcessor(
     private val gate: AutomationGate,
     private val repository: NotesRepository,
+    /**
+     * Turns a [userMessage] into the result's error text. The receiver
+     * resolves string resources; tests see only [UiText.Plain] text.
+     */
+    private val describe: (UiText) -> String = { (it as? UiText.Plain)?.value ?: it.toString() },
 ) {
     /** Gate, validate and run one request. Never throws (except cancellation). */
     suspend fun handle(action: String?, extras: AutomationExtras): AutomationResult {
@@ -41,7 +47,7 @@ internal class AutomationProcessor(
         return runCatchingCancellable { execute(request) }
             // Typed iCloud errors get the same friendly text as the UI (raw
             // server bodies never go back to the calling app).
-            .getOrElse { AutomationResult.fail(userMessage(it)) }
+            .getOrElse { AutomationResult.fail(describe(userMessage(it))) }
     }
 
     private suspend fun execute(request: AutomationRequest): AutomationResult {

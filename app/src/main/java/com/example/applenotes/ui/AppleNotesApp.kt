@@ -19,6 +19,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.applenotes.data.TRASH_RECORD_NAME
@@ -39,6 +40,16 @@ import com.example.applenotes.ui.list.DrawerAction
 import com.example.applenotes.ui.list.NotesListScreen
 import com.example.applenotes.ui.login.LoginScreen
 import com.example.applenotes.ui.settings.SettingsScreen
+import androidx.compose.ui.res.stringResource
+import com.example.applenotes.R
+import com.example.applenotes.data.userMessage
+import com.example.applenotes.ui.common.UiText
+import com.example.applenotes.ui.common.asString
+import com.example.applenotes.ui.common.uiText
+import com.example.applenotes.diagnostics.LastOpenedNote
+import com.example.applenotes.diagnostics.NoteShape
+import com.example.applenotes.update.UpdateBanner
+import com.example.applenotes.update.UpdateViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -85,13 +96,30 @@ fun AppleNotesApp() {
     }
 
     val screen by appVm.screen.collectAsStateWithLifecycle()
-    when (val s = screen) {
-        AppScreen.Splash -> CenteredSpinner("Starting up…")
+    // Issue #16: wide windows show the list and the open note side by side.
+    val twoPane = rememberTwoPane()
+    LaunchedEffect(twoPane) { appVm.setTwoPane(twoPane) }
+    val current = screen
+    if (twoPane && showsListAndDetail(current)) {
+        TwoPaneLayout(
+            list = { ListRoute(appVm, signOut, openNote = (current as? AppScreen.Detail)?.record?.recordName) },
+            detail = {
+                when (current) {
+                    is AppScreen.Detail -> DetailRoute(current, appVm, detailVm, twoPane = true)
+                    is AppScreen.Loading -> CenteredSpinner(current.msg.asString())
+                    else -> NoNoteSelectedPane()
+                }
+            },
+        )
+        return
+    }
+    when (val s = current) {
+        AppScreen.Splash -> CenteredSpinner(stringResource(R.string.loading_starting))
         AppScreen.Login -> {
             val staleToken by appVm.loginStaleToken.collectAsStateWithLifecycle()
             LoginScreen(onCookiesArrived = appVm::onCookiesArrived, staleToken = staleToken)
         }
-        is AppScreen.Loading -> CenteredSpinner(s.msg)
+        is AppScreen.Loading -> CenteredSpinner(s.msg.asString())
         is AppScreen.Error -> ErrorScreen(
             message = s.msg,
             onRetry = appVm::retryBootstrap,
@@ -105,14 +133,24 @@ fun AppleNotesApp() {
 }
 
 @Composable
-private fun ListRoute(appVm: AppViewModel, signOut: () -> Unit) {
+private fun ListRoute(
+    appVm: AppViewModel,
+    signOut: () -> Unit,
+    /** Two-pane mode: the note shown next to the list, highlighted in it. */
+    openNote: String? = null,
+) {
     val context = LocalContext.current
+    val resources = LocalResources.current
     val scope = rememberCoroutineScope()
     val exportVm: BulkExportViewModel = viewModel(factory = BulkExportViewModel.factory(context))
     val list by appVm.listState.collectAsStateWithLifecycle()
     val message by appVm.listMessage.collectAsStateWithLifecycle()
     val online by appVm.online.collectAsStateWithLifecycle()
     val exportState by exportVm.state.collectAsStateWithLifecycle()
+    // Opt-in update check (issue #22): once per process, at most daily.
+    val updateVm: UpdateViewModel = viewModel(factory = UpdateViewModel.factory(context))
+    val update by updateVm.available.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { updateVm.checkOnLaunch() }
 
     // Refresh when the list comes back to the foreground (throttled in the ViewModel; issue #12).
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -135,7 +173,10 @@ private fun ListRoute(appVm: AppViewModel, signOut: () -> Unit) {
             runCatching { withContext(Dispatchers.IO) { readImport(context.contentResolver, uri) } }
                 // Opens a prefilled, unsaved draft in the editor.
                 .onSuccess { appVm.handleIncoming(IncomingRequest.NewDraft(it)) }
-                .onFailure { Toast.makeText(context, "Couldn't import: ${it.message}", Toast.LENGTH_LONG).show() }
+                .onFailure {
+                    val text = uiText(R.string.import_failed, userMessage(it)).resolve(resources)
+                    Toast.makeText(context, text, Toast.LENGTH_LONG).show()
+                }
         }
     }
     val exportFormat = remember { mutableStateOf(ExportFormat.MARKDOWN) }
@@ -151,7 +192,7 @@ private fun ListRoute(appVm: AppViewModel, signOut: () -> Unit) {
 
     LaunchedEffect(exportState.message) {
         exportState.message?.let {
-            Toast.makeText(context, it, Toast.LENGTH_LONG).show()
+            Toast.makeText(context, it.resolve(resources), Toast.LENGTH_LONG).show()
             exportVm.messageShown()
         }
     }
@@ -161,9 +202,13 @@ private fun ListRoute(appVm: AppViewModel, signOut: () -> Unit) {
         folders = list.folders,
         selectedFolder = list.selectedFolder,
         onSelectFolder = appVm::selectFolder,
-        onSelect = appVm::openNote,
+        // Through the two-pane-aware entry points: with a note open beside
+        // the list, it is left (and saved) first.
+        onSelect = appVm::selectNote,
+        selectedNote = openNote,
+        topBanner = { update?.let { UpdateBanner(it, onDismiss = updateVm::dismiss) } },
         onRefresh = appVm::refresh,
-        onCreateNote = appVm::createNote,
+        onCreateNote = appVm::requestCreateNote,
         onSignOut = signOut,
         message = message,
         onMessageAction = appVm::onListMessageAction,
@@ -175,18 +220,18 @@ private fun ListRoute(appVm: AppViewModel, signOut: () -> Unit) {
         onRetryUnsent = appVm::retryUnsent,
         searchBodies = appVm::searchCachedBodies,
         drawerActions = listOf(
-            DrawerAction("Import .txt / .md file…", Icons.Default.FileOpen) {
+            DrawerAction(UiText.Res(R.string.drawer_import), Icons.Default.FileOpen) {
                 importLauncher.launch(IMPORT_MIME_TYPES)
             },
-            DrawerAction("Export folder as Markdown…", Icons.Default.Description) {
+            DrawerAction(UiText.Res(R.string.drawer_export_markdown), Icons.Default.Description) {
                 exportFormat.value = ExportFormat.MARKDOWN
                 exportLauncher.launch(null)
             },
-            DrawerAction("Export folder as HTML…", Icons.Default.Code) {
+            DrawerAction(UiText.Res(R.string.drawer_export_html), Icons.Default.Code) {
                 exportFormat.value = ExportFormat.HTML
                 exportLauncher.launch(null)
             },
-            DrawerAction("Settings", Icons.Default.Settings) { appVm.showSettings() },
+            DrawerAction(UiText.Res(R.string.drawer_settings), Icons.Default.Settings) { appVm.requestSettings() },
         ),
     )
     if (exportState.running) {
@@ -199,6 +244,7 @@ private fun DetailRoute(
     screen: AppScreen.Detail,
     appVm: AppViewModel,
     detailVm: NoteDetailViewModel,
+    twoPane: Boolean = false,
 ) {
     val context = LocalContext.current
     LaunchedEffect(screen.openId) {
@@ -207,22 +253,43 @@ private fun DetailRoute(
     val status by detailVm.status.collectAsStateWithLifecycle()
     if (status.openId != screen.openId) {
         // The frame before open() has run.
-        CenteredSpinner("Loading note…")
+        CenteredSpinner(stringResource(R.string.loading_note))
         return
     }
     // Recent-note launcher shortcuts: saved notes only, title only.
     val record = detailVm.record
+    // Counts only, for "Copy diagnostic report" (issue #22).
+    LaunchedEffect(record?.recordName, record?.recordChangeTag) {
+        if (record != null) LastOpenedNote.shape = withContext(Dispatchers.Default) { NoteShape.of(record) }
+    }
     LaunchedEffect(record?.recordName, record?.recordChangeTag != null) {
         if (record != null && record.recordChangeTag != null) {
             NoteShortcuts.reportOpened(context, record.recordName, detailVm.titleDraft)
         }
     }
-    val leave = { message: String? ->
+    val leave = { message: UiText? ->
         detailVm.close()
         appVm.showList(message)
     }
     LaunchedEffect(status.exitRequested) {
         if (status.exitRequested) leave(status.exitMessage)
     }
-    NoteDetailScreen(vm = detailVm, onBack = { leave(null) }, onSignIn = appVm::signInAgain)
+    // Two-pane switching (issue #16): another note / New note / Settings was
+    // picked while this one is open. The screen runs its Back path; if the
+    // note stays open instead (the save failed, a question is up), the
+    // switch is dropped so a later Back just closes the note.
+    val leaveRequest by appVm.detailLeaveRequest.collectAsStateWithLifecycle()
+    LaunchedEffect(status.saving, status.saveFailed, status.conflict != null, status.savedDraft != null) {
+        val stays = status.saveFailed || status.conflict != null || status.savedDraft != null
+        if (!status.saving && !status.exitRequested && stays) appVm.cancelPendingSwitch()
+    }
+    NoteDetailScreen(
+        vm = detailVm,
+        onBack = { leave(null) },
+        onSignIn = appVm::signInAgain,
+        leaveRequest = leaveRequest,
+        onLeaveRequestHandled = appVm::onDetailLeaveRequestHandled,
+        onLeaveCancelled = appVm::cancelPendingSwitch,
+        inTwoPane = twoPane,
+    )
 }

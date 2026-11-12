@@ -128,7 +128,7 @@ class MainActivity : FragmentActivity() {
         canAuthenticate = canUseAppLock(this)
         if (!canAuthenticate) return
         prompting = true
-        showAppLockPrompt(this, title = "Unlock Notes of Fruit", subtitle = null) { ok ->
+        showAppLockPrompt(this, title = getString(R.string.lock_prompt_title), subtitle = null) { ok ->
             prompting = false
             if (ok) lockPolicy.onAuthenticated()
         }

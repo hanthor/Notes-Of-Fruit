@@ -10,6 +10,8 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.res.stringResource
+import com.example.applenotes.R
 
 /** Detail overflow menu entries for export / print / pin. */
 @Composable
@@ -21,30 +23,30 @@ internal fun NoteExportMenuItems(
     onDismiss: () -> Unit,
 ) {
     DropdownMenuItem(
-        text = { Text("Export as Markdown…") },
+        text = { Text(stringResource(R.string.menu_export_markdown)) },
         leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
         onClick = { onDismiss(); actions.exportAs(ExportFormat.MARKDOWN) },
     )
     DropdownMenuItem(
-        text = { Text("Export as HTML…") },
+        text = { Text(stringResource(R.string.menu_export_html)) },
         leadingIcon = { Icon(Icons.Default.Code, contentDescription = null) },
         onClick = { onDismiss(); actions.exportAs(ExportFormat.HTML) },
     )
     if (hasImages) {
         DropdownMenuItem(
-            text = { Text("Export with images to folder…") },
+            text = { Text(stringResource(R.string.menu_export_with_images)) },
             leadingIcon = { Icon(Icons.Default.Folder, contentDescription = null) },
             onClick = { onDismiss(); actions.exportWithImages() },
         )
     }
     DropdownMenuItem(
-        text = { Text("Print / save as PDF") },
+        text = { Text(stringResource(R.string.menu_print)) },
         leadingIcon = { Icon(Icons.Default.Print, contentDescription = null) },
         onClick = { onDismiss(); actions.print() },
     )
     if (canPin) {
         DropdownMenuItem(
-            text = { Text("Pin to home screen") },
+            text = { Text(stringResource(R.string.menu_pin)) },
             leadingIcon = { Icon(Icons.Default.Home, contentDescription = null) },
             onClick = { onDismiss(); onPin() },
         )

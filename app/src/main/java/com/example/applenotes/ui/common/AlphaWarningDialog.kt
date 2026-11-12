@@ -13,7 +13,11 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.example.applenotes.R
 
 @Composable
 internal fun AlphaWarningDialog(onAcknowledge: () -> Unit) {
@@ -29,39 +33,36 @@ internal fun AlphaWarningDialog(onAcknowledge: () -> Unit) {
         },
         title = {
             Text(
-                "Alpha — read this first",
+                stringResource(R.string.alpha_title),
                 style = MaterialTheme.typography.headlineSmall,
             )
         },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            // Scrolls at large font sizes instead of pushing the button off screen.
+            Column(
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+            ) {
                 Text(
-                    "Notes of Fruit is an unofficial, reverse-engineered, alpha-quality " +
-                        "Android client for iCloud Notes. It is not affiliated with Apple.",
+                    stringResource(R.string.alpha_intro),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
-                    "It might:",
+                    stringResource(R.string.alpha_it_might),
                     style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
                 )
-                Text("• corrupt, duplicate, or delete notes in your iCloud account",
-                    style = MaterialTheme.typography.bodyMedium)
-                Text("• drop formatting in subtle ways when round-tripping through Mac",
-                    style = MaterialTheme.typography.bodyMedium)
-                Text("• stop working at any time if Apple changes their API",
-                    style = MaterialTheme.typography.bodyMedium)
-                Text("• fail to handle modern collaborative notes (read-only at best)",
-                    style = MaterialTheme.typography.bodyMedium)
+                for (risk in listOf(R.string.alpha_risk_corrupt, R.string.alpha_risk_formatting, R.string.alpha_risk_api, R.string.alpha_risk_collab)) {
+                    Text(stringResource(R.string.alpha_bullet, stringResource(risk)), style = MaterialTheme.typography.bodyMedium)
+                }
                 Text(
-                    "Use at your own risk. If you have notes you can't afford to lose, " +
-                        "back them up first or just don't use this app.",
+                    stringResource(R.string.alpha_own_risk),
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
         },
         confirmButton = {
             TextButton(onClick = onAcknowledge) {
-                Text("I understand — continue")
+                Text(stringResource(R.string.alpha_continue))
             }
         },
     )

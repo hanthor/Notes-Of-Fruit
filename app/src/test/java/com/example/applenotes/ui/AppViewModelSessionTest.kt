@@ -1,5 +1,8 @@
 package com.example.applenotes.ui
 
+import com.example.applenotes.R
+import com.example.applenotes.ui.common.UiText
+import com.example.applenotes.ui.common.uiText
 import androidx.lifecycle.SavedStateHandle
 import com.example.applenotes.client.NotesError
 import com.example.applenotes.data.NotesRepository
@@ -67,7 +70,7 @@ class AppViewModelSessionTest {
         auth.failOpen = NotesError.AuthExpired("HTTP 421")
         vm.onCookiesArrived()
         val s = vm.screen.value as AppScreen.Error
-        assertEquals("Your iCloud session has expired. Sign in again to continue.", s.msg)
+        assertEquals(UiText.Res(R.string.error_session_expired), s.msg)
         assertTrue(s.details!!.contains("421"))
     }
 
@@ -104,7 +107,7 @@ class AppViewModelSessionTest {
         vm.refresh()
         assertEquals(calls, api.calls.size)
         assertEquals(AppScreen.NotesList, vm.screen.value)
-        assertTrue(vm.listMessage.value!!.text.startsWith("You're offline"))
+        assertEquals(UiText.Res(R.string.error_offline), vm.listMessage.value!!.text)
         assertEquals(false, vm.online.value)
     }
 
@@ -114,7 +117,7 @@ class AppViewModelSessionTest {
         api.failNext["fetchRecents"] = NotesError.Server(502, null, "<html>Bad gateway</html>")
         vm.refresh()
         val m = vm.listMessage.value!!
-        assertEquals("Couldn't refresh: iCloud returned an error (HTTP 502).", m.text)
+        assertEquals(uiText(R.string.list_refresh_failed, uiText(R.string.error_server, 502)), m.text)
         assertTrue(m.details!!.contains("Bad gateway"))
     }
 }

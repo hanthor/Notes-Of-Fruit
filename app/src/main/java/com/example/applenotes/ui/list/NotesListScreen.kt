@@ -64,6 +64,12 @@ import com.example.applenotes.ui.common.AppSnackbarHost
 import com.example.applenotes.ui.common.OfflineBanner
 import androidx.compose.material3.SnackbarHostState
 import com.example.applenotes.ui.common.humanRelative
+import androidx.compose.ui.res.pluralStringResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
+import com.example.applenotes.R
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -91,6 +97,10 @@ internal fun NotesListScreen(
     onRetryUnsent: () -> Unit = {},
     /** Notes whose cached body matches a query (search beyond titles and snippets). */
     searchBodies: suspend (String) -> Set<String> = { emptySet() },
+    /** Two-pane mode: the recordName of the note open next to the list (issue #16). */
+    selectedNote: String? = null,
+    /** Shown under the offline banner, e.g. "Version X is available" (issue #22). */
+    topBanner: @Composable () -> Unit = {},
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var bodyMatches by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -127,14 +137,13 @@ internal fun NotesListScreen(
     androidx.activity.compose.BackHandler(enabled = drawerState.isOpen) {
         drawerScope.launch { drawerState.close() }
     }
-    val selectedFolderName = remember(selectedFolder, folders) {
-        when (selectedFolder) {
-            null -> "All notes"
-            TRASH_RECORD_NAME -> "Recently Deleted"
-            DEFAULT_FOLDER_RECORD_NAME -> folders.firstOrNull { it.recordName == DEFAULT_FOLDER_RECORD_NAME }
-                ?.displayName ?: "Notes"
-            else -> folders.firstOrNull { it.recordName == selectedFolder }?.displayName ?: "Folder"
-        }
+    val selectedFolderName = when (selectedFolder) {
+        null -> stringResource(R.string.folder_all_notes)
+        TRASH_RECORD_NAME -> stringResource(R.string.folder_recently_deleted)
+        DEFAULT_FOLDER_RECORD_NAME -> folders.firstOrNull { it.recordName == DEFAULT_FOLDER_RECORD_NAME }
+            ?.displayName ?: stringResource(R.string.folder_default)
+        else -> folders.firstOrNull { it.recordName == selectedFolder }?.displayName
+            ?: stringResource(R.string.folder_unnamed)
     }
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior()
     ModalNavigationDrawer(
@@ -170,14 +179,21 @@ internal fun NotesListScreen(
                     IconButton(onClick = {
                         drawerScope.launch { drawerState.open() }
                     }) {
-                        Icon(Icons.Default.Menu, contentDescription = "Folders")
+                        Icon(Icons.Default.Menu, contentDescription = stringResource(R.string.list_open_folders))
                     }
                 },
                 title = {
                     Column {
-                        Text(selectedFolderName, style = MaterialTheme.typography.displayLarge)
                         Text(
-                            "${notesInFolder.size} note${if (notesInFolder.size == 1) "" else "s"}",
+                            selectedFolderName,
+                            style = MaterialTheme.typography.displayLarge,
+                            // Long folder names / large fonts: ellipsize instead of overflowing the bar.
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.semantics { heading() },
+                        )
+                        Text(
+                            pluralStringResource(R.plurals.note_count, notesInFolder.size, notesInFolder.size),
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -185,7 +201,7 @@ internal fun NotesListScreen(
                 },
                 actions = {
                     IconButton(onClick = onRefresh) {
-                        Icon(Icons.Default.Refresh, contentDescription = "Refresh")
+                        Icon(Icons.Default.Refresh, contentDescription = stringResource(R.string.list_refresh))
                     }
                 },
                 scrollBehavior = scrollBehavior,
@@ -197,12 +213,13 @@ internal fun NotesListScreen(
                 containerColor = MaterialTheme.colorScheme.primary,
                 contentColor = MaterialTheme.colorScheme.onPrimary,
             ) {
-                Icon(Icons.Default.Add, contentDescription = "New note")
+                Icon(Icons.Default.Add, contentDescription = stringResource(R.string.list_new_note))
             }
         },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             if (offline) OfflineBanner()
+            topBanner()
             SyncStatusRow(syncing = syncing && !refreshing, unsentCount = unsentCount, onRetryUnsent = onRetryUnsent)
             // Search bar
             OutlinedTextField(
@@ -211,12 +228,12 @@ internal fun NotesListScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 8.dp),
-                placeholder = { Text("Search notes") },
+                placeholder = { Text(stringResource(R.string.list_search_hint)) },
                 leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
                 trailingIcon = {
                     if (query.isNotEmpty()) {
                         IconButton(onClick = { query = "" }) {
-                            Icon(Icons.Default.Close, contentDescription = "Clear")
+                            Icon(Icons.Default.Close, contentDescription = stringResource(R.string.list_clear_search))
                         }
                     }
                 },
@@ -244,7 +261,7 @@ internal fun NotesListScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     items(filtered, key = { it.recordName }) { note ->
-                        NoteCard(note, onClick = { onSelect(note) })
+                        NoteCard(note, selected = note.recordName == selectedNote, onClick = { onSelect(note) })
                     }
                     item { Spacer(Modifier.height(80.dp)) } // FAB clearance
                 }
@@ -270,14 +287,14 @@ private fun EmptyNotesState(filtering: Boolean) {
         )
         Spacer(Modifier.height(12.dp))
         Text(
-            if (filtering) "No notes match your search." else "No notes yet.",
+            stringResource(if (filtering) R.string.list_empty_search else R.string.list_empty),
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         if (!filtering) {
             Spacer(Modifier.height(4.dp))
             Text(
-                "Tap + to create a note, or sync one from Mac or iCloud.com.",
+                stringResource(R.string.list_empty_hint),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -287,12 +304,12 @@ private fun EmptyNotesState(filtering: Boolean) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NoteCard(note: NoteSummary, onClick: () -> Unit) {
+private fun NoteCard(note: NoteSummary, selected: Boolean, onClick: () -> Unit) {
     Card(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().semantics { this.selected = selected },
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
+            containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface,
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         shape = MaterialTheme.shapes.large,
@@ -302,7 +319,7 @@ private fun NoteCard(note: NoteSummary, onClick: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text(
-                text = note.title?.takeIf { it.isNotBlank() } ?: "Untitled",
+                text = note.title?.takeIf { it.isNotBlank() } ?: stringResource(R.string.note_untitled),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 maxLines = 1,
@@ -328,6 +345,8 @@ private fun NoteCard(note: NoteSummary, onClick: () -> Unit) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        // Takes the rest of the row; the date keeps its width at large font sizes.
+                        modifier = Modifier.weight(1f, fill = false),
                     )
                 }
             }

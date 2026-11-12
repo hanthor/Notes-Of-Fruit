@@ -109,6 +109,9 @@ android {
       // Version-staleness checks need network access and change from day to
       // day without any code change; Dependabot covers them instead.
       disable += setOf("GradleDependency", "NewerVersionAvailable", "AndroidGradlePluginVersion")
+      // Issue #17: user-visible text belongs in res/values/strings.xml. Lint
+      // only sees XML; HardcodedTextTest covers Text("…") etc. in Kotlin.
+      error += setOf("HardcodedText", "SetTextI18n")
     }
 }
 

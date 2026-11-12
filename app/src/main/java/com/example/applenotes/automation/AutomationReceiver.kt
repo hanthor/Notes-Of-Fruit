@@ -38,7 +38,8 @@ class AutomationReceiver : BroadcastReceiver() {
         SCOPE.launch {
             val result = try {
                 withTimeout(TIMEOUT_MS) {
-                    AutomationProcessor(AutomationSettings(app), AppGraph.notesRepository(app)).handle(action, extras)
+                    AutomationProcessor(AutomationSettings(app), AppGraph.notesRepository(app)) { it.resolve(app.resources) }
+                        .handle(action, extras)
                 }
             } catch (e: TimeoutCancellationException) {
                 // The save itself keeps going in the repository's scope.

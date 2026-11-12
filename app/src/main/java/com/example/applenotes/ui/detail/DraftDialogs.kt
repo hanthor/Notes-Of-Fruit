@@ -17,6 +17,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.res.stringResource
+import com.example.applenotes.R
 import com.example.applenotes.ui.common.humanRelative
 
 /**
@@ -33,19 +35,17 @@ internal fun RestoreDraftDialog(
     AlertDialog(
         onDismissRequest = {},
         properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
-        title = { Text("Restore unsaved changes?") },
+        title = { Text(stringResource(R.string.restore_draft_title)) },
         text = {
             Text(
-                "Changes you made to this note ${humanRelative(prompt.savedAtMs)} were never saved to iCloud." +
-                    if (prompt.conflict) {
-                        " The note has also changed on another device since; restoring will ask how to combine them."
-                    } else {
-                        " Restore them and save, or discard them and keep the version in iCloud."
-                    },
+                stringResource(
+                    if (prompt.conflict) R.string.restore_draft_text_conflict else R.string.restore_draft_text,
+                    humanRelative(prompt.savedAtMs),
+                ),
             )
         },
-        confirmButton = { TextButton(onClick = onRestore) { Text("Restore") } },
-        dismissButton = { TextButton(onClick = onDiscard) { Text("Discard") } },
+        confirmButton = { TextButton(onClick = onRestore) { Text(stringResource(R.string.action_restore)) } },
+        dismissButton = { TextButton(onClick = onDiscard) { Text(stringResource(R.string.action_discard)) } },
     )
 }
 
@@ -62,7 +62,7 @@ internal fun OfflineCopyBanner(modifier: Modifier = Modifier) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(Icons.Default.CloudOff, contentDescription = null, modifier = Modifier.padding(end = 8.dp).size(16.dp))
-            Text("Offline — showing saved copy", style = MaterialTheme.typography.labelMedium)
+            Text(stringResource(R.string.offline_copy_banner), style = MaterialTheme.typography.labelMedium)
         }
     }
 }

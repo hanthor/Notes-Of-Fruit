@@ -33,6 +33,10 @@ develop against notes you can't afford to lose.
   invariant checker, `TopotextInvariants`, is main code in `:core`.
 - Lint runs with `abortOnError = true`: any lint *error* fails CI. Warnings
   don't, but don't add new ones without a reason.
+- User-visible text goes in `app/src/main/res/values/strings.xml` (plurals for
+  counts), read with `stringResource` in Compose or built as a `UiText` in
+  ViewModels; `HardcodedTextTest` fails on `Text("literal")` and friends. Log
+  messages stay in code. Icons that do something need a `contentDescription`.
 - Debug builds install as `io.github.hanthor.notesoffruit.debug`, next to any
   release install.
 

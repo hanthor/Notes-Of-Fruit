@@ -19,7 +19,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.example.applenotes.R
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
@@ -61,20 +63,17 @@ private fun RemoteChangeBanner(hasUnsavedChanges: Boolean, onReload: () -> Unit,
         ) {
             Icon(Icons.Default.Sync, contentDescription = null, modifier = Modifier.padding(end = 12.dp).size(18.dp))
             Text(
-                if (hasUnsavedChanges) {
-                    "Updated on another device. Saving combines your edits with that version " +
-                        "(you'll be asked if they overlap)."
-                } else {
-                    "Updated on another device"
-                },
+                stringResource(
+                    if (hasUnsavedChanges) R.string.remote_change_banner_unsaved else R.string.remote_change_banner,
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.weight(1f),
             )
             if (!hasUnsavedChanges) {
-                TextButton(onClick = onReload) { Text("Reload") }
+                TextButton(onClick = onReload) { Text(stringResource(R.string.action_reload)) }
             }
             IconButton(onClick = onDismiss) {
-                Icon(Icons.Default.Close, contentDescription = "Dismiss")
+                Icon(Icons.Default.Close, contentDescription = stringResource(R.string.remote_change_dismiss))
             }
         }
     }

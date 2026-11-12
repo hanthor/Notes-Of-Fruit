@@ -51,6 +51,10 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.semantics
+import com.example.applenotes.R
 import com.example.applenotes.client.NoteRecord
 import com.example.applenotes.data.AssetRef
 import com.example.applenotes.data.ImageSource
@@ -252,7 +256,7 @@ private fun ImageAttachment(content: AttachmentContent.Image) {
     var viewerOpen by rememberSaveable { mutableStateOf(false) }
     AttachmentImage(
         source = content.inline,
-        contentDescription = "Image attachment. Tap to view full size.",
+        contentDescription = stringResource(R.string.attachment_image_description),
         uti = content.mimeHint,
         onClick = { viewerOpen = true },
     )
@@ -262,12 +266,13 @@ private fun ImageAttachment(content: AttachmentContent.Image) {
 /** A non-image attachment (sketch, scan, map, PDF…) shown as Apple's preview image plus its type. */
 @Composable
 private fun PreviewAttachment(preview: ImageSource, uti: String?) {
-    val (icon, label) = labelForAttachmentType(uti)
+    val (icon, labelRes) = labelForAttachmentType(uti)
+    val label = stringResource(labelRes)
     var viewerOpen by rememberSaveable { mutableStateOf(false) }
     Column(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp)) {
         AttachmentImage(
             source = preview,
-            contentDescription = "$label preview. Tap to enlarge.",
+            contentDescription = stringResource(R.string.attachment_preview_description, label),
             uti = uti,
             onClick = { viewerOpen = true },
             verticalPadding = 0,
@@ -276,7 +281,8 @@ private fun PreviewAttachment(preview: ImageSource, uti: String?) {
             "$icon $label",
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 4.dp),
+            // The image above already says what it is; the emoji is decoration.
+            modifier = Modifier.padding(top = 4.dp).clearAndSetSemantics {},
         )
     }
     if (viewerOpen) ImageViewerDialog(preview, onDismiss = { viewerOpen = false })
@@ -329,8 +335,8 @@ internal fun AttachmentImage(
                         .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
                 )
             }
-            DecodedImage.Unsupported -> AttachmentPlaceholder(uti, note = "Can't show this image on this Android version")
-            DecodedImage.Failed -> AttachmentPlaceholder(uti, note = "Couldn't load this image")
+            DecodedImage.Unsupported -> AttachmentPlaceholder(uti, note = stringResource(R.string.attachment_image_unsupported))
+            DecodedImage.Failed -> AttachmentPlaceholder(uti, note = stringResource(R.string.attachment_image_failed))
         }
     }
 }
@@ -360,7 +366,7 @@ private fun ImageViewerDialog(source: ImageSource, onDismiss: () -> Unit) {
                     val bitmap = remember(s.bitmap) { s.bitmap.asImageBitmap() }
                     Image(
                         bitmap = bitmap,
-                        contentDescription = "Image attachment, full size",
+                        contentDescription = stringResource(R.string.attachment_image_full_size),
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
                             .fillMaxSize()
@@ -385,12 +391,12 @@ private fun ImageViewerDialog(source: ImageSource, onDismiss: () -> Unit) {
                     )
                 }
                 DecodedImage.Unsupported -> Text(
-                    "Can't show this image on this Android version",
+                    stringResource(R.string.attachment_image_unsupported),
                     color = Color.White,
                     modifier = Modifier.padding(24.dp),
                 )
                 DecodedImage.Failed -> Text(
-                    "Couldn't load this image",
+                    stringResource(R.string.attachment_image_failed),
                     color = Color.White,
                     modifier = Modifier.padding(24.dp),
                 )
@@ -399,7 +405,7 @@ private fun ImageViewerDialog(source: ImageSource, onDismiss: () -> Unit) {
                 onClick = onDismiss,
                 modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp),
             ) {
-                Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                Icon(Icons.Default.Close, contentDescription = stringResource(R.string.action_close), tint = Color.White)
             }
         }
     }
@@ -407,11 +413,14 @@ private fun ImageViewerDialog(source: ImageSource, onDismiss: () -> Unit) {
 
 @Composable
 internal fun AttachmentPlaceholder(uti: String?, note: String? = null) {
-    val (icon, label) = labelForAttachmentType(uti)
+    val (icon, labelRes) = labelForAttachmentType(uti)
+    val label = stringResource(labelRes)
     androidx.compose.foundation.layout.Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 6.dp)
+            // Read as one item ("Table, com.apple.notes.table").
+            .semantics(mergeDescendants = true) {}
             .background(
                 color = MaterialTheme.colorScheme.surfaceVariant,
                 shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp),
@@ -422,7 +431,7 @@ internal fun AttachmentPlaceholder(uti: String?, note: String? = null) {
             Text(
                 icon,
                 style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(end = 10.dp),
+                modifier = Modifier.padding(end = 10.dp).clearAndSetSemantics {},
             )
             Column(modifier = Modifier.weight(1f)) {
                 Text(
@@ -431,7 +440,7 @@ internal fun AttachmentPlaceholder(uti: String?, note: String? = null) {
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    note ?: uti ?: "attachment",
+                    note ?: uti ?: stringResource(R.string.attachment_generic),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = if (note != null) 2 else 1,
@@ -442,25 +451,26 @@ internal fun AttachmentPlaceholder(uti: String?, note: String? = null) {
     }
 }
 
-internal fun labelForAttachmentType(uti: String?): Pair<String, String> = when {
-    uti == null -> "📎" to "Attachment"
-    uti.contains("table", ignoreCase = true) -> "📋" to "Table"
+/** (emoji, string resource of the type's name) for an attachment UTI. */
+internal fun labelForAttachmentType(uti: String?): Pair<String, Int> = when {
+    uti == null -> "📎" to R.string.attachment_type_attachment
+    uti.contains("table", ignoreCase = true) -> "📋" to R.string.attachment_type_table
     uti.contains("gallery", ignoreCase = true) ||
         uti.contains("image", ignoreCase = true) ||
         uti.startsWith("public.png", ignoreCase = true) ||
         uti.startsWith("public.jpeg", ignoreCase = true) ||
-        uti.startsWith("public.heic", ignoreCase = true) -> "🖼" to "Image"
+        uti.startsWith("public.heic", ignoreCase = true) -> "🖼" to R.string.attachment_type_image
     uti.contains("sketch", ignoreCase = true) ||
         uti.contains("drawing", ignoreCase = true) ||
-        uti.contains("paper", ignoreCase = true) -> "✏️" to "Drawing"
-    uti.contains("scan", ignoreCase = true) -> "📄" to "Scanned document"
-    uti.contains("map", ignoreCase = true) -> "🗺" to "Map"
+        uti.contains("paper", ignoreCase = true) -> "✏️" to R.string.attachment_type_drawing
+    uti.contains("scan", ignoreCase = true) -> "📄" to R.string.attachment_type_scan
+    uti.contains("map", ignoreCase = true) -> "🗺" to R.string.attachment_type_map
     uti.startsWith("public.url", ignoreCase = true) ||
-        uti.contains("link", ignoreCase = true) -> "🔗" to "Link preview"
+        uti.contains("link", ignoreCase = true) -> "🔗" to R.string.attachment_type_link
     uti.contains("audio", ignoreCase = true) ||
         uti.contains("mp3", ignoreCase = true) ||
-        uti.contains("m4a", ignoreCase = true) -> "🎵" to "Audio"
-    uti.contains("video", ignoreCase = true) || uti.contains("movie", ignoreCase = true) -> "🎞" to "Video"
-    uti.contains("pdf", ignoreCase = true) -> "📄" to "PDF"
-    else -> "📎" to "File"
+        uti.contains("m4a", ignoreCase = true) -> "🎵" to R.string.attachment_type_audio
+    uti.contains("video", ignoreCase = true) || uti.contains("movie", ignoreCase = true) -> "🎞" to R.string.attachment_type_video
+    uti.contains("pdf", ignoreCase = true) -> "📄" to R.string.attachment_type_pdf
+    else -> "📎" to R.string.attachment_type_file
 }

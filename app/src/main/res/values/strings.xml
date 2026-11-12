@@ -1,5 +1,295 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Every user-visible string in the app (issue #17). Strings for the
+    launcher / share-sheet / tile integrations are in strings_integrations.xml.
+    Log messages stay in code: they are not shown to users.
+-->
 <resources>
     <string name="app_name">Notes of Fruit</string>
+
+    <!-- Common actions -->
+    <string name="action_retry">Retry</string>
+    <string name="action_details">Details</string>
+    <string name="action_dismiss">Dismiss</string>
+    <string name="action_close">Close</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_discard">Discard</string>
+    <string name="action_restore">Restore</string>
+    <string name="action_sign_in">Sign in</string>
+    <string name="action_sign_in_again">Sign in again</string>
+    <string name="action_back">Back</string>
+    <string name="action_reload">Reload</string>
+    <string name="action_save">Save</string>
+    <string name="action_share">Share</string>
+    <string name="action_more">More options</string>
+
+    <!-- Errors (data/Results.kt userMessage) -->
+    <string name="error_session_expired">Your iCloud session has expired. Sign in again to continue.</string>
+    <string name="error_offline">You\'re offline. Check your connection and try again.</string>
+    <!-- %1$s: retry_hint_* -->
+    <string name="error_throttled">iCloud is busy right now. %1$s</string>
+    <string name="error_conflict">This note changed on another device.</string>
+    <string name="error_server">iCloud returned an error (HTTP %1$d).</string>
+    <string name="error_server_with_code">iCloud returned an error (HTTP %1$d, %2$s).</string>
+    <string name="error_decode">iCloud sent a response this app doesn\'t understand.</string>
+    <string name="retry_hint_moment">Try again in a moment.</string>
+    <plurals name="retry_hint_seconds">
+        <item quantity="one">Try again in %d second.</item>
+        <item quantity="other">Try again in %d seconds.</item>
+    </plurals>
+    <plurals name="retry_hint_minutes">
+        <item quantity="one">Try again in %d minute.</item>
+        <item quantity="other">Try again in %d minutes.</item>
+    </plurals>
+    <string name="error_details_title">Error details</string>
+    <string name="error_screen_title">Something went wrong</string>
+
+    <!-- Common screens -->
+    <string name="offline_banner">Offline</string>
+    <string name="time_just_now">just now</string>
+    <!-- Short "time ago" labels in the notes list: 5m, 3h, 2d -->
+    <string name="time_minutes_short">%1$dm</string>
+    <string name="time_hours_short">%1$dh</string>
+    <string name="time_days_short">%1$dd</string>
+
+    <!-- Navigation / list (ui/AppViewModel.kt) -->
+    <string name="loading_starting">Starting up…</string>
+    <string name="loading_restoring_session">Restoring session…</string>
+    <string name="loading_signing_in">Signing in…</string>
+    <string name="loading_retrying">Retrying…</string>
+    <string name="loading_note">Loading note…</string>
+    <string name="loading_creating_note">Creating note…</string>
+    <string name="loading_deleting">Deleting…</string>
+    <!-- %1$s: the reason (an error_* message) -->
+    <string name="list_update_failed">Couldn\'t update: %1$s</string>
+    <string name="list_refresh_failed">Couldn\'t refresh: %1$s</string>
+    <string name="list_open_failed">Couldn\'t open the note: %1$s</string>
+    <string name="list_create_failed">Couldn\'t create a note: %1$s</string>
+    <string name="list_no_note_titled">No note titled \"%1$s\"</string>
+    <plurals name="list_notes_titled">
+        <item quantity="one">%1$d note is titled \"%2$s\"</item>
+        <item quantity="other">%1$d notes are titled \"%2$s\"</item>
+    </plurals>
+
+    <!-- Editor messages (ui/detail/NoteDetailViewModel.kt) -->
+    <string name="attachment_delete_blocked">Attachments can\'t be removed from Android yet</string>
+    <string name="detail_reopen_failed">Couldn\'t reopen the note: %1$s</string>
+    <string name="detail_saved_merged">Saved, together with changes made on another device.</string>
+    <string name="detail_save_offline">You\'re offline. Your changes are kept on this device until you retry.</string>
+    <string name="detail_save_session_expired">Your iCloud session expired. Your changes are kept; sign in again to save them.</string>
+    <string name="detail_save_conflict">This note keeps changing on another device, so your changes weren\'t saved yet. They\'re kept here; try again in a moment.</string>
+    <!-- %1$s: retry_hint_* -->
+    <string name="detail_save_throttled">iCloud is busy, so your changes weren\'t saved yet. They\'re kept here. %1$s</string>
+    <string name="detail_save_failed">Couldn\'t save: %1$s</string>
+    <string name="detail_delete_failed">Couldn\'t delete: %1$s</string>
+
+    <!-- Read-only banners (data/NoteBody.kt ReadOnlyReason) -->
+    <string name="read_only_modern_format">This note uses Apple\'s newer note format, which this app can\'t edit yet. It\'s open read-only so it can\'t be damaged.</string>
+    <string name="read_only_unrecognized_format">This note\'s format wasn\'t recognised, so it\'s open read-only and may not display correctly.</string>
+    <string name="read_only_decode_failed">This note couldn\'t be fully decoded, so it\'s open read-only. What\'s shown may not match the note on your other devices.</string>
+    <string name="read_only_missing_body">This note has no body data this app can read, so it\'s open read-only.</string>
+    <string name="read_only_locked">This note is locked with a password. Notes of Fruit can\'t open locked notes yet.</string>
+    <string name="read_only_password_hint">Password hint: %1$s</string>
+
+    <!-- Editor screen (ui/detail/NoteDetailScreen.kt) -->
+    <string name="note_untitled">Untitled</string>
+    <string name="detail_title_field">Title</string>
+    <string name="detail_body_field">Note text</string>
+    <string name="detail_saved">Saved</string>
+    <string name="detail_saved_seconds_ago">Saved %1$ds ago</string>
+    <string name="detail_saved_minutes_ago">Saved %1$dm ago</string>
+    <string name="detail_saved_hours_ago">Saved %1$dh ago</string>
+    <string name="detail_status_read_only">Read-only</string>
+    <string name="detail_status_saving">Saving…</string>
+    <string name="detail_status_unsaved">Unsaved</string>
+    <string name="detail_pin_unsupported">Your launcher doesn\'t support pinned shortcuts</string>
+    <string name="detail_menu_delete">Delete note</string>
+    <string name="detail_nothing_to_show">Nothing to show.</string>
+    <string name="detail_start_typing">Start typing…</string>
+    <string name="detail_edit_note">edit note</string>
+    <string name="detail_close_note">Close note</string>
+    <string name="two_pane_no_note">Pick a note from the list, or tap + to start a new one.</string>
+    <!-- %1$s: a relative time such as "5m" or "Mar 4" -->
+    <string name="detail_modified">Modified %1$s</string>
+    <plurals name="detail_char_count">
+        <item quantity="one">%d char</item>
+        <item quantity="other">%d chars</item>
+    </plurals>
+    <string name="unsaved_dialog_title">Changes not saved</string>
+    <string name="unsaved_dialog_text">The last save to iCloud failed. Try again, or leave and discard your unsaved changes to this note.</string>
+    <string name="unsaved_dialog_keep_editing">Keep editing</string>
+    <string name="conflict_dialog_title">This note changed on another device</string>
+    <string name="conflict_dialog_text">Your edits overlap a change made elsewhere, so nothing was saved. Keep both adds your version below the other device\'s text, clearly marked, so nothing is lost. Discard my changes shows the other device\'s version instead.</string>
+    <string name="conflict_keep_both">Keep both</string>
+    <string name="conflict_discard_mine">Discard my changes</string>
+    <string name="delete_dialog_title">Delete this note?</string>
+    <string name="delete_dialog_text">This moves the note to Recently Deleted in iCloud Notes.</string>
+
+    <!-- Formatted body, banners and dialogs in the editor -->
+    <string name="remote_change_banner">Updated on another device</string>
+    <string name="remote_change_banner_unsaved">Updated on another device. Saving combines your edits with that version (you\'ll be asked if they overlap).</string>
+    <string name="remote_change_dismiss">Dismiss update notice</string>
+    <string name="restore_draft_title">Restore unsaved changes?</string>
+    <!-- %1$s: when, e.g. "5m" or "Mar 4" -->
+    <string name="restore_draft_text">Changes you made to this note %1$s were never saved to iCloud. Restore them and save, or discard them and keep the version in iCloud.</string>
+    <string name="restore_draft_text_conflict">Changes you made to this note %1$s were never saved to iCloud. The note has also changed on another device since; restoring will ask how to combine them.</string>
+    <string name="offline_copy_banner">Offline — showing saved copy</string>
+
+    <!-- Formatting toolbar -->
+    <string name="format_style_icon" translatable="false">Aa</string>
+    <!-- %1$s: the current paragraph style, e.g. "Heading" -->
+    <string name="format_paragraph_style">Paragraph style: %1$s</string>
+    <string name="format_bulleted_list">Bulleted list</string>
+    <string name="format_dashed_list">Dashed list</string>
+    <string name="format_numbered_list">Numbered list</string>
+    <string name="format_checklist">Checklist</string>
+    <string name="format_bold">Bold</string>
+    <string name="format_italic">Italic</string>
+    <string name="format_underline">Underline</string>
+    <string name="format_strikethrough">Strikethrough</string>
+    <string name="format_link">Link</string>
+    <string name="format_state_on">On</string>
+    <string name="format_state_off">Off</string>
+    <string name="style_title">Title</string>
+    <string name="style_heading">Heading</string>
+    <string name="style_subheading">Subheading</string>
+    <string name="style_body">Body</string>
+    <string name="style_monospaced">Monospaced</string>
+    <string name="style_bulleted">Bulleted</string>
+    <string name="style_dashed">Dashed</string>
+    <string name="style_numbered">Numbered</string>
+    <string name="style_checklist">Checkbox</string>
+    <string name="link_dialog_title">Add link</string>
+    <string name="link_dialog_url">URL</string>
+    <string name="link_dialog_apply">Apply</string>
+    <string name="link_dialog_remove">Remove</string>
+
+    <!-- Attachments -->
+    <string name="attachment_image_description">Image attachment. Tap to view full size.</string>
+    <!-- %1$s: attachment_type_* -->
+    <string name="attachment_preview_description">%1$s preview. Tap to enlarge.</string>
+    <string name="attachment_image_full_size">Image attachment, full size</string>
+    <string name="attachment_image_unsupported">Can\'t show this image on this Android version</string>
+    <string name="attachment_image_failed">Couldn\'t load this image</string>
+    <string name="attachment_generic">attachment</string>
+    <string name="attachment_type_attachment">Attachment</string>
+    <string name="attachment_type_table">Table</string>
+    <string name="attachment_type_image">Image</string>
+    <string name="attachment_type_drawing">Drawing</string>
+    <string name="attachment_type_scan">Scanned document</string>
+    <string name="attachment_type_map">Map</string>
+    <string name="attachment_type_link">Link preview</string>
+    <string name="attachment_type_audio">Audio</string>
+    <string name="attachment_type_video">Video</string>
+    <string name="attachment_type_pdf">PDF</string>
+    <string name="attachment_type_file">File</string>
+
+    <!-- Notes list and folder drawer -->
+    <string name="folder_all_notes">All notes</string>
+    <string name="folder_recently_deleted">Recently Deleted</string>
+    <string name="folder_default">Notes</string>
+    <string name="folder_unnamed">Folder</string>
+    <plurals name="note_count">
+        <item quantity="one">%d note</item>
+        <item quantity="other">%d notes</item>
+    </plurals>
+    <string name="list_open_folders">Folders</string>
+    <string name="list_refresh">Refresh</string>
+    <string name="list_new_note">New note</string>
+    <string name="list_search_hint">Search notes</string>
+    <string name="list_clear_search">Clear search</string>
+    <string name="list_empty">No notes yet.</string>
+    <string name="list_empty_search">No notes match your search.</string>
+    <string name="list_empty_hint">Tap + to create a note, or sync one from Mac or iCloud.com.</string>
+    <string name="sync_updating">Updating…</string>
+    <plurals name="unsent_changes">
+        <item quantity="one">%d unsent change</item>
+        <item quantity="other">%d unsent changes</item>
+    </plurals>
+    <string name="unsent_changes_retry">send them again</string>
+    <string name="drawer_sign_out">Sign out</string>
+    <string name="drawer_import">Import .txt / .md file…</string>
+    <string name="drawer_export_markdown">Export folder as Markdown…</string>
+    <string name="drawer_export_html">Export folder as HTML…</string>
+    <string name="drawer_settings">Settings</string>
+    <string name="export_progress_title">Exporting notes</string>
+    <string name="export_progress_count">%1$d of %2$d</string>
+
+    <!-- First-launch alpha warning -->
+    <string name="alpha_title">Alpha — read this first</string>
+    <string name="alpha_intro">Notes of Fruit is an unofficial, reverse-engineered, alpha-quality Android client for iCloud Notes. It is not affiliated with Apple.</string>
+    <string name="alpha_it_might">It might:</string>
+    <!-- %1$s: one alpha_risk_* item -->
+    <string name="alpha_bullet">• %1$s</string>
+    <string name="alpha_risk_corrupt">corrupt, duplicate, or delete notes in your iCloud account</string>
+    <string name="alpha_risk_formatting">drop formatting in subtle ways when round-tripping through Mac</string>
+    <string name="alpha_risk_api">stop working at any time if Apple changes their API</string>
+    <string name="alpha_risk_collab">fail to handle modern collaborative notes (read-only at best)</string>
+    <string name="alpha_own_risk">Use at your own risk. If you have notes you can\'t afford to lose, back them up first or just don\'t use this app.</string>
+    <string name="alpha_continue">I understand — continue</string>
+
+    <!-- App lock -->
+    <string name="lock_title">Notes of Fruit is locked</string>
+    <string name="lock_unlock">Unlock</string>
+    <string name="lock_no_screen_lock">This device no longer has a screen lock, so the app lock can\'t verify you. Set a screen lock in Android settings, or turn the app lock off.</string>
+    <string name="lock_turn_off">Turn off app lock</string>
+    <string name="lock_prompt_title">Unlock Notes of Fruit</string>
+
+    <!-- Settings -->
+    <string name="settings_automation">Allow automation apps</string>
+    <string name="settings_automation_summary">Lets apps such as Tasker create notes, append to notes and open notes.</string>
+    <string name="settings_automation_details">An app also needs the \"Automate Notes of Fruit\" permission, which you grant to it separately. Automation can add text but never delete or replace a note. Writes go straight to iCloud without opening the editor, so only allow apps you trust. See docs/automation.md in the project for the intent API.</string>
+    <string name="settings_app_lock">App lock</string>
+    <string name="settings_app_lock_summary">Ask for your fingerprint, face or screen lock when the app starts and after it has been in the background for more than a minute. Also hides notes from the recent-apps screen and blocks screenshots.</string>
+    <string name="settings_app_lock_needs_screen_lock">Set a screen lock on this device first</string>
+    <string name="settings_app_lock_prompt_title">Turn on app lock</string>
+    <string name="settings_app_lock_prompt_subtitle">Confirm it\'s you</string>
+
+    <!-- Import / export / print -->
+    <string name="import_failed">Couldn\'t import: %1$s</string>
+    <string name="import_too_large">The file is too large to import (over %1$d MB)</string>
+    <string name="import_not_text">That doesn\'t look like a text file</string>
+    <string name="file_open_failed">Couldn\'t open the file</string>
+    <string name="file_open_for_writing_failed">Couldn\'t open the file for writing</string>
+    <!-- %1$s: file name -->
+    <string name="file_create_failed">Couldn\'t create %1$s</string>
+    <plurals name="export_done">
+        <item quantity="one">Exported %d note</item>
+        <item quantity="other">Exported %d notes</item>
+    </plurals>
+    <!-- %1$d: notes written, %2$d: notes that failed -->
+    <plurals name="export_done_with_failures">
+        <item quantity="one">Exported %1$d note (%2$d couldn\'t be exported)</item>
+        <item quantity="other">Exported %1$d notes (%2$d couldn\'t be exported)</item>
+    </plurals>
+    <string name="export_done_single">Exported</string>
+    <string name="export_cancelled">Export cancelled</string>
+    <string name="export_failed">Export failed: %1$s</string>
+    <string name="print_job_untitled">Note</string>
+    <string name="menu_export_markdown">Export as Markdown…</string>
+    <string name="menu_export_html">Export as HTML…</string>
+    <string name="menu_export_with_images">Export with images to folder…</string>
+    <string name="menu_print">Print / save as PDF</string>
+    <string name="menu_pin">Pin to home screen</string>
+
+    <!-- Launcher shortcuts -->
+    <string name="shortcut_untitled_note">Untitled note</string>
+    <string name="shortcut_disabled_deleted">This note was deleted</string>
+    <string name="shortcut_disabled_signed_out">Signed out</string>
+
+    <!-- Update check and diagnostics (issue #22) -->
+    <!-- %1$s: version, e.g. "0.1.0" -->
+    <string name="update_available">Version %1$s is available</string>
+    <string name="update_view">View</string>
+    <string name="update_dismiss">Dismiss update notice</string>
+    <string name="settings_update_check">Check for updates</string>
+    <string name="settings_update_check_summary">Once a day, ask GitHub whether a newer release exists and show a notice in the notes list. Sends no account data. Off by default.</string>
+    <string name="settings_diagnostics">Diagnostic report</string>
+    <string name="settings_diagnostics_summary">Copies the app and Android version, device model, whether you\'re signed in and counts of cached notes and unsent drafts, for a bug report. Never includes note titles, text, your Apple ID or cookies.</string>
+    <string name="settings_diagnostics_copy">Copy diagnostic report</string>
+    <string name="settings_diagnostics_clip_label">Notes of Fruit diagnostic report</string>
+    <string name="settings_diagnostics_copied">Diagnostic report copied</string>
 
     <!--
         Home-screen widget (issue #20) and read-only documents provider

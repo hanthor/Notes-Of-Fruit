@@ -18,7 +18,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.example.applenotes.R
 
 /**
  * Shown instead of the app while the app lock is engaged. No note content
@@ -35,7 +41,7 @@ internal fun LockScreen(
     onTurnOff: () -> Unit,
 ) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(32.dp),
+        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(32.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
@@ -46,19 +52,23 @@ internal fun LockScreen(
             tint = MaterialTheme.colorScheme.primary,
         )
         Spacer(Modifier.height(16.dp))
-        Text("Notes of Fruit is locked", style = MaterialTheme.typography.titleLarge)
+        Text(
+            stringResource(R.string.lock_title),
+            style = MaterialTheme.typography.titleLarge,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.semantics { heading() },
+        )
         Spacer(Modifier.height(24.dp))
         if (canAuthenticate) {
-            Button(onClick = onUnlock) { Text("Unlock") }
+            Button(onClick = onUnlock) { Text(stringResource(R.string.lock_unlock)) }
         } else {
             Text(
-                "This device no longer has a screen lock, so the app lock can't verify you. " +
-                    "Set a screen lock in Android settings, or turn the app lock off.",
+                stringResource(R.string.lock_no_screen_lock),
                 style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(16.dp))
-            TextButton(onClick = onTurnOff) { Text("Turn off app lock") }
+            TextButton(onClick = onTurnOff) { Text(stringResource(R.string.lock_turn_off)) }
         }
     }
 }

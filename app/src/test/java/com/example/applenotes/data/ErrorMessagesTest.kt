@@ -1,8 +1,12 @@
 package com.example.applenotes.data
 
+import com.example.applenotes.R
 import com.example.applenotes.client.CloudKitErrors
 import com.example.applenotes.client.NotesError
+import com.example.applenotes.ui.common.UiText
+import com.example.applenotes.ui.common.uiText
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -17,24 +21,42 @@ class ErrorMessagesTest {
     fun serverErrorShowsAFriendlyLineWithTheBodyBehindDetails() {
         val body = """{"serverErrorCode":"INTERNAL_ERROR","reason":"Shopping list: milk"}"""
         val e = CloudKitErrors.fromHttp(500, body)!!
-        assertEquals("iCloud returned an error (HTTP 500, INTERNAL_ERROR).", userMessage(e))
+        assertEquals(uiText(R.string.error_server_with_code, 500, "INTERNAL_ERROR"), userMessage(e))
+        assertFalse(userMessage(e).toString().contains("Shopping"))
         assertTrue(errorDetails(e)!!.contains("Shopping"))
     }
 
     @Test
     fun offlineMessage() {
-        assertEquals("You're offline. Check your connection and try again.", userMessage(NotesError.Offline()))
+        assertEquals(UiText.Res(R.string.error_offline), userMessage(NotesError.Offline()))
     }
 
     @Test
     fun untypedErrorsKeepTheirMessageAndHaveNoDetails() {
-        assertEquals("HTTP 503", userMessage(RuntimeException("HTTP 503")))
+        assertEquals(UiText.Plain("HTTP 503"), userMessage(RuntimeException("HTTP 503")))
         assertNull(errorDetails(RuntimeException("HTTP 503")))
     }
 
     @Test
+    fun userFacingErrorsShowTheirTranslatedText() {
+        val text = UiText.Res(R.string.import_not_text)
+        assertEquals(text, userMessage(UserFacingIOException(text, "binary file")))
+    }
+
+    @Test
     fun throttledMessageMentionsTheWait() {
-        assertEquals("iCloud is busy right now. Try again in 5s.", userMessage(NotesError.Throttled(4_200)))
-        assertEquals("iCloud is busy right now. Try again in 2 min.", userMessage(NotesError.Throttled(90_000)))
+        // "iCloud is busy right now. Try again in 5 seconds." / "… in 2 minutes."
+        assertEquals(
+            uiText(R.string.error_throttled, UiText.Plural(R.plurals.retry_hint_seconds, 5)),
+            userMessage(NotesError.Throttled(4_200)),
+        )
+        assertEquals(
+            uiText(R.string.error_throttled, UiText.Plural(R.plurals.retry_hint_minutes, 2)),
+            userMessage(NotesError.Throttled(90_000)),
+        )
+        assertEquals(
+            uiText(R.string.error_throttled, UiText.Res(R.string.retry_hint_moment)),
+            userMessage(NotesError.Throttled(null)),
+        )
     }
 }
