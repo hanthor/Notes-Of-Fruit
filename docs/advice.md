@@ -193,8 +193,10 @@ what isn't:
   collaborative notes?) use a different shape. We refuse to operate on those —
   see `NoteBodyEditor.probe`. Read-only support would be a starting point.
 - ~~**Image attachments display as `￼`.**~~ Resolved: image attachments are
-  fetched and rendered inline; other attachment types (sketches, maps, etc.)
-  still show a placeholder card. See the status table in the README.
+  fetched (preview inline, original on tap), cached on disk and rendered
+  inline; other attachment types (sketches, maps, etc.) show Apple's preview
+  image when the record has one, else a placeholder card. See the status
+  table in the README.
 - ~~**No formatting toolbar yet.**~~ Resolved: the format toolbar (paragraph
   styles, lists, inline B/I/U/S, links) shipped.
 - **No subscription / push.** Polls when the user opens the app. Background sync,

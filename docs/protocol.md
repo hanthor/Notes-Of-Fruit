@@ -213,6 +213,22 @@ separate "Media" record. Look up the media record; its `Asset` (or
 `MediaEncrypted`) field is a CKAsset whose `value.downloadURL` is the binary's
 signed download URL. GET it with the session's cookies.
 
+The download URL is signed and expires, so it can't be a cache key. The app
+caches downloaded bytes under `cacheDir/attachments`, keyed by the owning
+record's name, the variant (`preview` / `original`) and the asset's
+`fileChecksum` when the CKAsset JSON has one, otherwise the owning record's
+`recordChangeTag` ([`data/AttachmentCache.kt`](../app/src/main/java/com/example/applenotes/data/AttachmentCache.kt)).
+
+Attachment records can also carry `PreviewImages`: thumbnails Apple
+generates for images, scans, sketches, PDFs, maps and so on. The app shows
+the preview inline and loads the original only when the image is opened full
+screen. **Not verified against a real account:** whether `PreviewImages` is a
+list of assets (`ASSETID_LIST`) or a list of references to separate preview
+records (`REFERENCE_LIST`) hasn't been recorded, so
+[`data/AttachmentAssets.kt`](../app/src/main/java/com/example/applenotes/data/AttachmentAssets.kt)
+accepts both (for references it reads the referenced record's `Asset` /
+`Media` fields). If you capture a real record, write down its shape here.
+
 ## A note on "ENCRYPTED" field names
 
 CloudKit serializes `TitleEncrypted`, `SnippetEncrypted`, and `TextDataEncrypted`

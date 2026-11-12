@@ -90,7 +90,7 @@ class NoteDetailViewModel(
      * Resolved attachment cards. For each AttrSpan with isAttachment +
      * recordName we kick off an async lookup, decode the result by attachment
      * type ("com.apple.notes.table" → table grid; "public.png/jpeg/heic" →
-     * image bytes), and feed the cache into FormattedNoteBody.
+     * image preview/original sources), and feed the cache into FormattedNoteBody.
      */
     val attachments: StateFlow<Map<String, AttachmentContent>> = _attachments.asStateFlow()
     private var attachmentsJob: Job? = null
@@ -317,13 +317,11 @@ class NoteDetailViewModel(
             val fetcher: suspend (String) -> NoteRecord? = { rn ->
                 runCatchingCancellable { repository.lookupNote(rn) }.getOrNull()
             }
-            val assetFetcher: suspend (String) -> ByteArray? = { url ->
-                runCatchingCancellable { repository.fetchAssetBytes(url) }.getOrNull()
-            }
             for (rn in recordNames) {
                 if (_attachments.value.containsKey(rn)) continue
                 val rec = fetcher(rn) ?: continue
-                val content = runCatchingCancellable { decodeAttachment(rec, assetFetcher, fetcher) }
+                // Image bytes are downloaded (and cached) when shown, not here.
+                val content = runCatchingCancellable { decodeAttachment(rec, fetcher) }
                     .onFailure { Log.w(TAG, "decodeAttachment failed for $rn", it) }
                     .getOrNull()
                 if (content != null) {

@@ -13,8 +13,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
+import com.example.applenotes.data.ImageSource
 import com.example.applenotes.proto.NoteBodyEditor.AttrSpan
 import com.example.applenotes.ui.detail.AttachmentContent
+import com.example.applenotes.ui.detail.AttachmentImageLoader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -28,17 +30,25 @@ internal class NoteSnapshot(
     val text: String,
     /** Attribute runs over [text]. */
     val spans: List<AttrSpan>,
-    /** Image attachments already downloaded by the editor, by attachment recordName. */
-    val images: Map<String, ExportImage>,
+    /**
+     * Image attachments by attachment recordName: the original image when
+     * known, else its preview. Downloaded (or read from the attachment
+     * cache) only when an export needs them; see [loadImages].
+     */
+    val imageSources: Map<String, ImageSource>,
 ) {
+    /** The images' bytes; ones that can't be downloaded are left out (they export as placeholders). */
+    suspend fun loadImages(load: suspend (ImageSource) -> ByteArray?): Map<String, ExportImage> =
+        imageSources.mapNotNull { (rn, source) -> load(source)?.let { rn to ExportImage(it) } }.toMap()
+
     companion object {
         fun of(title: String, text: String, spans: List<AttrSpan>, attachments: Map<String, AttachmentContent>) =
             NoteSnapshot(
                 title = title,
                 text = text,
                 spans = spans,
-                images = attachments.mapNotNull { (rn, c) ->
-                    (c as? AttachmentContent.Image)?.let { rn to ExportImage(it.bytes) }
+                imageSources = attachments.mapNotNull { (rn, c) ->
+                    (c as? AttachmentContent.Image)?.let { rn to it.full }
                 }.toMap(),
             )
     }
@@ -57,6 +67,8 @@ internal class NoteExportActions(
 internal fun rememberNoteExportActions(snapshot: () -> NoteSnapshot): NoteExportActions {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val imageLoader = remember(context) { AttachmentImageLoader.get(context) }
+    suspend fun images(s: NoteSnapshot) = s.loadImages { imageLoader.bytes(it) }
     // Keeps the print WebView alive until the print dialog has its adapter.
     val printView = remember { mutableStateOf<WebView?>(null) }
 
@@ -68,7 +80,7 @@ internal fun rememberNoteExportActions(snapshot: () -> NoteSnapshot): NoteExport
         scope.launch {
             val result = runCatching {
                 withContext(Dispatchers.IO) {
-                    val refs = if (format == ExportFormat.HTML) s.images.mapValues { dataUri(it.value) } else emptyMap()
+                    val refs = if (format == ExportFormat.HTML) images(s).mapValues { dataUri(it.value) } else emptyMap()
                     SafIo.writeText(context.contentResolver, uri, renderNoteForExport(format, s.title, s.text, s.spans, refs))
                 }
             }
@@ -88,7 +100,7 @@ internal fun rememberNoteExportActions(snapshot: () -> NoteSnapshot): NoteExport
         val s = snapshot()
         scope.launch {
             val result = runCatching {
-                withContext(Dispatchers.IO) { writeWithImages(context, tree, s) }
+                withContext(Dispatchers.IO) { writeWithImages(context, tree, s, images(s)) }
             }
             result.onFailure { Log.w(TAG, "export with images failed", it) }
             toast(if (result.isSuccess) "Exported" else "Export failed: ${result.exceptionOrNull()?.message}")
@@ -111,17 +123,21 @@ internal fun rememberNoteExportActions(snapshot: () -> NoteSnapshot): NoteExport
             exportWithImages = { treeLauncher.launch(null) },
             print = {
                 val s = snapshot()
-                val refs = s.images.mapValues { dataUri(it.value) }
-                val html = NoteHtml.document(s.title, s.text, s.spans) { span ->
-                    span.attachmentRecordName?.let { refs[it] }?.let { "<img src=\"${NoteHtml.escape(it)}\" alt=\"image\">" }
+                scope.launch {
+                    val html = withContext(Dispatchers.IO) {
+                        val refs = images(s).mapValues { dataUri(it.value) }
+                        NoteHtml.document(s.title, s.text, s.spans) { span ->
+                            span.attachmentRecordName?.let { refs[it] }?.let { "<img src=\"${NoteHtml.escape(it)}\" alt=\"image\">" }
+                        }
+                    }
+                    printView.value = NotePrinter.print(context, s.title.ifBlank { "Note" }, html)
                 }
-                printView.value = NotePrinter.print(context, s.title.ifBlank { "Note" }, html)
             },
         )
     }
 }
 
-private fun writeWithImages(context: Context, tree: Uri, s: NoteSnapshot) {
+private fun writeWithImages(context: Context, tree: Uri, s: NoteSnapshot, images: Map<String, ExportImage>) {
     val resolver = context.contentResolver
     val dir = SafIo.treeDocument(tree)
     val names = ExportFileNames()
@@ -129,7 +145,7 @@ private fun writeWithImages(context: Context, tree: Uri, s: NoteSnapshot) {
     val base = noteName.removeSuffix(".${ExportFormat.MARKDOWN.extension}")
     val refs = LinkedHashMap<String, String>()
     var n = 1
-    for ((rn, image) in s.images) {
+    for ((rn, image) in images) {
         val imageName = names.next("$base image ${n++}", image.extension)
         SafIo.createFile(resolver, dir, imageName, image.mimeType, image.bytes)
         refs[rn] = imageName

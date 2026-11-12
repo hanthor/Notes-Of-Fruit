@@ -91,8 +91,8 @@ you can't say you weren't warned.
 | Delete | Uses CloudKit `forceDelete`; Mac surfaces as "Recently Deleted" (server-managed, not a hard wipe) |
 | Format display (paragraph styles + inline) | Works — Title / Heading / Subheading / Body / Monospaced; Bulleted / Dashed / Numbered / Checkbox; bold / italic / underline / strikethrough; clickable links |
 | Table attachments | Decoded from `MergeableDataEncrypted` (CRDT graph), rendered as a real grid; row/column order from `crRows`/`crColumns` (synthetic-tested only) |
-| Image attachments | Fetched as CKAsset bytes from the Media reference, rendered inline |
-| Other attachments (sketches, maps, etc.) | Rendered as a labeled placeholder card |
+| Image attachments | Apple's preview image inline, the original (Media reference) full screen on tap with pinch-zoom; decoded off the main thread at display size; cached on disk (100 MB, LRU). HEIC needs Android 9+ |
+| Other attachments (sketches, scans, maps, etc.) | Apple's preview image with a type label when the record has one, otherwise a labeled placeholder card |
 | Format input toolbar | Works — paragraph style picker, list toggles (bullet/dash/numbered/checkbox), inline B/I/U/S, link |
 | Tap-to-toggle checkbox | Works in formatted view (auto-saves) |
 | Conflict UX | Auto-retry on CONFLICT/oplock; no concurrent-edit merge yet |
