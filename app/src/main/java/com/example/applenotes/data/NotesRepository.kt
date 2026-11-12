@@ -5,11 +5,13 @@ import com.example.applenotes.auth.DeviceIdentity
 import com.example.applenotes.client.FolderSummary
 import com.example.applenotes.client.NoteRecord
 import com.example.applenotes.client.NoteSummary
+import com.example.applenotes.client.NotesError
 import com.example.applenotes.client.extractReferenceRecordName
 import com.example.applenotes.proto.NoteAppender
 import com.example.applenotes.proto.NoteBodyEditor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -22,6 +24,11 @@ private const val TAG = "AppleNotesUi"
 
 /** Prefix of the local recordName given to a FAB-created note before its first save. */
 internal const val DRAFT_RECORD_PREFIX = "draft-"
+
+/** Retries of a throttled read before giving up (so at most 3 attempts). */
+private const val MAX_THROTTLE_RETRIES = 2
+private const val MIN_BACKOFF_MS = 500L
+private const val MAX_BACKOFF_MS = 30_000L
 
 /**
  * Application-scoped owner of the iCloud session and the cached note list.
@@ -40,7 +47,24 @@ class NotesRepository(
     private val replicaUuidLoader: suspend () -> ByteArray,
     private val externalScope: CoroutineScope,
     private val clock: () -> Long = System::currentTimeMillis,
+    connectivity: ConnectivityMonitor = AlwaysOnline,
+    /** Backoff between retries of a throttled read; a parameter so tests can skip it. */
+    private val backoff: suspend (Long) -> Unit = { delay(it) },
 ) {
+    /** Device connectivity (see [ConnectivityMonitor]); drives the offline indicator. */
+    val online: StateFlow<Boolean> = connectivity.online
+
+    private val _sessionExpired = MutableStateFlow(false)
+
+    /**
+     * True once a request failed with [NotesError.AuthExpired] and a fresh
+     * bootstrap from the cookie jar didn't fix it: the user has to sign in
+     * again. Cleared by the next successful [signIn].
+     */
+    val sessionExpired: StateFlow<Boolean> = _sessionExpired.asStateFlow()
+
+    private val sessionLock = Mutex()
+
     private val _notes = MutableStateFlow<List<NoteSummary>>(emptyList())
 
     /**
@@ -75,7 +99,64 @@ class NotesRepository(
         }
     }
 
-    private fun requireApi(): NotesApi = api ?: error("Not signed in.")
+    private fun requireApi(): NotesApi = api ?: throw NotesError.AuthExpired("Not signed in.")
+
+    /** See [AuthGateway.currentAuthToken]. */
+    fun currentAuthToken(): String? = auth.currentAuthToken()
+
+    /**
+     * Run [block] against the current session, handling the two failures a
+     * retry can fix (issue #11):
+     *
+     * - [NotesError.AuthExpired]: bootstrap a new session from the WebView
+     *   cookie jar once and retry. If that bootstrap fails too, set
+     *   [sessionExpired] and rethrow, so the UI sends the user to sign in.
+     *   A request rejected for auth never reached the record, so retrying a
+     *   write is safe.
+     * - [NotesError.Throttled]: only for [idempotent] reads, wait
+     *   `retryAfter` (bounded) and retry, up to [MAX_THROTTLE_RETRIES] times.
+     *   Writes surface it to the user with a Retry action instead.
+     */
+    private suspend fun <T> withApi(idempotent: Boolean, block: suspend (NotesApi) -> T): T {
+        var current = requireApi()
+        var reauthed = false
+        var throttled = 0
+        while (true) {
+            try {
+                return block(current)
+            } catch (e: NotesError.AuthExpired) {
+                if (reauthed) {
+                    _sessionExpired.value = true
+                    throw e
+                }
+                reauthed = true
+                current = reauthenticate(current)
+            } catch (e: NotesError.Throttled) {
+                if (!idempotent || throttled >= MAX_THROTTLE_RETRIES) throw e
+                throttled++
+                val wait = (e.retryAfterMs ?: (1_000L shl throttled)).coerceIn(MIN_BACKOFF_MS, MAX_BACKOFF_MS)
+                AppLog.w(TAG, "throttled; retrying read in ${wait}ms (attempt $throttled)")
+                backoff(wait)
+            }
+        }
+    }
+
+    /**
+     * Replace [failed] with a freshly bootstrapped session. Concurrent callers
+     * that all saw the same expired session share one bootstrap.
+     */
+    private suspend fun reauthenticate(failed: NotesApi): NotesApi = sessionLock.withLock {
+        api?.takeIf { it !== failed }?.let { return@withLock it }
+        AppLog.i(TAG) { "session expired; re-bootstrapping from the cookie jar" }
+        val fresh = try {
+            auth.openSession()
+        } catch (e: NotesError.AuthExpired) {
+            _sessionExpired.value = true
+            throw e
+        }
+        api = fresh
+        fresh
+    }
 
     private suspend fun fetchNoteList(api: NotesApi): List<NoteSummary> =
         api.fetchRecents(limit = 1000)
@@ -99,16 +180,17 @@ class NotesRepository(
             }
         }
         api = newApi
+        _sessionExpired.value = false
         _notes.value = notes
         _folders.value = folders
     }
 
     /** Refetch the note list (and folder names, keeping the old ones if that lookup fails). */
     suspend fun refresh() {
-        val api = requireApi()
-        val notes = fetchNoteList(api)
+        val notes = withApi(idempotent = true) { fetchNoteList(it) }
         val folderIds = notes.mapNotNull { it.folderRecordName }.toSet()
-        val folders = runCatching { api.lookupFolders(folderIds) }.getOrElse { _folders.value }
+        val folders = runCatchingCancellable { withApi(idempotent = true) { it.lookupFolders(folderIds) } }
+            .getOrElse { _folders.value }
         _notes.value = notes
         _folders.value = folders
     }
@@ -120,9 +202,11 @@ class NotesRepository(
         _folders.value = emptyList()
     }
 
-    suspend fun lookupNote(recordName: String): NoteRecord = requireApi().lookupNote(recordName)
+    suspend fun lookupNote(recordName: String): NoteRecord =
+        withApi(idempotent = true) { it.lookupNote(recordName) }
 
-    suspend fun fetchAssetBytes(downloadUrl: String): ByteArray? = requireApi().fetchAssetBytes(downloadUrl)
+    suspend fun fetchAssetBytes(downloadUrl: String): ByteArray? =
+        withApi(idempotent = true) { it.fetchAssetBytes(downloadUrl) }
 
     /**
      * Grab a Folder CKReference from any existing note in the user-visible
@@ -135,7 +219,7 @@ class NotesRepository(
         val sample = notes.firstOrNull { it.folderRecordName == selectedFolder }
             ?: notes.firstOrNull { it.folderRecordName != TRASH_RECORD_NAME }
             ?: error("No existing note to copy folder reference from")
-        val sampleRecord = requireApi().lookupNote(sample.recordName)
+        val sampleRecord = lookupNote(sample.recordName)
         return sampleRecord.rawFields["Folder"]
             ?: error("Sample note has no Folder field")
     }
@@ -155,10 +239,13 @@ class NotesRepository(
         isPureAppend: Boolean,
         newSpans: List<NoteBodyEditor.AttrSpan>?,
     ): NoteRecord = externalScope.async {
-        doSaveNote(record, pendingFolderRef, newBody, isPureAppend, newSpans)
+        withApi(idempotent = false) { client ->
+            doSaveNote(client, record, pendingFolderRef, newBody, isPureAppend, newSpans)
+        }
     }.await()
 
     private suspend fun doSaveNote(
+        client: NotesApi,
         record: NoteRecord,
         pendingFolderRef: JsonElement?,
         newBody: String,
@@ -166,7 +253,6 @@ class NotesRepository(
         newSpans: List<NoteBodyEditor.AttrSpan>?,
     ): NoteRecord {
         val uuid = replicaUuid()
-        val client = requireApi()
         val (newTitle, newSnippet) = computeTitleAndSnippet(newBody)
 
         val updated: NoteRecord
@@ -285,8 +371,9 @@ class NotesRepository(
      */
     suspend fun deleteNote(record: NoteRecord) {
         val tag = record.recordChangeTag ?: error("Cannot delete a note that was never saved.")
-        val client = requireApi()
-        externalScope.async { client.deleteNote(record.recordName, tag) }.await()
+        externalScope.async {
+            withApi(idempotent = false) { it.deleteNote(record.recordName, tag) }
+        }.await()
         _notes.update { list -> list.filter { it.recordName != record.recordName } }
     }
 }

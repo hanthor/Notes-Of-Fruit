@@ -120,12 +120,7 @@ class AppleNotesClient(
             val (status, raw) = postJson("/records/query", payload)
             val elapsed = System.currentTimeMillis() - t0
             AppLog.i(TAG) { "fetchRecents page=$page response: HTTP $status, ${raw.length}B in ${elapsed}ms" }
-            if (status !in 200..299) {
-                AppLog.e(TAG, "fetchRecents page=$page FAILED: HTTP $status")
-                AppLog.v(TAG) { "fetchRecents page=$page FAILED body=${raw.take(800)}" }
-                error("CloudKit records/query HTTP $status: ${raw.take(800)}")
-            }
-            val parsed = LENIENT_JSON.decodeFromString(QueryResponse.serializer(), raw)
+            val parsed = parseResponse(raw, "records/query")
             val pageResults = (parsed.records ?: emptyList()).map { rec ->
                 NoteSummary(
                     recordName = rec.recordName ?: "",
@@ -184,13 +179,8 @@ class AppleNotesClient(
             }
         }
         AppLog.i(TAG) { "lookupFolders: ${recordNames.size} ids" }
-        val (status, raw) = postJson("/records/lookup", payload)
-        if (status !in 200..299) {
-            AppLog.e(TAG, "lookupFolders FAILED: HTTP $status")
-            AppLog.v(TAG) { "lookupFolders FAILED body=${raw.take(800)}" }
-            error("CloudKit folder lookup HTTP $status: ${raw.take(800)}")
-        }
-        val parsed = LENIENT_JSON.decodeFromString(QueryResponse.serializer(), raw)
+        val (_, raw) = postJson("/records/lookup", payload)
+        val parsed = parseResponse(raw, "folder lookup")
         val out = (parsed.records ?: emptyList()).mapNotNull { rec ->
             val rn = rec.recordName ?: return@mapNotNull null
             // A record can come back with serverErrorCode=NOT_FOUND if the
@@ -226,18 +216,8 @@ class AppleNotesClient(
         val (status, raw) = postJson("/records/lookup", payload)
         val elapsed = System.currentTimeMillis() - t0
         AppLog.i(TAG) { "lookupNote response: HTTP $status, ${raw.length}B in ${elapsed}ms" }
-        if (status !in 200..299) {
-            AppLog.e(TAG, "lookupNote FAILED: HTTP $status")
-            AppLog.v(TAG) { "lookupNote FAILED body=${raw.take(800)}" }
-            error("CloudKit records/lookup HTTP $status: ${raw.take(800)}")
-        }
-        val parsed = LENIENT_JSON.decodeFromString(QueryResponse.serializer(), raw)
-        val rec = parsed.records?.firstOrNull()
-            ?: error("records/lookup returned no record for $recordName")
-        rec.serverErrorCode?.let { code ->
-            AppLog.e(TAG, "lookupNote per-record error: $code reason=${rec.reason}")
-            error("lookup per-record error: $code reason=${rec.reason ?: "?"}")
-        }
+        val rec = firstRecord(parseResponse(raw, "records/lookup"), "records/lookup")
+        throwIfRecordError("lookupNote", rec)
         val record = NoteRecord(
             recordName = rec.recordName ?: recordName,
             recordType = rec.recordType,
@@ -294,12 +274,8 @@ class AppleNotesClient(
         AppLog.i(TAG) { "modifyFields: $recordName tag=$recordChangeTag fields=${fields.keys}" }
         val (status, raw) = postJson("/records/modify", payload)
         AppLog.v(TAG) { "modifyFields response: HTTP $status, body[0..400]=${raw.take(400)}" }
-        if (status !in 200..299) error("CloudKit records/modify HTTP $status: ${raw.take(800)}")
-        val parsed = LENIENT_JSON.decodeFromString(QueryResponse.serializer(), raw)
-        val rec = parsed.records?.firstOrNull() ?: error("records/modify returned no record")
-        rec.serverErrorCode?.let { code ->
-            error("modifyFields per-record error: $code reason=${rec.reason ?: "?"}")
-        }
+        val rec = firstRecord(parseResponse(raw, "records/modify"), "records/modify")
+        throwIfRecordError("modifyFields", rec)
         val record = NoteRecord(
             recordName = rec.recordName ?: recordName,
             recordType = rec.recordType,
@@ -355,7 +331,8 @@ class AppleNotesClient(
         AppLog.i(TAG) { "deleteNote: $recordName tag=$recordChangeTag" }
         val (status, raw) = postJson("/records/modify", payload)
         AppLog.v(TAG) { "deleteNote response: HTTP $status, ${raw.length}B body[0..400]=${raw.take(400)}" }
-        if (status !in 200..299) error("CloudKit deleteNote HTTP $status: ${raw.take(800)}")
+        // A per-record error (e.g. the tag is stale) must not look like success.
+        parseResponse(raw, "deleteNote").records?.firstOrNull()?.let { throwIfRecordError("deleteNote", it) }
         return raw
     }
 
@@ -435,12 +412,8 @@ class AppleNotesClient(
         AppLog.v(TAG) { "createNote: $recordName title='${title.take(40)}' body.len=${body.length}" }
         val (status, raw) = postJson("/records/modify", payload)
         AppLog.v(TAG) { "createNote response: HTTP $status, ${raw.length}B body[0..400]=${raw.take(400)}" }
-        if (status !in 200..299) error("CloudKit createNote HTTP $status: ${raw.take(800)}")
-        val parsed = LENIENT_JSON.decodeFromString(QueryResponse.serializer(), raw)
-        val rec = parsed.records?.firstOrNull() ?: error("createNote returned no record")
-        rec.serverErrorCode?.let { code ->
-            error("createNote per-record error: $code reason=${rec.reason ?: "?"}")
-        }
+        val rec = firstRecord(parseResponse(raw, "createNote"), "createNote")
+        throwIfRecordError("createNote", rec)
         val record = NoteRecord(
             recordName = rec.recordName ?: recordName,
             recordType = rec.recordType,
@@ -540,13 +513,7 @@ class AppleNotesClient(
             val elapsed = System.currentTimeMillis() - t0
             AppLog.i(TAG) { "modifyNoteBody response: HTTP $status, ${raw.length}B in ${elapsed}ms" }
             AppLog.v(TAG) { "modifyNoteBody response body[0..600]=${raw.take(600)}" }
-            if (status !in 200..299) {
-                AppLog.e(TAG, "modifyNoteBody FAILED: HTTP $status")
-                AppLog.v(TAG) { "modifyNoteBody FAILED body=${raw.take(800)}" }
-                error("CloudKit records/modify HTTP $status: ${raw.take(800)}")
-            }
-            val parsed = LENIENT_JSON.decodeFromString(QueryResponse.serializer(), raw)
-            val rec = parsed.records?.firstOrNull() ?: error("records/modify returned no record")
+            val rec = firstRecord(parseResponse(raw, "records/modify"), "records/modify")
             val serverErr = rec.serverErrorCode
             if (serverErr != null) {
                 val isConflict = serverErr == "CONFLICT" ||
@@ -555,14 +522,13 @@ class AppleNotesClient(
                     AppLog.w(TAG, "modifyNoteBody CONFLICT (oplock) — refetching tag and retrying. reason=${rec.reason}")
                     val fresh = lookupNote(recordName)
                     val newTag = fresh.recordChangeTag
-                        ?: error("modifyNoteBody refetch returned no recordChangeTag for $recordName")
+                        ?: throw NotesError.Decode("refetch returned no recordChangeTag")
                     tag = newTag
                     replicaB64 = fresh.stringField("ReplicaIDToNotesVersionDataEncrypted") ?: replicaB64
                     AppLog.i(TAG) { "modifyNoteBody retry with fresh tag=$tag" }
                     continue
                 }
-                AppLog.e(TAG, "modifyNoteBody per-record error: $serverErr reason=${rec.reason}")
-                error("modifyNoteBody per-record error: $serverErr reason=${rec.reason ?: "?"}")
+                throwIfRecordError("modifyNoteBody", rec)
             }
             // Success — fall through to record handling below.
             return finishModifyNoteBody(recordName, rec, newTextDataEncryptedB64)
@@ -654,6 +620,11 @@ class AppleNotesClient(
         }
     }
 
+    /**
+     * POST to the private Notes database. Returns (status, body) for a 2xx
+     * answer; anything else is thrown as a [NotesError] (non-2xx status via
+     * [CloudKitErrors.fromHttp], I/O failures as [NotesError.Offline]).
+     */
     private suspend fun postJson(relPath: String, payload: JsonObject): Pair<Int, String> {
         val url = buildString {
             append(session.ckdatabasewsUrl)
@@ -666,17 +637,50 @@ class AppleNotesClient(
             append("&clientId=").append(session.clientId)
             append("&dsid=").append(session.dsid)
         }
-        val response = httpClient.post(url) {
-            headers {
-                append(HttpHeaders.Cookie, session.cookieHeader)
-                append(HttpHeaders.Origin, "https://www.icloud.com")
-                append(HttpHeaders.Referrer, "https://www.icloud.com/")
-                append(HttpHeaders.UserAgent, USER_AGENT)
+        val (status, raw, retryAfter) = try {
+            val response = httpClient.post(url) {
+                headers {
+                    append(HttpHeaders.Cookie, session.cookieHeader)
+                    append(HttpHeaders.Origin, "https://www.icloud.com")
+                    append(HttpHeaders.Referrer, "https://www.icloud.com/")
+                    append(HttpHeaders.UserAgent, USER_AGENT)
+                }
+                contentType(ContentType.Application.Json)
+                setBody(LENIENT_JSON.encodeToString(JsonObject.serializer(), payload))
             }
-            contentType(ContentType.Application.Json)
-            setBody(LENIENT_JSON.encodeToString(JsonObject.serializer(), payload))
+            Triple(response.status.value, response.body<String>(), response.headers[HttpHeaders.RetryAfter])
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
+        } catch (e: Throwable) {
+            val mapped = CloudKitErrors.fromThrowable(e)
+            AppLog.w(TAG, "$relPath failed before an HTTP answer", mapped)
+            throw mapped
         }
-        return response.status.value to response.body<String>()
+        CloudKitErrors.fromHttp(status, raw, retryAfter)?.let { err ->
+            AppLog.e(TAG, "$relPath FAILED: HTTP $status -> ${err.javaClass.simpleName}")
+            AppLog.v(TAG) { "$relPath FAILED body=${raw.take(800)}" }
+            throw err
+        }
+        return status to raw
+    }
+
+    private fun parseResponse(raw: String, what: String): QueryResponse = try {
+        LENIENT_JSON.decodeFromString(QueryResponse.serializer(), raw)
+    } catch (e: kotlinx.serialization.SerializationException) {
+        throw NotesError.Decode("$what: malformed JSON", details = raw.take(4000), cause = e)
+    } catch (e: IllegalArgumentException) {
+        throw NotesError.Decode("$what: malformed JSON", details = raw.take(4000), cause = e)
+    }
+
+    private fun firstRecord(parsed: QueryResponse, what: String): RecordSummary =
+        parsed.records?.firstOrNull() ?: throw NotesError.Decode("$what returned no record")
+
+    /** Throw the typed error for a per-record `serverErrorCode`, if there is one. */
+    private fun throwIfRecordError(label: String, rec: RecordSummary) {
+        val code = rec.serverErrorCode ?: return
+        val err = CloudKitErrors.fromRecord(code, rec.reason, rec.retryAfter)
+        AppLog.e(TAG, "$label per-record error: $code -> ${err.javaClass.simpleName}")
+        throw err
     }
 }
 
@@ -768,4 +772,6 @@ private data class RecordSummary(
     val modified: JsonElement? = null,
     val serverErrorCode: String? = null,
     val reason: String? = null,
+    /** Seconds; CloudKit sets it on THROTTLED / TRY_AGAIN_LATER errors. */
+    val retryAfter: Long? = null,
 )

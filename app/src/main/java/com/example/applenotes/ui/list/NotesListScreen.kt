@@ -55,7 +55,8 @@ import com.example.applenotes.data.TRASH_RECORD_NAME
 import com.example.applenotes.ui.ListAction
 import com.example.applenotes.ui.common.MessageSnackbarEffect
 import com.example.applenotes.ui.common.UiMessage
-import androidx.compose.material3.SnackbarHost
+import com.example.applenotes.ui.common.AppSnackbarHost
+import com.example.applenotes.ui.common.OfflineBanner
 import androidx.compose.material3.SnackbarHostState
 import com.example.applenotes.ui.common.humanRelative
 import kotlinx.coroutines.launch
@@ -74,6 +75,7 @@ internal fun NotesListScreen(
     message: UiMessage<ListAction>? = null,
     onMessageAction: (UiMessage<ListAction>) -> Unit = {},
     onMessageDismissed: (UiMessage<ListAction>) -> Unit = {},
+    offline: Boolean = false,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     val snackbarHostState = remember { SnackbarHostState() }
@@ -130,7 +132,7 @@ internal fun NotesListScreen(
     ) {
     Scaffold(
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = { AppSnackbarHost(snackbarHostState) },
         topBar = {
             LargeTopAppBar(
                 navigationIcon = {
@@ -169,6 +171,7 @@ internal fun NotesListScreen(
         },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+            if (offline) OfflineBanner()
             // Search bar
             OutlinedTextField(
                 value = query,

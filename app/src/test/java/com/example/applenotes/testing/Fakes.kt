@@ -69,6 +69,9 @@ class FakeNotesApi : NotesApi {
     /** Operation name ("modifyNoteBody", "lookupNote", ...) → error to throw on its next call. */
     val failNext = mutableMapOf<String, Throwable>()
 
+    /** Operation name → errors to throw on the next calls, in order (after [failNext]). */
+    val failQueue = mutableMapOf<String, ArrayDeque<Throwable>>()
+
     /** Operation name → gate the next call waits on (to test races). */
     val gates = mutableMapOf<String, CompletableDeferred<Unit>>()
 
@@ -97,6 +100,7 @@ class FakeNotesApi : NotesApi {
         calls += op
         gates.remove(op)?.await()
         failNext.remove(op)?.let { throw it }
+        failQueue[op]?.removeFirstOrNull()?.let { throw it }
     }
 
     override suspend fun fetchRecents(limit: Int): List<NoteSummary> {
@@ -188,6 +192,9 @@ class FakeAuthGateway(private val api: NotesApi, var savedLogin: Boolean = true)
     var failOpen: Throwable? = null
     var cleared = false
 
+    /** The auth-token cookie value [currentAuthToken] reports. */
+    var authToken: String? = "token-1"
+
     override fun hasSavedLogin() = savedLogin
 
     override suspend fun openSession(): NotesApi {
@@ -195,6 +202,8 @@ class FakeAuthGateway(private val api: NotesApi, var savedLogin: Boolean = true)
         failOpen?.let { failOpen = null; throw it }
         return api
     }
+
+    override fun currentAuthToken(): String? = authToken
 
     override fun clearLogin() {
         cleared = true
@@ -214,4 +223,9 @@ class FakeAlphaGate(var acknowledged: Boolean = true) : AlphaGate {
 class MainDispatcherRule(val dispatcher: TestDispatcher = UnconfinedTestDispatcher()) : TestWatcher() {
     override fun starting(description: Description) = Dispatchers.setMain(dispatcher)
     override fun finished(description: Description) = Dispatchers.resetMain()
+}
+
+/** Connectivity the test flips by hand. */
+class FakeConnectivity(initial: Boolean = true) : com.example.applenotes.data.ConnectivityMonitor {
+    override val online = kotlinx.coroutines.flow.MutableStateFlow(initial)
 }

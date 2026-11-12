@@ -19,7 +19,10 @@ import com.example.applenotes.data.AppGraph
 import com.example.applenotes.data.NoteBody
 import com.example.applenotes.data.NotesRepository
 import com.example.applenotes.data.ReadOnlyReason
+import com.example.applenotes.client.NotesError
 import com.example.applenotes.data.decodeNoteBody
+import com.example.applenotes.data.errorDetails
+import com.example.applenotes.data.retryHint
 import com.example.applenotes.data.runCatchingCancellable
 import com.example.applenotes.data.userMessage
 import com.example.applenotes.proto.NoteBodyEditor
@@ -79,10 +82,39 @@ class NoteDetailViewModel(
     sealed interface DetailAction {
         data class RetrySave(val alsoExit: Boolean) : DetailAction
         data object RetryDelete : DetailAction
+
+        /**
+         * The session expired: go to sign-in. The screen routes this to
+         * AppViewModel.signInAgain(); the draft stays here meanwhile.
+         */
+        data object SignIn : DetailAction
     }
 
     private val _status = MutableStateFlow(Status())
     val status: StateFlow<Status> = _status.asStateFlow()
+
+    /** Device connectivity, for the offline indicator. */
+    val online: StateFlow<Boolean> = repository.online
+
+    /** Why the last save failed, when that decides what happens next. */
+    private enum class PendingRetry { NONE, WHEN_ONLINE, AFTER_SIGN_IN }
+
+    private var pendingRetry = PendingRetry.NONE
+
+    init {
+        // Back online after a save failed for lack of network: retry it
+        // once. No polling and nothing else while offline.
+        viewModelScope.launch {
+            var wasOnline = online.value
+            online.collect { now ->
+                if (now && !wasOnline && pendingRetry == PendingRetry.WHEN_ONLINE) {
+                    pendingRetry = PendingRetry.NONE
+                    if (_status.value.saveFailed && isModified) save(alsoExit = false)
+                }
+                wasOnline = now
+            }
+        }
+    }
 
     private val _attachments = MutableStateFlow<Map<String, AttachmentContent>>(emptyMap())
 
@@ -178,7 +210,18 @@ class NoteDetailViewModel(
      * "restore [openId] from saved state" (after process death).
      */
     fun open(openId: String, record: NoteRecord?, pendingFolderRef: JsonElement?) {
-        if (_status.value.openId == openId) return
+        if (_status.value.openId == openId) {
+            // Back from re-signing in after the session expired: the draft
+            // is still here; save it now.
+            if (pendingRetry == PendingRetry.AFTER_SIGN_IN && repository.isSignedIn &&
+                !repository.sessionExpired.value
+            ) {
+                pendingRetry = PendingRetry.NONE
+                if (_status.value.saveFailed && isModified) save(alsoExit = false)
+            }
+            return
+        }
+        pendingRetry = PendingRetry.NONE
         attachmentsJob?.cancel()
         _attachments.value = emptyMap()
         if (record == null) {
@@ -381,8 +424,8 @@ class NoteDetailViewModel(
     private var queuedSave: Pair<String, Boolean>? = null
     private var messageCounter = 0L
 
-    private fun message(text: String, action: DetailAction?) =
-        UiMessage(++messageCounter, text, action)
+    private fun message(text: String, action: DetailAction?, details: String? = null) =
+        UiMessage(++messageCounter, text, action, details = details)
 
     /** Update [status] only if [openId] is still the open note. */
     private inline fun updateIfOpen(openId: String, f: (Status) -> Status) {
@@ -434,6 +477,7 @@ class NoteDetailViewModel(
                 record?.recordName == rec.recordName
             result.onSuccess { updated ->
                 if (!stillHere) return@onSuccess
+                pendingRetry = PendingRetry.NONE
                 // Did the user keep typing while the save was in flight?
                 val changedSince = fullBodyForSave != newBody || spansDraft != spans
                 load(updated, null, draft = null, keepCurrentDraft = changedSince)
@@ -449,22 +493,55 @@ class NoteDetailViewModel(
             }.onFailure { e ->
                 AppLog.e(TAG, "save failed", e)
                 if (!stillHere) return@onFailure
+                val retry = DetailAction.RetrySave(alsoExit || queuedExit == true)
+                pendingRetry = when (e) {
+                    is NotesError.Offline -> PendingRetry.WHEN_ONLINE
+                    is NotesError.AuthExpired -> PendingRetry.AFTER_SIGN_IN
+                    else -> PendingRetry.NONE
+                }
                 _status.update {
                     it.copy(
                         saving = false,
                         saveFailed = true,
-                        message = message(
-                            "Couldn't save: ${userMessage(e)}",
-                            DetailAction.RetrySave(alsoExit || queuedExit == true),
-                        ),
+                        message = saveFailureMessage(e, retry),
                     )
                 }
             }
         }
     }
 
-    /** Lifecycle ON_PAUSE auto-save (best effort, not navigating). */
+    /**
+     * What to tell the user when a save failed. Every branch is true at that
+     * point: the draft is still in this ViewModel and its SavedStateHandle
+     * (on-disk drafts are not implemented yet, so "on this device" means
+     * "in the app", which survives rotation and process death).
+     */
+    private fun saveFailureMessage(e: Throwable, retry: DetailAction.RetrySave): UiMessage<DetailAction> =
+        when (e) {
+            is NotesError.Offline -> message(
+                "You're offline. Your changes are kept on this device until you retry.",
+                retry,
+                details = errorDetails(e),
+            )
+            is NotesError.AuthExpired -> UiMessage(
+                ++messageCounter,
+                "Your iCloud session expired. Your changes are kept; sign in again to save them.",
+                DetailAction.SignIn,
+                actionLabel = "Sign in",
+                details = errorDetails(e),
+            )
+            is NotesError.Throttled -> message(
+                "iCloud is busy, so your changes weren't saved yet. They're kept here." +
+                    retryHint(e.retryAfterMs),
+                retry,
+                details = errorDetails(e),
+            )
+            else -> message("Couldn't save: ${userMessage(e)}", retry, details = errorDetails(e))
+        }
+
+    /** Lifecycle ON_PAUSE auto-save (best effort, not navigating). Skipped while offline. */
     fun autoSave() {
+        if (!online.value) return
         if (isModified && !isReadOnly && !_status.value.saving) save(alsoExit = false)
     }
 
@@ -489,7 +566,11 @@ class NoteDetailViewModel(
                     updateIfOpen(openId) {
                         it.copy(
                             deleting = false,
-                            message = message("Couldn't delete: ${userMessage(e)}", DetailAction.RetryDelete),
+                            message = message(
+                                "Couldn't delete: ${userMessage(e)}",
+                                DetailAction.RetryDelete,
+                                details = errorDetails(e),
+                            ),
                         )
                     }
                 }
@@ -501,6 +582,8 @@ class NoteDetailViewModel(
         when (val a = m.action) {
             is DetailAction.RetrySave -> save(alsoExit = a.alsoExit)
             DetailAction.RetryDelete -> delete()
+            // Navigation is the screen's job (see NoteDetailScreen's onSignIn).
+            DetailAction.SignIn -> Unit
             null -> Unit
         }
     }
@@ -513,6 +596,7 @@ class NoteDetailViewModel(
     fun close() {
         attachmentsJob?.cancel()
         queuedSave = null
+        pendingRetry = PendingRetry.NONE
         _status.value = Status()
         record = null
         pendingFolderRef = null

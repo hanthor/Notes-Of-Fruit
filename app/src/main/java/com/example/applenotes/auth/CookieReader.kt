@@ -23,6 +23,20 @@ class CookieReader {
         }.toMap()
     }
 
+    /**
+     * Store `Set-Cookie` header values from a setup.icloud.com response in
+     * the WebView jar, as a browser would, so a refreshed session token is
+     * seen by the next bootstrap and by the sign-in WebView.
+     */
+    fun storeSetCookies(setCookieHeaders: List<String>) {
+        if (setCookieHeaders.isEmpty()) return
+        val mgr = CookieManager.getInstance()
+        // Set against the host that sent them, so the cookies keep the
+        // scope the server gave them (Domain=.icloud.com reaches www).
+        for (h in setCookieHeaders) mgr.setCookie("https://setup.icloud.com", h)
+        mgr.flush()
+    }
+
     fun clearAuthCookies() {
         val mgr = CookieManager.getInstance()
         mgr.removeAllCookies(null)

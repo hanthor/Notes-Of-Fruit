@@ -39,16 +39,21 @@ fun AppleNotesApp() {
     val screen by appVm.screen.collectAsStateWithLifecycle()
     when (val s = screen) {
         AppScreen.Splash -> CenteredSpinner("Starting up…")
-        AppScreen.Login -> LoginScreen(onCookiesArrived = appVm::onCookiesArrived)
+        AppScreen.Login -> {
+            val staleToken by appVm.loginStaleToken.collectAsStateWithLifecycle()
+            LoginScreen(onCookiesArrived = appVm::onCookiesArrived, staleToken = staleToken)
+        }
         is AppScreen.Loading -> CenteredSpinner(s.msg)
         is AppScreen.Error -> ErrorScreen(
             message = s.msg,
             onRetry = appVm::retryBootstrap,
             onSignOut = appVm::signOut,
+            details = s.details,
         )
         AppScreen.NotesList -> {
             val list by appVm.listState.collectAsStateWithLifecycle()
             val message by appVm.listMessage.collectAsStateWithLifecycle()
+            val online by appVm.online.collectAsStateWithLifecycle()
             NotesListScreen(
                 allNotes = list.notes,
                 folders = list.folders,
@@ -61,6 +66,7 @@ fun AppleNotesApp() {
                 message = message,
                 onMessageAction = appVm::onListMessageAction,
                 onMessageDismissed = appVm::onListMessageDismissed,
+                offline = !online,
             )
         }
         is AppScreen.Detail -> DetailRoute(s, appVm, detailVm)
@@ -89,5 +95,5 @@ private fun DetailRoute(
     LaunchedEffect(status.exitRequested) {
         if (status.exitRequested) leave(status.exitMessage)
     }
-    NoteDetailScreen(vm = detailVm, onBack = { leave(null) })
+    NoteDetailScreen(vm = detailVm, onBack = { leave(null) }, onSignIn = appVm::signInAgain)
 }

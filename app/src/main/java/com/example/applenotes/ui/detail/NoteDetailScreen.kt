@@ -26,7 +26,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -54,7 +53,9 @@ import com.example.applenotes.data.ReadOnlyReason
 import com.example.applenotes.ui.common.CenteredSpinner
 import androidx.compose.material3.Surface
 import androidx.compose.material.icons.filled.Lock
+import com.example.applenotes.ui.common.AppSnackbarHost
 import com.example.applenotes.ui.common.MessageSnackbarEffect
+import com.example.applenotes.ui.common.OfflineBanner
 import com.example.applenotes.ui.common.humanRelative
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -63,6 +64,8 @@ internal fun NoteDetailScreen(
     vm: NoteDetailViewModel,
     /** Leave to the list without saving (nothing to save, or the user chose to discard). */
     onBack: () -> Unit,
+    /** Go to sign-in after the session expired, keeping this note and its draft open. */
+    onSignIn: () -> Unit = {},
 ) {
     val status by vm.status.collectAsStateWithLifecycle()
     val record = vm.record
@@ -127,7 +130,16 @@ internal fun NoteDetailScreen(
     }
 
     // Save / delete failures: snackbar with Retry, the draft stays put.
-    MessageSnackbarEffect(status.message, snackbarHostState, vm::onMessageAction, vm::onMessageDismissed)
+    MessageSnackbarEffect(
+        status.message,
+        snackbarHostState,
+        onAction = { m ->
+            vm.onMessageAction(m)
+            if (m.action == NoteDetailViewModel.DetailAction.SignIn) onSignIn()
+        },
+        onDismiss = vm::onMessageDismissed,
+    )
+    val online by vm.online.collectAsStateWithLifecycle()
     var showUnsavedDialog by rememberSaveable { mutableStateOf(false) }
 
     val onBackOrSave: () -> Unit = {
@@ -155,7 +167,7 @@ internal fun NoteDetailScreen(
 
     Scaffold(
         modifier = Modifier.imePadding(),
-        snackbarHost = { SnackbarHost(snackbarHostState) },
+        snackbarHost = { AppSnackbarHost(snackbarHostState) },
         topBar = {
             Column {
                 TopAppBar(
@@ -252,6 +264,7 @@ internal fun NoteDetailScreen(
                 if (saving) {
                     LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 }
+                if (!online) OfflineBanner()
                 vm.readOnlyReason?.let { ReadOnlyBanner(it) }
             }
         },

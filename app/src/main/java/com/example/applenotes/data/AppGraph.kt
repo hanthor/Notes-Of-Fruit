@@ -47,6 +47,7 @@ object AppGraph {
         return NotesRepository(
             auth = CloudKitAuthGateway(httpClient, CookieReader()),
             replicaUuidLoader = { DeviceIdentity.getOrCreate(app) },
+            connectivity = AndroidConnectivityMonitor(app),
             // Main.immediate matches where these writes ran before the
             // refactor (the composable's scope): the proto builders are not
             // audited for thread-safety, and Ktor suspends off-thread anyway.
