@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shortcut_new_note_short">New note</string>
+    <string name="share_target_label">New note</string>
+    <string name="process_text_label">Add to Notes</string>
+    <string name="tile_new_note_label">New note</string>
+    <string name="permission_automate_label">Automate Notes of Fruit</string>
+    <string name="permission_automate_description">create notes, add text to existing notes and open notes in Notes of Fruit, which writes to your iCloud Notes</string>
+</resources>

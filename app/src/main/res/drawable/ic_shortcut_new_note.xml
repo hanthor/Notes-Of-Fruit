@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- "New note" shortcut and Quick Settings tile icon (Material "note_add" glyph).
+     The tile tints it itself, so the colour here only matters for the shortcut. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FF5F6368"
+        android:pathData="M14,2H6C4.9,2 4.01,2.9 4.01,4L4,20c0,1.1 0.89,2 1.99,2H18c1.1,0 2,-0.9 2,-2V8L14,2zM16,16h-3v3h-2v-3H8v-2h3v-3h2v3h3V16zM13,9V3.5L18.5,9H13z" />
+</vector>
