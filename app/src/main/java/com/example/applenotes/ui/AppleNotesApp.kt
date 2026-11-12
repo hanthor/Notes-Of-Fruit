@@ -39,6 +39,7 @@ import com.example.applenotes.ui.list.BulkExportProgressDialog
 import com.example.applenotes.ui.list.DrawerAction
 import com.example.applenotes.ui.list.NotesListScreen
 import com.example.applenotes.ui.login.LoginScreen
+import com.example.applenotes.ui.settings.AllowedAppsScreen
 import com.example.applenotes.ui.settings.SettingsScreen
 import androidx.compose.ui.res.stringResource
 import com.example.applenotes.R
@@ -127,7 +128,8 @@ fun AppleNotesApp() {
             details = s.details,
         )
         AppScreen.NotesList -> ListRoute(appVm, signOut)
-        AppScreen.Settings -> SettingsScreen(onBack = { appVm.showList() })
+        AppScreen.Settings -> SettingsScreen(onBack = { appVm.showList() }, onOpenAllowedApps = appVm::showAllowedApps)
+        AppScreen.AllowedApps -> AllowedAppsScreen(onBack = appVm::showSettings)
         is AppScreen.Detail -> DetailRoute(s, appVm, detailVm)
     }
 }

@@ -147,7 +147,7 @@ cli/src/main/kotlin/com/example/applenotes/cli/     (:cli, nof-cli; docs/cli.md)
 app/src/main/java/com/example/applenotes/           (:app)
 ├── NotesOfFruitApp.kt        Application: installs the CoreLog → AppLog bridge
 ├── auth/                      WebView cookie harvest, session refresh, DeviceIdentity (stores the v4 UUID!)
-├── automation/                Automation intent API (docs/automation.md): parsing, gate, receiver, OPEN_NOTE activity
+├── automation/                Automation intent API (docs/automation.md): parsing, toggle, caller identification + allow-list, receiver, activity
 ├── data/
 │   ├── NotesApi.kt           Interface over the client calls the UI uses (+ fakes in tests)
 │   ├── NotesRepository.kt    App-scoped session, cached notes/folders, sync (full / incremental), save/delete flow, outbox
@@ -177,7 +177,7 @@ app/src/main/java/com/example/applenotes/           (:app)
     │                         (AttachmentImageLoader / ImageDecoding: off-main-thread, downsampled;
     │                          AttachmentGuard: no deleting attachments; RemoteChangeWatcher)
     ├── login/                WebView sign-in
-    ├── settings/             Settings screen (automation, app lock, update check, diagnostic report)
+    ├── settings/             Settings screen (automation + allowed apps, app lock, update check, diagnostic report)
     └── common/               Shared screens, snackbar helper, alpha dialog, UiText (translatable
                               text built outside Compose)
 

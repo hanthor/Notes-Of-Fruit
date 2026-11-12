@@ -11,6 +11,9 @@ object AutomationApi {
     const val ACTION_APPEND_TO_NOTE = "io.github.hanthor.notesoffruit.action.APPEND_TO_NOTE"
     const val ACTION_OPEN_NOTE = "io.github.hanthor.notesoffruit.action.OPEN_NOTE"
 
+    /** Every action there is. No delete, overwrite or read-back, on purpose. */
+    val ACTIONS = setOf(ACTION_CREATE_NOTE, ACTION_APPEND_TO_NOTE, ACTION_OPEN_NOTE)
+
     const val EXTRA_TITLE = "title"
     const val EXTRA_TEXT = "text"
     const val EXTRA_FOLDER = "folder"
@@ -21,6 +24,13 @@ object AutomationApi {
     const val RESULT_SUCCESS = "success"
     const val RESULT_RECORD_NAME = "record_name"
     const val RESULT_ERROR = "error"
+
+    /**
+     * Activity result only: true when a CREATE/APPEND request started with
+     * [android.app.Activity.startActivityForResult] was accepted and is being
+     * saved. The outcome arrives through [EXTRA_RESULT_PENDING_INTENT].
+     */
+    const val RESULT_ACCEPTED = "accepted"
 
     /** Longest title / text accepted in one request (chars). */
     const val MAX_TEXT_CHARS = 100_000
