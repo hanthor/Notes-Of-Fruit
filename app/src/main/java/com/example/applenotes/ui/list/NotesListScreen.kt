@@ -99,6 +99,8 @@ internal fun NotesListScreen(
     searchBodies: suspend (String) -> Set<String> = { emptySet() },
     /** Two-pane mode: the recordName of the note open next to the list (issue #16). */
     selectedNote: String? = null,
+    /** Shown under the offline banner, e.g. "Version X is available" (issue #22). */
+    topBanner: @Composable () -> Unit = {},
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var bodyMatches by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -217,6 +219,7 @@ internal fun NotesListScreen(
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
             if (offline) OfflineBanner()
+            topBanner()
             SyncStatusRow(syncing = syncing && !refreshing, unsentCount = unsentCount, onRetryUnsent = onRetryUnsent)
             // Search bar
             OutlinedTextField(

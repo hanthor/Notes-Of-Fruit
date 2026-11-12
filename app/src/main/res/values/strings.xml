@@ -277,4 +277,17 @@
     <string name="shortcut_untitled_note">Untitled note</string>
     <string name="shortcut_disabled_deleted">This note was deleted</string>
     <string name="shortcut_disabled_signed_out">Signed out</string>
+
+    <!-- Update check and diagnostics (issue #22) -->
+    <!-- %1$s: version, e.g. "0.1.0" -->
+    <string name="update_available">Version %1$s is available</string>
+    <string name="update_view">View</string>
+    <string name="update_dismiss">Dismiss update notice</string>
+    <string name="settings_update_check">Check for updates</string>
+    <string name="settings_update_check_summary">Once a day, ask GitHub whether a newer release exists and show a notice in the notes list. Sends no account data. Off by default.</string>
+    <string name="settings_diagnostics">Diagnostic report</string>
+    <string name="settings_diagnostics_summary">Copies the app and Android version, device model, whether you\'re signed in and counts of cached notes and unsent drafts, for a bug report. Never includes note titles, text, your Apple ID or cookies.</string>
+    <string name="settings_diagnostics_copy">Copy diagnostic report</string>
+    <string name="settings_diagnostics_clip_label">Notes of Fruit diagnostic report</string>
+    <string name="settings_diagnostics_copied">Diagnostic report copied</string>
 </resources>

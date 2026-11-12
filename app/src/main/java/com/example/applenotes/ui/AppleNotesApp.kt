@@ -46,6 +46,10 @@ import com.example.applenotes.data.userMessage
 import com.example.applenotes.ui.common.UiText
 import com.example.applenotes.ui.common.asString
 import com.example.applenotes.ui.common.uiText
+import com.example.applenotes.diagnostics.LastOpenedNote
+import com.example.applenotes.diagnostics.NoteShape
+import com.example.applenotes.update.UpdateBanner
+import com.example.applenotes.update.UpdateViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -143,6 +147,10 @@ private fun ListRoute(
     val message by appVm.listMessage.collectAsStateWithLifecycle()
     val online by appVm.online.collectAsStateWithLifecycle()
     val exportState by exportVm.state.collectAsStateWithLifecycle()
+    // Opt-in update check (issue #22): once per process, at most daily.
+    val updateVm: UpdateViewModel = viewModel(factory = UpdateViewModel.factory(context))
+    val update by updateVm.available.collectAsStateWithLifecycle()
+    LaunchedEffect(Unit) { updateVm.checkOnLaunch() }
 
     // Refresh when the list comes back to the foreground (throttled in the ViewModel; issue #12).
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -198,6 +206,7 @@ private fun ListRoute(
         // the list, it is left (and saved) first.
         onSelect = appVm::selectNote,
         selectedNote = openNote,
+        topBanner = { update?.let { UpdateBanner(it, onDismiss = updateVm::dismiss) } },
         onRefresh = appVm::refresh,
         onCreateNote = appVm::requestCreateNote,
         onSignOut = signOut,
@@ -249,6 +258,10 @@ private fun DetailRoute(
     }
     // Recent-note launcher shortcuts: saved notes only, title only.
     val record = detailVm.record
+    // Counts only, for "Copy diagnostic report" (issue #22).
+    LaunchedEffect(record?.recordName, record?.recordChangeTag) {
+        if (record != null) LastOpenedNote.shape = withContext(Dispatchers.Default) { NoteShape.of(record) }
+    }
     LaunchedEffect(record?.recordName, record?.recordChangeTag != null) {
         if (record != null && record.recordChangeTag != null) {
             NoteShortcuts.reportOpened(context, record.recordName, detailVm.titleDraft)

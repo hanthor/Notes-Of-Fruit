@@ -34,7 +34,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
 import com.example.applenotes.R
+import androidx.compose.material3.OutlinedButton
 import com.example.applenotes.automation.AutomationSettings
+import com.example.applenotes.diagnostics.copyDiagnosticReport
+import com.example.applenotes.update.PrefsUpdateStore
 
 /** Minimal settings: the automation API toggle and the app lock (both off by default). */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -43,6 +46,8 @@ internal fun SettingsScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val settings = remember { AutomationSettings(context) }
     var automationEnabled by remember { mutableStateOf(settings.isEnabled()) }
+    val updateStore = remember { PrefsUpdateStore(context) }
+    var updateCheckEnabled by remember { mutableStateOf(updateStore.enabled) }
     BackHandler(onBack = onBack)
     Scaffold(
         topBar = {
@@ -80,6 +85,27 @@ internal fun SettingsScreen(onBack: () -> Unit) {
             )
             Spacer(Modifier.padding(top = 24.dp))
             AppLockRow()
+            Spacer(Modifier.padding(top = 24.dp))
+            // Issue #22: opt-in, off by default; debug builds never check.
+            SettingsSwitchRow(
+                title = stringResource(R.string.settings_update_check),
+                summary = stringResource(R.string.settings_update_check_summary),
+                checked = updateCheckEnabled,
+                onCheckedChange = {
+                    updateStore.enabled = it
+                    updateCheckEnabled = it
+                },
+            )
+            Spacer(Modifier.padding(top = 24.dp))
+            Text(stringResource(R.string.settings_diagnostics), style = MaterialTheme.typography.titleMedium)
+            Text(
+                stringResource(R.string.settings_diagnostics_summary),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(onClick = { copyDiagnosticReport(context) }, modifier = Modifier.padding(top = 8.dp)) {
+                Text(stringResource(R.string.settings_diagnostics_copy))
+            }
         }
     }
 }
