@@ -109,6 +109,7 @@ object NoteAppender {
     // AttributeRun fields (a tiny subset; see /tmp/apple-notes-real.proto for full schema)
     private const val FIELD_ATTR_LENGTH = 1
     private const val FIELD_ATTR_FONT = 3
+    private const val ATTACHMENT_CHAR = '\uFFFC'
     private const val FIELD_ATTR_ATTACHMENT = 12 // attachment_info {uuid, uti} on a U+FFFC
     private const val FIELD_FONT_NAME = 1
     private const val FIELD_FONT_POINT_SIZE = 2
@@ -798,17 +799,39 @@ object NoteAppender {
                     for (k in 0 until 8) u[8 + k] = ((r.leastSignificantBits shr (56 - k * 8)) and 0xFF).toByte()
                 }
         }
+        // Attachment identity follows the text, not the spans: only a U+FFFC
+        // can be an attachment (a span that says otherwise, e.g. copied onto
+        // typed chars, would mint a second run pointing at the same record),
+        // and a U+FFFC whose source run has attachment_info keeps it even if
+        // the spans forgot it (stripping it would orphan the attachment).
+        val templateAttachment = HashMap<Int, NoteBodyEditor.AttrSpan?>()
+        fun attachmentOfTemplate(t: Int): NoteBodyEditor.AttrSpan? = if (t < 0) null else
+            templateAttachment.getOrPut(t) {
+                runCatching { NoteBodyEditor.decodeRunPayload(templates[t]) }.getOrNull()?.takeIf { it.isAttachment }
+            }
+        fun effectiveSpan(span: NoteBodyEditor.AttrSpan, c: Char, t: Int): NoteBodyEditor.AttrSpan = when {
+            c != ATTACHMENT_CHAR && span.isAttachment ->
+                span.copy(isAttachment = false, attachmentRecordName = null, attachmentType = null)
+            c == ATTACHMENT_CHAR && !span.isAttachment -> attachmentOfTemplate(t)?.let {
+                span.copy(isAttachment = true, attachmentRecordName = it.attachmentRecordName, attachmentType = it.attachmentType)
+            } ?: span
+            else -> span
+        }
         val out = ArrayList<ProtobufWire.Field>()
         var i = 0
         while (i < text.length) {
             val s = spanOf[i]
             val t = charRun[i]
             val isCheckbox = coalesced[s].style == NoteBodyEditor.ParagraphStyle.CHECKBOX_LIST
+            fun isAttachmentAt(k: Int) = text[k] == ATTACHMENT_CHAR && effectiveSpan(coalesced[spanOf[k]], text[k], charRun[k]).isAttachment
+            val isObject = isAttachmentAt(i)
             var j = i + 1
             while (j < text.length && spanOf[j] == s && charRun[j] == t &&
-                (!isCheckbox || paraOf[j] == paraOf[i])
+                (!isCheckbox || paraOf[j] == paraOf[i]) &&
+                // An attachment's run covers its U+FFFC and nothing else.
+                !isObject && !isAttachmentAt(j)
             ) j++
-            val span = coalesced[s].copy(length = j - i)
+            val span = effectiveSpan(coalesced[s], text[i], t).copy(length = j - i)
             out.add(
                 NoteBodyEditor.mergeSpanIntoAttributeRun(
                     span,
