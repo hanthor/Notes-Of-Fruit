@@ -129,6 +129,8 @@ app/src/main/java/com/example/applenotes/
 ├── log/AppLog.kt              The only logcat access; release builds log no note content
 ├── security/                 Optional app lock: policy (timeout), DataStore toggle, BiometricPrompt, lock screen
 ├── sync/                     DraftSyncer (+ WorkManager DraftSyncWorker): background saves of unsent drafts
+├── update/                   Opt-in daily GitHub release check (own HTTP client, no cookies) + list banner
+├── diagnostics/              "Copy diagnostic report": versions + counts only, never note content
 ├── proto/
 │   ├── ProtobufWire.kt       Hand-rolled protobuf wire format (no schema dep)
 │   ├── Gzip.kt               gzip + zlib detect/compress/decompress
@@ -137,15 +139,16 @@ app/src/main/java/com/example/applenotes/
 │   ├── NoteCreator.kt        Build proto for a fresh note
 │   └── MergeableDataDecoder.kt  Table attachments (MergeableData CRDT graph)
 └── ui/
-    ├── AppleNotesApp.kt      Screen switch
-    ├── AppViewModel.kt       Navigation, sign-in, list, folder selection
+    ├── AppleNotesApp.kt      Screen switch (one pane, or list + note side by side ≥ 840 dp: TwoPane.kt)
+    ├── AppViewModel.kt       Navigation, sign-in, list, folder selection, two-pane note switching
     ├── list/                 Notes list + folder drawer
     ├── detail/               NoteDetailViewModel, editor, formatting toolbar, attachments
     │                         (AttachmentImageLoader / ImageDecoding: off-main-thread, downsampled;
     │                          AttachmentGuard: no deleting attachments; RemoteChangeWatcher)
     ├── login/                WebView sign-in
-    ├── settings/             Settings screen (automation toggle, app lock)
-    └── common/               Shared screens, snackbar helper, alpha dialog
+    ├── settings/             Settings screen (automation, app lock, update check, diagnostic report)
+    └── common/               Shared screens, snackbar helper, alpha dialog, UiText (translatable
+                              text built outside Compose)
 
 app/src/debug/java/com/example/applenotes/
 └── debug/DebugReceiver.kt    Broadcast-driven CLI for testing without UI (debug builds only)
