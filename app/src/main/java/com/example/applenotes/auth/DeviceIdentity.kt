@@ -5,7 +5,6 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.first
-import java.security.SecureRandom
 
 private val Context.deviceIdentityStore by preferencesDataStore("device_identity")
 
@@ -46,35 +45,12 @@ object DeviceIdentity {
         return fresh
     }
 
-    /**
-     * Generate a properly-formatted v4 (random) UUID per RFC 4122 §4.4.
-     * Sets byte 6's high nibble to 0x4 (version=4) and byte 8's high two
-     * bits to 0b10 (variant=DCE/RFC 4122). Apple Notes requires v4.
-     */
-    private fun generateV4Uuid(): ByteArray {
-        val bytes = ByteArray(16).also { SecureRandom().nextBytes(it) }
-        bytes[6] = ((bytes[6].toInt() and 0x0F) or 0x40).toByte()  // version = 4
-        bytes[8] = ((bytes[8].toInt() and 0x3F) or 0x80).toByte()  // variant = 10
-        return bytes
-    }
+    // The pure UUID helpers live in :core (auth/ReplicaUuid.kt).
+    private fun generateV4Uuid(): ByteArray = ReplicaUuid.generateV4()
 
-    private fun isValidV4(bytes: ByteArray): Boolean {
-        if (bytes.size != 16) return false
-        val versionNibble = (bytes[6].toInt() ushr 4) and 0x0F
-        val variantBits = (bytes[8].toInt() ushr 6) and 0x03
-        return versionNibble == 4 && variantBits == 0b10
-    }
+    private fun isValidV4(bytes: ByteArray): Boolean = ReplicaUuid.isValidV4(bytes)
 
-    fun hexEncode(b: ByteArray): String =
-        b.joinToString("") { ((it.toInt() and 0xFF) + 0x100).toString(16).substring(1) }
+    fun hexEncode(b: ByteArray): String = ReplicaUuid.hexEncode(b)
 
-    private fun hexDecode(s: String): ByteArray {
-        val out = ByteArray(s.length / 2)
-        for (i in out.indices) {
-            val hi = Character.digit(s[i * 2], 16)
-            val lo = Character.digit(s[i * 2 + 1], 16)
-            out[i] = ((hi shl 4) or lo).toByte()
-        }
-        return out
-    }
+    private fun hexDecode(s: String): ByteArray = ReplicaUuid.hexDecode(s)
 }

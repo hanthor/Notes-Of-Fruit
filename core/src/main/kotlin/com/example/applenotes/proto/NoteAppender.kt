@@ -1,6 +1,6 @@
 package com.example.applenotes.proto
 
-import com.example.applenotes.log.AppLog
+import com.example.applenotes.log.CoreLog
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -151,20 +151,20 @@ object NoteAppender {
         val compressed = Base64.decode(textDataEncryptedB64)
         val format = Gzip.detect(compressed)
         val proto = Gzip.decompress(compressed)
-        AppLog.v(TAG) { "appendBase64 IN: textLen=${text.length} protoLen=${proto.size} format=$format strategy=$strategy" }
-        AppLog.v(TAG) { "appendBase64 IN  proto: ${NoteBodyEditor.summarize(proto)}" }
+        CoreLog.v(TAG) { "appendBase64 IN: textLen=${text.length} protoLen=${proto.size} format=$format strategy=$strategy" }
+        CoreLog.v(TAG) { "appendBase64 IN  proto: ${NoteBodyEditor.summarize(proto)}" }
         val newProto = when (strategy) {
             Strategy.APPEND -> appendBytes(proto, ourReplicaUuid, text, nowEpochSec)
             Strategy.REWRITE_TOMBSTONE -> rewriteWithTombstoneBytes(proto, ourReplicaUuid, text, nowEpochSec)
         }
-        AppLog.v(TAG) { "appendBase64 OUT proto: ${NoteBodyEditor.summarize(newProto)}" }
+        CoreLog.v(TAG) { "appendBase64 OUT proto: ${NoteBodyEditor.summarize(newProto)}" }
         // CRITICAL: round-trip in the SAME compression format we read. iCloud.com
         // uses zlib for short notes, gzip for older / longer ones. Mac probably
         // doesn't care which (it auto-detects too), but matching the input shape
         // means our writes look indistinguishable from Apple's own writes.
         val newCompressed = Gzip.compress(newProto, format)
         val newB64 = Base64.encode(newCompressed)
-        AppLog.v(TAG) { "appendBase64 OUT: protoLen=${newProto.size} b64Len=${newB64.length}" }
+        CoreLog.v(TAG) { "appendBase64 OUT: protoLen=${newProto.size} b64Len=${newB64.length}" }
         return newB64
     }
 
@@ -348,7 +348,7 @@ object NoteAppender {
         for (newSlot in 2..totalSlots) {
             savedByNewSlot[newSlot]?.let { vtFields.add(it) }
         }
-        AppLog.v(TAG) {
+        CoreLog.v(TAG) {
             "promoted ourselves to slot 1: oldSlot=$oldOurSlot remap=$replicaRemap " +
                 "ourCharIDClock=$ourCharIDClock ourTimestampClock=$ourTimestampClock " +
                 "(maxDocCharID=$maxDocCharIDClock maxDocTimestamp=$maxDocTimestampClock isFirstEdit=$isFirstEdit)"
@@ -434,7 +434,7 @@ object NoteAppender {
             tombstone = false,
             children = listOf(newSentinelArrayIdx),
         )
-        AppLog.v(TAG) {
+        CoreLog.v(TAG) {
             "topo: ourReplica=$ourReplicaID ourCharIDClock=$ourCharIDClock " +
                 "ourTimestampClock=$ourTimestampClock n=$n " +
                 "ourArrayIdx=$ourArrayIdx (taking old sentinel slot) " +
@@ -520,7 +520,7 @@ object NoteAppender {
                 lastAttrRunNoteFieldIdx + 1,
                 ProtobufWire.Field(FIELD_STRING_ATTRIBUTE_RUN, ProtobufWire.WIRE_LENGTH_DELIM, ProtobufWire.encode(runFields)),
             )
-            AppLog.v(TAG) { "last attribute_run is an attachment; added new run length=$n after it" }
+            CoreLog.v(TAG) { "last attribute_run is an attachment; added new run length=$n after it" }
         } else if (lastAttrRunNoteFieldIdx >= 0) {
             val runFields = ProtobufWire.decode(stringFields[lastAttrRunNoteFieldIdx].payload).toMutableList()
             val lengthIdx = runFields.indexOfFirst {
@@ -529,10 +529,10 @@ object NoteAppender {
             if (lengthIdx >= 0) {
                 val oldLength = ProtobufWire.decodeVarint(runFields[lengthIdx])
                 runFields[lengthIdx] = ProtobufWire.encodeVarintField(FIELD_ATTR_LENGTH, oldLength + n)
-                AppLog.v(TAG) { "extended last attribute_run length: $oldLength -> ${oldLength + n}" }
+                CoreLog.v(TAG) { "extended last attribute_run length: $oldLength -> ${oldLength + n}" }
             } else {
                 runFields.add(0, ProtobufWire.encodeVarintField(FIELD_ATTR_LENGTH, n.toLong()))
-                AppLog.v(TAG) { "added attribute_run length=$n (no prior length field)" }
+                CoreLog.v(TAG) { "added attribute_run length=$n (no prior length field)" }
             }
             stringFields[lastAttrRunNoteFieldIdx] =
                 stringFields[lastAttrRunNoteFieldIdx].copy(payload = ProtobufWire.encode(runFields))
@@ -540,7 +540,7 @@ object NoteAppender {
             // Empty doc: emit a fresh attribute_run.
             val templateFont = lastAttributeRunFont(stringFields)
             stringFields.add(buildAttributeRun(length = n, fontFields = templateFont))
-            AppLog.v(TAG) { "no existing attribute_run; added new length=$n" }
+            CoreLog.v(TAG) { "no existing attribute_run; added new length=$n" }
         }
 
         // ----- Re-encode bottom-up -----
@@ -578,10 +578,10 @@ object NoteAppender {
         val compressed = Base64.decode(textDataEncryptedB64)
         val format = Gzip.detect(compressed)
         val proto = Gzip.decompress(compressed)
-        AppLog.v(TAG) { "setBodyBase64 IN: bodyLen=${newFullBody.length} protoLen=${proto.size} format=$format" }
-        AppLog.v(TAG) { "setBodyBase64 IN  proto: ${NoteBodyEditor.summarize(proto)}" }
+        CoreLog.v(TAG) { "setBodyBase64 IN: bodyLen=${newFullBody.length} protoLen=${proto.size} format=$format" }
+        CoreLog.v(TAG) { "setBodyBase64 IN  proto: ${NoteBodyEditor.summarize(proto)}" }
         val newProto = setBodyBytes(proto, ourReplicaUuid, newFullBody, nowEpochSec, newSpans)
-        AppLog.v(TAG) { "setBodyBase64 OUT proto: ${NoteBodyEditor.summarize(newProto)}" }
+        CoreLog.v(TAG) { "setBodyBase64 OUT proto: ${NoteBodyEditor.summarize(newProto)}" }
         val newCompressed = Gzip.compress(newProto, format)
         return Base64.encode(newCompressed)
     }
@@ -626,7 +626,7 @@ object NoteAppender {
         val charRun = charToRun(templates, visibleText.length)
         val newARs = encodeSpansOverTemplates(visibleText, newSpans, charRun, templates)
         if (newARs == null) {
-            AppLog.w(TAG, "rewriteARsOnly: span sum=${newSpans.sumOf { it.length }} != body=${visibleText.length}; skipping")
+            CoreLog.w(TAG, "rewriteARsOnly: span sum=${newSpans.sumOf { it.length }} != body=${visibleText.length}; skipping")
             return protoBytes
         }
 
@@ -645,12 +645,12 @@ object NoteAppender {
 
         val newData = ProtobufWire.encode(rebuilt)
         if (newData.contentEquals(versionFields[dataIdx].payload)) {
-            AppLog.v(TAG) { "rewriteARsOnly: no formatting change" }
+            CoreLog.v(TAG) { "rewriteARsOnly: no formatting change" }
             return protoBytes
         }
         versionFields[dataIdx] = versionFields[dataIdx].copy(payload = newData)
         top[versionIdx] = top[versionIdx].copy(payload = ProtobufWire.encode(versionFields))
-        AppLog.v(TAG) { "rewriteARsOnly: emitted ${newARs.size} runs" }
+        CoreLog.v(TAG) { "rewriteARsOnly: emitted ${newARs.size} runs" }
         return ProtobufWire.encode(top)
     }
 
@@ -970,7 +970,7 @@ object NoteAppender {
         val currentNorm = normaliseLineBreaks(currentVisible)
         val targetNorm = normaliseLineBreaks(newFullBody)
         if (currentNorm == targetNorm && newSpans == null) {
-            AppLog.v(TAG) { "setBodySplice: no-op (current visible matches target)" }
+            CoreLog.v(TAG) { "setBodySplice: no-op (current visible matches target)" }
             return protoBytes
         }
         if (currentNorm == targetNorm && newSpans != null) {
@@ -979,7 +979,7 @@ object NoteAppender {
             // proto, without splicing the substring tree.
             return rewriteAttributeRunsOnly(protoBytes, newSpans, currentVisible)
         }
-        AppLog.v(TAG) {
+        CoreLog.v(TAG) {
             "setBodySplice: currentVisible.len=${currentVisible.length} newBody.len=${newFullBody.length}"
         }
 
@@ -1019,7 +1019,7 @@ object NoteAppender {
                 val intermediate = currentVisible.substring(0, prefixLen) +
                     insertedMid.substring(0, iObj) +
                     currentVisible.substring(prefixLen + dObj)
-                AppLog.v(TAG) { "setBodySplice: edit spans an attachment; splitting at U+FFFC" }
+                CoreLog.v(TAG) { "setBodySplice: edit spans an attachment; splitting at U+FFFC" }
                 val step = setBodySpliceBytes(protoBytes, ourReplicaUuid, intermediate, nowEpochSec, null)
                 return setBodySpliceBytes(step, ourReplicaUuid, newFullBody, nowEpochSec, newSpans)
             }
@@ -1028,7 +1028,7 @@ object NoteAppender {
         val deleteTo = currentVisible.length - suffixLen
         val insertText = newFullBody.substring(prefixLen, newFullBody.length - suffixLen)
         val deleteLen = deleteTo - deleteFrom
-        AppLog.v(TAG) {
+        CoreLog.v(TAG) {
             "setBodySplice diff: prefix=$prefixLen suffix=$suffixLen " +
                 "deleteFrom=$deleteFrom deleteTo=$deleteTo deleteLen=$deleteLen " +
                 "insertLen=${insertText.length}"
@@ -1316,7 +1316,7 @@ object NoteAppender {
             }
             runStart = runEnd
         }
-        AppLog.v(TAG) { "splice attribute_runs: orig=${origCharAR.size} new=${newARs.size} " +
+        CoreLog.v(TAG) { "splice attribute_runs: orig=${origCharAR.size} new=${newARs.size} " +
                 "(prefix=$prefixLen insert=${insertText.length} suffix=$suffixLen)" }
 
         // If the caller provided explicit new spans (formatting changes),
@@ -1327,7 +1327,7 @@ object NoteAppender {
         val effectiveARs = if (newSpans != null) {
             encodeSpansOverTemplates(newVisible, newSpans, newCharAR, templates)
                 ?: run {
-                    AppLog.w(TAG, "newSpans length sum=${newSpans.sumOf { it.length }} != body=${newVisible.length}; using splice ARs")
+                    CoreLog.w(TAG, "newSpans length sum=${newSpans.sumOf { it.length }} != body=${newVisible.length}; using splice ARs")
                     newARs
                 }
         } else newARs
@@ -1483,13 +1483,13 @@ object NoteAppender {
             isFirstEdit = true
             ourCharIDClockStart = maxDocCharIDClock + 1
             vtFields.add(buildClockEntry(ourReplicaUuid, ourCharIDClockStart, maxDocTimestampClock))
-            AppLog.v(TAG) { "REWRITE: registered replica + promoted to slot 1" }
+            CoreLog.v(TAG) { "REWRITE: registered replica + promoted to slot 1" }
         }
         val totalSlots = clocks.size + (if (ourClock == null) 1 else 0)
         for (newSlot in 2..totalSlots) {
             savedByNewSlot[newSlot]?.let { vtFields.add(it) }
         }
-        AppLog.v(TAG) {
+        CoreLog.v(TAG) {
             "REWRITE promoted self to slot 1: oldSlot=$oldOurSlot remap=$replicaRemap"
         }
 
@@ -1539,7 +1539,7 @@ object NoteAppender {
         }
 
         val newSubstringLen = newBody.length.toLong()
-        AppLog.v(TAG) {
+        CoreLog.v(TAG) {
             "REWRITE: ourReplica=$ourReplicaID startClock=$ourCharIDClockStart " +
                 "newBodyLen=$newSubstringLen (was ${originalText.length}, +${appendedText.length})"
         }

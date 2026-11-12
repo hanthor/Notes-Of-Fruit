@@ -142,6 +142,9 @@ dependencies {
   implementation(libs.androidx.compose.material3)
   implementation(libs.androidx.compose.material.icons.extended)
 
+  // Protocol code (proto/ + client/): pure Kotlin, in the :core module.
+  implementation(project(":core"))
+
   // HTTP + JSON + persistence
   implementation(libs.ktor.client.core)
   implementation(libs.ktor.client.okhttp)
@@ -166,6 +169,8 @@ dependencies {
   // Local tests: jUnit, coroutines, Android runner
   testImplementation(libs.junit)
   testImplementation(libs.kotlinx.coroutines.test)
+  // Shared proto fixtures + builders (Fx, testUuid, fmt-baseline-1.proto).
+  testImplementation(testFixtures(project(":core")))
 
   // Instrumented tests: jUnit rules and runners
   androidTestImplementation(libs.androidx.test.core)

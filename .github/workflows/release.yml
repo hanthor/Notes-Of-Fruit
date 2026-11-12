@@ -65,7 +65,7 @@ jobs:
       # Same checks as the PR workflow; a release never ships with failing
       # tests or lint errors.
       - name: Unit tests and lint
-        run: ./gradlew :app:testDebugUnitTest :app:lintDebug --no-daemon --continue
+        run: ./gradlew :core:test :app:testDebugUnitTest :app:lintDebug --no-daemon --continue
 
       - name: Upload test and lint reports
         if: ${{ !cancelled() && steps.tag.outputs.name != '' }}
@@ -75,6 +75,8 @@ jobs:
           path: |
             app/build/reports/tests/
             app/build/test-results/
+            core/build/reports/tests/
+            core/build/test-results/
             app/build/reports/lint-results-debug.*
           if-no-files-found: warn
 

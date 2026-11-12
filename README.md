@@ -140,7 +140,7 @@ the WebView auth flow.
 Tests and lint (the same checks CI runs):
 
 ```bash
-./gradlew :app:testDebugUnitTest :app:lintDebug
+./gradlew :core:test :app:testDebugUnitTest :app:lintDebug
 ```
 
 Debug builds also include an adb-driven `DebugReceiver` for exercising the

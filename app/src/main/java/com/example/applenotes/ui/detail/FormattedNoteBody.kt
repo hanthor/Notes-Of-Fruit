@@ -288,7 +288,7 @@ private fun buildParagraphAnnotated(
         val style = inlineSpanStyle(span)
         if (span?.linkUrl != null) {
             val link = LinkAnnotation.Url(
-                url = span.linkUrl,
+                url = span.linkUrl.orEmpty(),
                 styles = TextLinkStyles(style = style ?: SpanStyle()),
             )
             withLink(link) { append(display) }

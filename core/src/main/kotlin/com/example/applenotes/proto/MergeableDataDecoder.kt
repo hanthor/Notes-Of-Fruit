@@ -1,6 +1,6 @@
 package com.example.applenotes.proto
 
-import com.example.applenotes.log.AppLog
+import com.example.applenotes.log.CoreLog
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -86,7 +86,7 @@ object MergeableDataDecoder {
     fun decodeTableBase64(b64: String): TableGrid? = runCatching {
         val proto = Gzip.decompress(Base64.decode(b64))
         decodeTable(proto)
-    }.onFailure { AppLog.w(TAG, "decodeTableBase64 failed", it) }.getOrNull()
+    }.onFailure { CoreLog.w(TAG, "decodeTableBase64 failed", it) }.getOrNull()
 
     fun decodeTable(proto: ByteArray): TableGrid? {
         val od = parseObjectData(proto) ?: return null

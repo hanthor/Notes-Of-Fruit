@@ -19,3 +19,5 @@ plugins {
 
 rootProject.name = "Apple Notes"
 include(":app")
+// Pure-Kotlin protocol code (proto + CloudKit client), no Android dependencies.
+include(":core")

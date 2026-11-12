@@ -6,7 +6,7 @@ import com.example.applenotes.proto.NoteBodyEditor
 import com.example.applenotes.proto.NoteBodyEditor.AttrSpan
 import com.example.applenotes.proto.NoteBodyEditor.ParagraphStyle
 import com.example.applenotes.proto.NoteCreator
-import com.example.applenotes.proto.Topotext
+import com.example.applenotes.proto.TopotextInvariants
 import com.example.applenotes.proto.testUuid
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -51,16 +51,16 @@ class NoteRebaseTest {
         }
         val out = NoteRebase.rebaseBody(s.remoteB64, us, m, spans, 2_000)
         val outBytes = bytes(out)
-        Topotext.checkInvariants(outBytes, m.text, us)
-        Topotext.checkMonotonic(bytes(s.remoteB64), outBytes, us)
+        TopotextInvariants.checkInvariants(outBytes, m.text, us)
+        TopotextInvariants.checkMonotonic(bytes(s.remoteB64), outBytes, us)
         assertEquals(m.text, visible(out))
 
         // The point of splicing onto the fresh proto: every char that came
         // from the remote version keeps the remote's char ID.
-        val remoteIds = Topotext.parse(bytes(s.remoteB64)).visibleCharIds()
-        val outIds = Topotext.parse(outBytes).visibleCharIds()
+        val remoteIds = TopotextInvariants.parse(bytes(s.remoteB64)).visibleCharIds()
+        val outIds = TopotextInvariants.parse(outBytes).visibleCharIds()
         assertEquals(m.text.length, outIds.size)
-        val usHex = Topotext.hex(us)
+        val usHex = TopotextInvariants.hex(us)
         for (k in m.text.indices) {
             val r = m.remoteIndex[k]
             if (r >= 0) {
@@ -174,8 +174,8 @@ class NoteRebaseTest {
         val remoteText = visible(remoteB64)
         val (t2, s2) = NoteRebase.keepBoth(remoteText, emptyList(), "Trip\nphoto\nmine", emptyList())
         val out = NoteAppender.setBodyBase64(remoteB64, us, t2, 2_000, s2)
-        Topotext.checkInvariants(bytes(out), t2, us)
-        Topotext.checkMonotonic(bytes(remoteB64), bytes(out), us)
+        TopotextInvariants.checkInvariants(bytes(out), t2, us)
+        TopotextInvariants.checkMonotonic(bytes(remoteB64), bytes(out), us)
     }
 
     @Test

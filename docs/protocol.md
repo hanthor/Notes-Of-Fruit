@@ -132,7 +132,7 @@ Invariants (verified by sampling iCloud.com-created and Mac-created notes):
 - **Slot rotation** matters: when iCloud.com edits a note, it always remaps
   itself to slot 1, demoting everyone else. Mac's notesync uses the rotation as
   a "refresh local cache" signal. We mirror this in
-  [`NoteAppender.setBodySpliceBytes`](../app/src/main/java/com/example/applenotes/proto/NoteAppender.kt).
+  [`NoteAppender.setBodySpliceBytes`](../core/src/main/kotlin/com/example/applenotes/proto/NoteAppender.kt).
 - `ReplicaIDToNotesVersionDataEncrypted` is the per-replica version vector. Mac
   uses changes to this field as the cache-invalidation signal. Pass it through
   unchanged on modify (don't strip or rewrite). Without this, Mac duplicates the
@@ -182,8 +182,8 @@ containing `{f1: 16-byte UUID, f2: 0|1 (done flag)}`, NOT in `AttributeRun.f2.f4
 | `f9` (bytes) | link URL (UTF-8 string) |
 | `f12` (msg) | attachment_info `{f1: UUID-string, f2: UTI-string}` (table/image/etc.) |
 
-Decode via [`NoteBodyEditor.parseAttributeRuns`](../app/src/main/java/com/example/applenotes/proto/NoteBodyEditor.kt).
-Re-encode via [`NoteBodyEditor.encodeAttributeRunField`](../app/src/main/java/com/example/applenotes/proto/NoteBodyEditor.kt).
+Decode via [`NoteBodyEditor.parseAttributeRuns`](../core/src/main/kotlin/com/example/applenotes/proto/NoteBodyEditor.kt).
+Re-encode via [`NoteBodyEditor.encodeAttributeRunField`](../core/src/main/kotlin/com/example/applenotes/proto/NoteBodyEditor.kt).
 
 ### Table attachments
 
@@ -206,7 +206,7 @@ The root ICTable's CustomMap has entries `crRows` (OrderedSet of row UUIDs),
 col_uuid → Dict of row_uuid → string_obj_id). Walk those to extract a 2D
 grid; resolve each string_obj_id to its NSString.currentText.
 
-See [`MergeableDataDecoder.kt`](../app/src/main/java/com/example/applenotes/proto/MergeableDataDecoder.kt).
+See [`MergeableDataDecoder.kt`](../core/src/main/kotlin/com/example/applenotes/proto/MergeableDataDecoder.kt).
 The decoder orders rows and columns by the `crRows`/`crColumns`
 OrderedSets, matching each entry to `cellColumns` by UUID; rows listed in
 `crRows` with no cells render as empty rows. If any piece of that can't be

@@ -16,12 +16,20 @@ develop against notes you can't afford to lose.
 ## Building, testing, linting
 
 ```bash
-./gradlew :app:assembleDebug                         # debug APK
-./gradlew :app:testDebugUnitTest :app:lintDebug      # what CI runs on every PR
+./gradlew :app:assembleDebug                                # debug APK
+./gradlew :core:test :app:testDebugUnitTest :app:lintDebug  # what CI runs on every PR
+./gradlew :core:test                                        # protocol tests only (plain JVM, fast)
 ```
 
-- Unit tests live in `app/src/test/`. Proto fixtures go in
-  `app/src/test/resources/`.
+- The build has two modules. `:core` is plain Kotlin/JVM: the protocol code
+  (`proto/`, `client/`) and its tests in `core/src/test/`. `:app` is the
+  Android app; its unit tests live in `app/src/test/`. Code in `:core` must
+  not use Android APIs and logs through `CoreLog`, never `println`
+  (`AppLogTest` checks).
+- Proto fixtures go in `core/src/testFixtures/resources/`; the fixture
+  builders (`Fx`, `testUuid`, `loadFixture`) are next to them in
+  `core/src/testFixtures/`, and `:app`'s tests can use them too. The
+  invariant checker, `TopotextInvariants`, is main code in `:core`.
 - Lint runs with `abortOnError = true`: any lint *error* fails CI. Warnings
   don't, but don't add new ones without a reason.
 - Debug builds install as `io.github.hanthor.notesoffruit.debug`, next to any
@@ -78,10 +86,10 @@ insensitive), so give test notes distinctive titles. The log contains:
   substring tree.
 
 To turn it into a fixture (the decompressed protobuf bytes, the same format as
-the existing `app/src/test/resources/*.proto` files):
+the existing `core/src/testFixtures/resources/*.proto` files):
 
 ```bash
-python3 - dump.log app/src/test/resources/fixture-checklist.proto <<'EOF'
+python3 - dump.log core/src/testFixtures/resources/fixture-checklist.proto <<'EOF'
 import base64, re, sys, zlib
 chunks = {}
 for line in open(sys.argv[1], encoding="utf-8"):
@@ -112,7 +120,7 @@ Fixtures are committed to a public repository. Before you add one:
 - **Check what's in it** before committing:
 
   ```bash
-  strings -n 3 app/src/test/resources/fixture-checklist.proto | less
+  strings -n 3 core/src/testFixtures/resources/fixture-checklist.proto | less
   ```
 
   Look for names, email addresses, URLs (links are stored in the attribute
@@ -134,7 +142,7 @@ checklist. In short:
 
 - Tests added or updated where it makes sense (proto changes should come with a
   fixture-based test).
-- `./gradlew :app:testDebugUnitTest :app:lintDebug` passes.
+- `./gradlew :core:test :app:testDebugUnitTest :app:lintDebug` passes.
 - **Anything that touches the write path** (proto encoding, CloudKit
   modify/create/delete, title/snippet computation, replica handling) needs a
   manual round-trip check: make the change from this app, then open the note

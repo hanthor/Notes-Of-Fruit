@@ -24,13 +24,13 @@ class AttributeRunFidelityTest {
         val out = NoteAppender.setBodySpliceBytes(bytes, who, body, 0, spans)
         // A format-only change rewrites attribute runs only: no substring or
         // VectorTimestamp change, hence no slot promotion to check.
-        val textChanged = Topotext.normalise(Topotext.parse(bytes).rawVisible()) != Topotext.normalise(body)
-        Topotext.checkInvariants(out, ourUuid = if (textChanged) who else null)
+        val textChanged = TopotextInvariants.normalise(TopotextInvariants.parse(bytes).rawVisible()) != TopotextInvariants.normalise(body)
+        TopotextInvariants.checkInvariants(out, ourUuid = if (textChanged) who else null)
         if (!textChanged) {
             assertArrayEquals(
                 "format-only change must not touch substrings/clocks",
-                ProtobufWire.encode(Topotext.parse(bytes).stringFields.filter { it.fieldNumber != 5 }),
-                ProtobufWire.encode(Topotext.parse(out).stringFields.filter { it.fieldNumber != 5 }),
+                ProtobufWire.encode(TopotextInvariants.parse(bytes).stringFields.filter { it.fieldNumber != 5 }),
+                ProtobufWire.encode(TopotextInvariants.parse(out).stringFields.filter { it.fieldNumber != 5 }),
             )
         }
         return out
@@ -50,9 +50,9 @@ class AttributeRunFidelityTest {
     fun plainTextEditKeepsEveryRunOfTheMacFixture() {
         // The splice doc comment used to say runs "collapse to ONE run". They
         // don't: with newSpans == null every surviving char keeps its run.
-        val raw = Topotext.parse(fixture).rawVisible()
+        val raw = TopotextInvariants.parse(fixture).rawVisible()
         val shown = NoteBodyEditor.readVisibleText(fixture)!!
-        val runsBefore = Topotext.parse(fixture).runs.size
+        val runsBefore = TopotextInvariants.parse(fixture).runs.size
 
         // Replace inside a numbered-list paragraph.
         val at = shown.indexOf("numbered item 1") + "numbered item ".length
@@ -62,7 +62,7 @@ class AttributeRunFidelityTest {
         assertRunsKeptOutside(fixture, out, prefix = at, suffix = raw.length - at - 1)
         // Typed text took the run of the paragraph it was typed into, so the run
         // count is unchanged (no default-body fragment inside the list item).
-        val d = Topotext.parse(out)
+        val d = TopotextInvariants.parse(out)
         assertEquals(runsBefore, d.runs.size)
         val per = Fx.perChar(out)
         for (i in at until at + 3) assertEquals(NoteBodyEditor.ParagraphStyle.NUMBERED_LIST, per[i].style)
@@ -90,21 +90,21 @@ class AttributeRunFidelityTest {
         val heading = Fx.run(8, Fx.style(1)) // "Heading\n"
         val body = Fx.run(4, Fx.style(3)) // "body"
         val n = Fx.withRuns(Fx.create("Heading\nbody", a), listOf(heading, body))
-        Topotext.checkInvariants(n, "Heading\nbody")
+        TopotextInvariants.checkInvariants(n, "Heading\nbody")
 
         // Mid-run insertion: still two runs, heading grew.
         val n1 = splice(n, b, "Head-ing\nbody")
-        assertEquals(listOf(9, 4), Topotext.parse(n1).runs.map { it.length })
+        assertEquals(listOf(9, 4), TopotextInvariants.parse(n1).runs.map { it.length })
         // At the start of the document: joins the first paragraph.
         val n2 = splice(n1, a, "My Head-ing\nbody")
-        assertEquals(listOf(12, 4), Topotext.parse(n2).runs.map { it.length })
+        assertEquals(listOf(12, 4), TopotextInvariants.parse(n2).runs.map { it.length })
         // At the start of a later paragraph: joins that paragraph.
         val n3 = splice(n2, b, "My Head-ing\nsome body")
-        assertEquals(listOf(12, 9), Topotext.parse(n3).runs.map { it.length })
+        assertEquals(listOf(12, 9), TopotextInvariants.parse(n3).runs.map { it.length })
         // A new paragraph of its own gets a default body run, not a copy of
         // its neighbour's paragraph attributes.
         val n4 = splice(n3, a, "My Head-ing\nnew para\nsome body")
-        val runs = Topotext.parse(n4).runs
+        val runs = TopotextInvariants.parse(n4).runs
         assertEquals(listOf(12, 9, 9), runs.map { it.length })
         assertEquals(listOf(1), runs[1].fields.map { it.fieldNumber })
     }
@@ -124,7 +124,7 @@ class AttributeRunFidelityTest {
     }
 
     private fun assertUnknownsKept(out: ByteArray) {
-        for (r in Topotext.parse(out).runs) {
+        for (r in TopotextInvariants.parse(out).runs) {
             val f = r.fields
             for (want in listOf(font, colour, stamp, mystery)) {
                 assertTrue("run lost field ${want.fieldNumber}", f.any { it.fieldNumber == want.fieldNumber && it.payload.contentEquals(want.payload) })
@@ -145,7 +145,7 @@ class AttributeRunFidelityTest {
         val per = Fx.perChar(out)
         assertFalse(per[0].bold)
         assertTrue(per[6].bold)
-        assertEquals(2, Topotext.parse(out).runs.size)
+        assertEquals(2, TopotextInvariants.parse(out).runs.size)
         // Untouched first half is byte-identical to the original run (only length differs).
         assertEquals(Fx.runBytesPerChar(n)[0], Fx.runBytesPerChar(out)[0])
     }
@@ -182,7 +182,7 @@ class AttributeRunFidelityTest {
         val out = splice(n, b, newText, spans)
         assertEquals(newText, NoteBodyEditor.readVisibleText(out))
         assertUnknownsKept(out)
-        assertEquals(1, Topotext.parse(out).runs.size)
+        assertEquals(1, TopotextInvariants.parse(out).runs.size)
     }
 
     @Test
@@ -203,17 +203,17 @@ class AttributeRunFidelityTest {
         // Apple's explicit Body code (f2.f1 = 3) and per-paragraph list runs
         // survive; the only new boundary is the heading run splitting into
         // "Heading" (bold) + its '\n' (not bold).
-        assertEquals(Topotext.parse(fixture).runs.size + 1, Topotext.parse(out).runs.size)
+        assertEquals(TopotextInvariants.parse(fixture).runs.size + 1, TopotextInvariants.parse(out).runs.size)
     }
 
     // ---------------------------------------------------------------- checkboxes
 
     /** Checklist UUID (f2.f5.f1) of every checkbox run, decoded independently of production code. */
     private fun checklistUuids(bytes: ByteArray): List<String> =
-        Topotext.parse(bytes).runs.mapNotNull { r ->
+        TopotextInvariants.parse(bytes).runs.mapNotNull { r ->
             val ps = r.fields.firstOrNull { it.fieldNumber == 2 } ?: return@mapNotNull null
             val cl = ProtobufWire.decode(ps.payload).firstOrNull { it.fieldNumber == 5 } ?: return@mapNotNull null
-            Topotext.hex(ProtobufWire.decode(cl.payload).first { it.fieldNumber == 1 }.payload)
+            TopotextInvariants.hex(ProtobufWire.decode(cl.payload).first { it.fieldNumber == 1 }.payload)
         }
 
     @Test
@@ -254,7 +254,7 @@ class AttributeRunFidelityTest {
         assertEquals(1, spans.size) // one coalesced span over three paragraphs
         val out = splice(n, b, text, spans)
         val uuids = checklistUuids(out)
-        assertEquals(listOf(4, 4, 5), Topotext.parse(out).runs.map { it.length })
+        assertEquals(listOf(4, 4, 5), TopotextInvariants.parse(out).runs.map { it.length })
         assertEquals(3, uuids.toSet().size)
         // Toggling one leaves every UUID alone.
         val toggled = splice(out, a, text, NoteBodyEditor.toggleCheckbox(text, Fx.spans(out), 5))
@@ -276,12 +276,12 @@ class AttributeRunFidelityTest {
             Fx.create("Table:\n\uFFFC\nafter", a),
             listOf(Fx.run(7, Fx.style(1)), attRun, Fx.run(6, Fx.style(3))),
         )
-        Topotext.checkInvariants(n, "Table:\n\uFFFC\nafter")
+        TopotextInvariants.checkInvariants(n, "Table:\n\uFFFC\nafter")
         return n
     }
 
     private fun attachmentRuns(bytes: ByteArray) =
-        Topotext.parse(bytes).runs.filter { r -> r.fields.any { it.fieldNumber == 12 } }
+        TopotextInvariants.parse(bytes).runs.filter { r -> r.fields.any { it.fieldNumber == 12 } }
 
     private fun assertAttachmentIntact(bytes: ByteArray) {
         val runs = attachmentRuns(bytes)
@@ -297,7 +297,7 @@ class AttributeRunFidelityTest {
     @Test
     fun attachmentSurvivesAppend() {
         val out = NoteAppender.appendBytes(attachmentNote(), b, "\nmore", 0)
-        Topotext.checkInvariants(out, "Table:\n\uFFFC\nafter\nmore", b)
+        TopotextInvariants.checkInvariants(out, "Table:\n\uFFFC\nafter\nmore", b)
         assertAttachmentIntact(out)
     }
 
@@ -307,9 +307,9 @@ class AttributeRunFidelityTest {
         // attachment's, so the appended text became part of the attachment.
         val n = Fx.withRuns(Fx.create("Pic:\n\uFFFC", a), listOf(Fx.run(5, Fx.style(3)), attRun))
         val out = NoteAppender.appendBytes(n, b, "\ncaption", 0)
-        Topotext.checkInvariants(out, "Pic:\n\uFFFC\ncaption", b)
+        TopotextInvariants.checkInvariants(out, "Pic:\n\uFFFC\ncaption", b)
         assertAttachmentIntact(out)
-        val runs = Topotext.parse(out).runs
+        val runs = TopotextInvariants.parse(out).runs
         assertEquals(listOf(5, 1, 8), runs.map { it.length })
         assertTrue(runs[2].fields.none { it.fieldNumber == 12 })
     }

@@ -3,7 +3,7 @@ package com.example.applenotes.data
 import com.example.applenotes.client.NotesError
 import com.example.applenotes.proto.Gzip
 import com.example.applenotes.proto.NoteBodyEditor
-import com.example.applenotes.proto.Topotext
+import com.example.applenotes.proto.TopotextInvariants
 import com.example.applenotes.testing.FakeAuthGateway
 import com.example.applenotes.testing.FakeNotesApi
 import com.example.applenotes.testing.REPLICA_UUID
@@ -68,8 +68,8 @@ class NotesRepositoryConflictTest {
         // other device's lost or re-attributed.
         val remoteBytes = bytes(remote.stringField("TextDataEncrypted")!!)
         val out = bytes(m.b64)
-        Topotext.checkInvariants(out, "Shopping list\nmilk\noat milk\neggs", REPLICA_UUID)
-        Topotext.checkMonotonic(remoteBytes, out, REPLICA_UUID)
+        TopotextInvariants.checkInvariants(out, "Shopping list\nmilk\noat milk\neggs", REPLICA_UUID)
+        TopotextInvariants.checkMonotonic(remoteBytes, out, REPLICA_UUID)
         // Title came from the remote and didn't change in the merge.
         assertNull(m.newTitle)
         assertEquals("Shopping list", repo.notes.value.single().title)
@@ -85,7 +85,7 @@ class NotesRepositoryConflictTest {
         val saved = repo.saveNote(stale, null, "Shopping\nmilk\neggs\nbread", isPureAppend = true, newSpans = null)
         assertEquals("Shopping\nmilk\neggs\nbread", saved.visibleText())
         assertEquals("bumped", api.modifies.single().tag)
-        Topotext.checkInvariants(bytes(api.modifies.single().b64), "Shopping\nmilk\neggs\nbread", REPLICA_UUID)
+        TopotextInvariants.checkInvariants(bytes(api.modifies.single().b64), "Shopping\nmilk\neggs\nbread", REPLICA_UUID)
     }
 
     @Test
@@ -133,7 +133,7 @@ class NotesRepositoryConflictTest {
         assertEquals("Shopping!\nsoy milk\neggs!", saved.visibleText())
         assertEquals(2, api.conflicts)
         assertEquals(1, api.modifies.size)
-        Topotext.checkInvariants(bytes(api.modifies.single().b64), "Shopping!\nsoy milk\neggs!", REPLICA_UUID)
+        TopotextInvariants.checkInvariants(bytes(api.modifies.single().b64), "Shopping!\nsoy milk\neggs!", REPLICA_UUID)
     }
 
     @Test

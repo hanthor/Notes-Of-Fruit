@@ -74,13 +74,13 @@ class RandomEditTest {
             val r = Random(seed.toLong())
             var raw = randomText(r, 12)
             var bytes = NoteCreator.buildEmptyNoteBytes(replicas[0], raw)
-            Topotext.checkInvariants(bytes, raw, replicas[0])
+            TopotextInvariants.checkInvariants(bytes, raw, replicas[0])
             for (step in 0 until STEPS) {
                 val ctx = "seed=$seed step=$step"
                 val who = replicas[r.nextInt(replicas.size)]
                 val e = randomEdits(r, raw)
                 val target = apply(raw, e)
-                if (Topotext.normalise(target) == Topotext.normalise(raw)) continue
+                if (TopotextInvariants.normalise(target) == TopotextInvariants.normalise(raw)) continue
                 val before = bytes
                 val usedAppend = e.size == 1 && e[0].from == raw.length && e[0].to == raw.length && r.nextBoolean()
                 bytes = if (usedAppend) {
@@ -88,19 +88,19 @@ class RandomEditTest {
                 } else {
                     // Like the UI: half the time we hand back display text
                     // (U+2028/U+2029 shown as '\n').
-                    val body = if (r.nextBoolean()) Topotext.normalise(target) else target
+                    val body = if (r.nextBoolean()) TopotextInvariants.normalise(target) else target
                     NoteAppender.setBodySpliceBytes(bytes, who, body, 0)
                 }
                 val d = try {
-                    Topotext.checkInvariants(bytes, if (usedAppend) target else null, who)
+                    TopotextInvariants.checkInvariants(bytes, if (usedAppend) target else null, who)
                 } catch (t: AssertionError) {
                     throw AssertionError("$ctx edit=$e: ${t.message}", t)
                 }
-                Topotext.checkMonotonic(before, bytes, who)
+                TopotextInvariants.checkMonotonic(before, bytes, who)
                 val got = d.rawVisible()
                 // The diff can't tell U+2028/U+2029 from '\n' (by design — see
                 // NoteAppender), so compare in display space.
-                assertEquals("$ctx edit=$e", Topotext.normalise(target), Topotext.normalise(got))
+                assertEquals("$ctx edit=$e", TopotextInvariants.normalise(target), TopotextInvariants.normalise(got))
                 raw = got
             }
         }
@@ -137,18 +137,18 @@ class RandomEditTest {
                 }
                 Fx.withRuns(base, runs)
             }
-            Topotext.checkInvariants(bytes, raw)
+            TopotextInvariants.checkInvariants(bytes, raw)
             var model = NoteBodyEditor.expandSpansToChars(raw, Fx.spans(bytes)).toMutableList()
             val allIds = model.mapNotNull { it.attachmentRecordName }.toSet()
             fun objCharIds(b: ByteArray) =
-                Topotext.parse(b).visibleCharIds().filter { it.first == '￼' }.map { it.second }.toSet()
+                TopotextInvariants.parse(b).visibleCharIds().filter { it.first == '￼' }.map { it.second }.toSet()
             val originalObjChars = objCharIds(bytes)
 
             for (step in 0 until STEPS) {
                 val ctx = "seed=$seed step=$step"
                 val who = replicas[r.nextInt(replicas.size)]
                 val before = bytes
-                val shown = Topotext.normalise(raw)
+                val shown = TopotextInvariants.normalise(raw)
                 if (r.nextInt(3) == 0 && raw.isNotEmpty()) {
                     // Format-only change.
                     val cuts = cutPoints(raw)
@@ -164,11 +164,11 @@ class RandomEditTest {
                     }
                     model = NoteBodyEditor.expandSpansToChars(raw, newSpans).toMutableList()
                     bytes = NoteAppender.setBodySpliceBytes(bytes, who, shown, 0, newSpans)
-                    Topotext.checkInvariants(bytes, raw)
+                    TopotextInvariants.checkInvariants(bytes, raw)
                 } else {
                     val e = randomEdits(r, raw, allowObj = false)
                     val target = apply(raw, e)
-                    if (Topotext.normalise(target) == shown) continue
+                    if (TopotextInvariants.normalise(target) == shown) continue
                     // Model: inserted chars copy the span before them (minus attachment), like the editor.
                     for (ed in e) {
                         val ins = (0 until ed.insert.length).map {
@@ -179,14 +179,14 @@ class RandomEditTest {
                         model = (model.subList(0, ed.from) + ins + model.subList(ed.to, model.size)).toMutableList()
                     }
                     val newSpans = NoteBodyEditor.compactCharsToSpans(model.toTypedArray())
-                    bytes = NoteAppender.setBodySpliceBytes(bytes, who, Topotext.normalise(target), 0, newSpans)
+                    bytes = NoteAppender.setBodySpliceBytes(bytes, who, TopotextInvariants.normalise(target), 0, newSpans)
                     val d = try {
-                        Topotext.checkInvariants(bytes, null, who)
+                        TopotextInvariants.checkInvariants(bytes, null, who)
                     } catch (t: AssertionError) {
                         throw AssertionError("$ctx edit=$e: ${t.message}", t)
                     }
-                    Topotext.checkMonotonic(before, bytes, who)
-                    assertEquals("$ctx edit=$e", Topotext.normalise(target), Topotext.normalise(d.rawVisible()))
+                    TopotextInvariants.checkMonotonic(before, bytes, who)
+                    assertEquals("$ctx edit=$e", TopotextInvariants.normalise(target), TopotextInvariants.normalise(d.rawVisible()))
                     raw = d.rawVisible()
                 }
 

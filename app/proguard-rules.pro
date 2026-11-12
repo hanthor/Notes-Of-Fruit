@@ -8,6 +8,7 @@
 # build.
 
 # --- App code: keep everything (no shrinking/obfuscation of our classes) -----
+# Also covers the :core module (proto/, client/, log/CoreLog): same packages.
 -keep class com.example.applenotes.** { *; }
 
 # Enum valueOf()/values() are reached reflectively (e.g. the debug receiver's

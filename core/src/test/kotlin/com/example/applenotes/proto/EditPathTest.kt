@@ -20,34 +20,34 @@ class EditPathTest {
 
     private fun append(bytes: ByteArray, who: ByteArray, text: String, expected: String): ByteArray {
         val out = NoteAppender.appendBytes(bytes, who, text, 0)
-        Topotext.checkInvariants(out, expected, who)
-        Topotext.checkMonotonic(bytes, out, who)
+        TopotextInvariants.checkInvariants(out, expected, who)
+        TopotextInvariants.checkMonotonic(bytes, out, who)
         return out
     }
 
     private fun splice(bytes: ByteArray, who: ByteArray, body: String, expected: String = body): ByteArray {
         val out = NoteAppender.setBodySpliceBytes(bytes, who, body, 0)
-        Topotext.checkInvariants(out, expected, who)
-        Topotext.checkMonotonic(bytes, out, who)
+        TopotextInvariants.checkInvariants(out, expected, who)
+        TopotextInvariants.checkMonotonic(bytes, out, who)
         return out
     }
 
     @Test
     fun realMacFixtureSatisfiesInvariants() {
         // The checker itself must accept a note Apple wrote.
-        Topotext.checkInvariants(loadFixture("fmt-baseline-1.proto"))
+        TopotextInvariants.checkInvariants(loadFixture("fmt-baseline-1.proto"))
     }
 
     @Test
     fun appendBySameReplicaExtendsItsClock() {
         val n0 = Fx.create("Hello", a)
         val n1 = append(n0, a, " world", "Hello world")
-        val d = Topotext.parse(n1)
+        val d = TopotextInvariants.parse(n1)
         assertEquals(1, d.clocks.size)
         assertEquals(11L, d.clocks[0].counters[0])
         // New substring took the sentinel's slot; sentinel moved to the end.
         assertEquals(4, d.subs.size)
-        assertEquals(Topotext.CharId(1, 5), d.subs[2].charId)
+        assertEquals(TopotextInvariants.CharId(1, 5), d.subs[2].charId)
         assertEquals(6, d.subs[2].length)
         // Simple append extends the last run instead of adding one.
         assertEquals(1, d.runs.size)
@@ -58,15 +58,15 @@ class EditPathTest {
     fun appendByNewReplicaPromotesItToSlotOne() {
         val n0 = Fx.create("Hello", a)
         val n1 = append(n0, b, "!", "Hello!")
-        val d = Topotext.parse(n1)
+        val d = TopotextInvariants.parse(n1)
         assertEquals(2, d.clocks.size)
         assertArrayEquals(b, d.clocks[0].uuid)
         assertArrayEquals(a, d.clocks[1].uuid)
         // a's chars were remapped from slot 1 to slot 2 (charID and style ts).
-        assertEquals(Topotext.CharId(2, 0), d.subs[1].charId)
-        assertEquals(Topotext.CharId(2, 0), d.subs[1].ts)
+        assertEquals(TopotextInvariants.CharId(2, 0), d.subs[1].charId)
+        assertEquals(TopotextInvariants.CharId(2, 0), d.subs[1].ts)
         // b allocates after the doc-wide max clock.
-        assertEquals(Topotext.CharId(1, 5), d.subs[2].charId)
+        assertEquals(TopotextInvariants.CharId(1, 5), d.subs[2].charId)
         // counter2 = doc-wide max style-timestamp clock (0 here). Note this
         // differs from NoteCreator, which writes max+1 (=1) for its own
         // counter2 — pinned as-is; see README's counter2 open question.
@@ -78,12 +78,12 @@ class EditPathTest {
         var n = Fx.create("abc", a)
         n = append(n, b, "d", "abcd")
         n = append(n, c, "e", "abcde") // slots: c, b, a
-        assertArrayEquals(a, Topotext.parse(n).clocks[2].uuid)
+        assertArrayEquals(a, TopotextInvariants.parse(n).clocks[2].uuid)
         n = append(n, a, "f", "abcdef") // a back to slot 1: a, c, b
-        val d = Topotext.parse(n)
-        assertEquals(listOf(a, c, b).map { Topotext.hex(it) }, d.clocks.map { Topotext.hex(it.uuid) })
+        val d = TopotextInvariants.parse(n)
+        assertEquals(listOf(a, c, b).map { TopotextInvariants.hex(it) }, d.clocks.map { TopotextInvariants.hex(it.uuid) })
         // a re-uses its own counter (3 → past the doc max) rather than restarting at 0.
-        assertTrue(d.subs.any { it.charId == Topotext.CharId(1, 5) && it.length == 1 })
+        assertTrue(d.subs.any { it.charId == TopotextInvariants.CharId(1, 5) && it.length == 1 })
     }
 
     @Test
@@ -91,8 +91,8 @@ class EditPathTest {
         var n = Fx.create("Hello", a)
         n = append(n, b, "!", "Hello!")
         n = splice(n, c, "Hippo!")
-        var d = Topotext.parse(n)
-        assertEquals(listOf(c, b, a).map { Topotext.hex(it) }, d.clocks.map { Topotext.hex(it.uuid) })
+        var d = TopotextInvariants.parse(n)
+        assertEquals(listOf(c, b, a).map { TopotextInvariants.hex(it) }, d.clocks.map { TopotextInvariants.hex(it.uuid) })
         // The deleted "ell" is a tombstone signed by the editor (slot 1) with a fresh ts clock.
         val tomb = d.subs.single { it.tombstone }
         assertEquals(3, tomb.length)
@@ -102,7 +102,7 @@ class EditPathTest {
         n = splice(n, a, "Hip hippo!") // insert in the middle
         n = splice(n, b, "Hip!") // delete across several substrings and replicas
         n = splice(n, c, "") // delete everything
-        d = Topotext.parse(n)
+        d = TopotextInvariants.parse(n)
         assertTrue(d.subs.filter { !it.isDocStart && !it.isSentinel }.all { it.tombstone })
         assertTrue(d.runs.isEmpty())
         n = splice(n, a, "again") // type into an emptied note
@@ -170,7 +170,7 @@ class EditPathTest {
         n = splice(n, b, "x👍🏽y") // emoji + skin-tone modifier
         n = splice(n, a, "xy")
         // Attribute-run lengths are in UTF-16 units, matching String.length.
-        val d = Topotext.parse(splice(n, c, "😀"))
+        val d = TopotextInvariants.parse(splice(n, c, "😀"))
         assertEquals(2, d.runs.sumOf { it.length })
     }
 
@@ -197,15 +197,15 @@ class EditPathTest {
                 } else f
             } + fieldString6 + fieldString99
         }
-        Topotext.checkInvariants(n, "Hello")
+        TopotextInvariants.checkInvariants(n, "Hello")
 
         fun assertPreserved(out: ByteArray) {
-            val d = Topotext.parse(out)
-            assertEquals(Topotext.hex(ProtobufWire.encode(listOf(fieldTop))), Topotext.hex(ProtobufWire.encode(d.topFields.filter { it.fieldNumber == 1 })))
-            assertEquals(Topotext.hex(ProtobufWire.encode(listOf(fieldVersion))), Topotext.hex(ProtobufWire.encode(d.versionFields.filter { it.fieldNumber == 1 })))
+            val d = TopotextInvariants.parse(out)
+            assertEquals(TopotextInvariants.hex(ProtobufWire.encode(listOf(fieldTop))), TopotextInvariants.hex(ProtobufWire.encode(d.topFields.filter { it.fieldNumber == 1 })))
+            assertEquals(TopotextInvariants.hex(ProtobufWire.encode(listOf(fieldVersion))), TopotextInvariants.hex(ProtobufWire.encode(d.versionFields.filter { it.fieldNumber == 1 })))
             assertEquals(
-                Topotext.hex(ProtobufWire.encode(listOf(fieldString6, fieldString99))),
-                Topotext.hex(ProtobufWire.encode(d.unknownStringFields())),
+                TopotextInvariants.hex(ProtobufWire.encode(listOf(fieldString6, fieldString99))),
+                TopotextInvariants.hex(ProtobufWire.encode(d.unknownStringFields())),
             )
             val vt = ProtobufWire.decode(d.stringFields.single { it.fieldNumber == 4 }.payload)
             assertTrue("VectorTimestamp unknown field kept", vt.any { it.fieldNumber == 9 })
@@ -228,7 +228,7 @@ class EditPathTest {
     fun macFixtureCanBeAppendedAndSpliced() {
         val f = loadFixture("fmt-baseline-1.proto")
         val shown = NoteBodyEditor.readVisibleText(f)!!
-        val raw = Topotext.parse(f).rawVisible()
+        val raw = TopotextInvariants.parse(f).rawVisible()
         val n1 = append(f, a, "appended", raw + "appended")
         splice(f, a, shown.replace("Subheading", "Sub-heading"), raw.replace("Subheading", "Sub-heading"))
         splice(n1, b, shown.replace("dot item 2", "dot item two") + "appended",

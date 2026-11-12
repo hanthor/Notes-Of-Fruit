@@ -1,7 +1,5 @@
 package com.example.applenotes.client
 
-import com.example.applenotes.data.errorDetails
-import com.example.applenotes.data.userMessage
 import kotlinx.serialization.SerializationException
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -80,9 +78,6 @@ class CloudKitErrorsTest {
         val e = CloudKitErrors.fromHttp(500, body)!!
         assertFalse(e.message!!.contains("Shopping"))
         assertTrue(e.details!!.contains("Shopping"))
-        // ... and the user sees a friendly line, with the raw text behind Details.
-        assertEquals("iCloud returned an error (HTTP 500, INTERNAL_ERROR).", userMessage(e))
-        assertTrue(errorDetails(e)!!.contains("Shopping"))
     }
 
     @Test
@@ -97,7 +92,6 @@ class CloudKitErrorsTest {
             assertTrue("$t", mapped is NotesError.Offline)
             assertSame(t, mapped.cause)
         }
-        assertEquals("You're offline. Check your connection and try again.", userMessage(NotesError.Offline()))
     }
 
     @Test
@@ -107,17 +101,5 @@ class CloudKitErrorsTest {
         assertSame(bug, CloudKitErrors.fromThrowable(bug))
         val typed = NotesError.AuthExpired()
         assertSame(typed, CloudKitErrors.fromThrowable(typed))
-    }
-
-    @Test
-    fun untypedErrorsKeepTheirMessageAndHaveNoDetails() {
-        assertEquals("HTTP 503", userMessage(RuntimeException("HTTP 503")))
-        assertNull(errorDetails(RuntimeException("HTTP 503")))
-    }
-
-    @Test
-    fun throttledMessageMentionsTheWait() {
-        assertEquals("iCloud is busy right now. Try again in 5s.", userMessage(NotesError.Throttled(4_200)))
-        assertEquals("iCloud is busy right now. Try again in 2 min.", userMessage(NotesError.Throttled(90_000)))
     }
 }

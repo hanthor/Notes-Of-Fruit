@@ -323,7 +323,7 @@ private fun NoteCard(note: NoteSummary, onClick: () -> Unit) {
                 }
                 if (!note.snippet.isNullOrBlank()) {
                     Text(
-                        text = note.snippet,
+                        text = note.snippet.orEmpty(),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,

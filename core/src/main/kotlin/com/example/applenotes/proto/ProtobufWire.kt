@@ -11,7 +11,7 @@ package com.example.applenotes.proto
  * surgically modify NoteStoreProto.document.note.{note_text, attribute_run[*].length}
  * while passing through all other fields untouched.
  */
-internal object ProtobufWire {
+object ProtobufWire {
     const val WIRE_VARINT = 0
     const val WIRE_FIXED64 = 1
     const val WIRE_LENGTH_DELIM = 2
@@ -116,7 +116,7 @@ internal object ProtobufWire {
         error("Protobuf: truncated varint at offset $start")
     }
 
-    fun writeVarint(buf: ByteList, value: Long) {
+    internal fun writeVarint(buf: ByteList, value: Long) {
         var v = value
         // protobuf varints are ULEB128; for our cases (positive lengths/tags) just emit unsigned.
         while (true) {

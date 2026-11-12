@@ -25,7 +25,7 @@ class NoteCreatorShapeTest {
     @Test
     fun goldenBytesForTwoLineNote() {
         val bytes = NoteCreator.buildEmptyNoteBytes(uuid, "Hi\nyo")
-        assertEquals(GOLDEN_HI_YO, Topotext.hex(bytes))
+        assertEquals(GOLDEN_HI_YO, TopotextInvariants.hex(bytes))
     }
 
     @Test
@@ -34,7 +34,7 @@ class NoteCreatorShapeTest {
         val n = text.length // UTF-16 units: the emoji counts as 2
         assertEquals(13, n)
         val bytes = NoteCreator.buildEmptyNoteBytes(uuid, text)
-        val d = Topotext.checkInvariants(bytes, expectedRawVisible = text, ourUuid = uuid)
+        val d = TopotextInvariants.checkInvariants(bytes, expectedRawVisible = text, ourUuid = uuid)
 
         // Document: only Version (f2). Mac's own notes also carry a top-level
         // f1=0 and Version.f1=0 (see fmt-baseline-1); we don't emit those.
@@ -49,17 +49,17 @@ class NoteCreatorShapeTest {
         // ONE content substring (iCloud.com splits around line breaks; we don't).
         assertEquals(3, d.subs.size)
         with(d.subs[0]) {
-            assertEquals(Topotext.CharId(0, 0), charId); assertEquals(0, length)
-            assertEquals(Topotext.CharId(0, 0), ts); assertEquals(listOf(1), children)
+            assertEquals(TopotextInvariants.CharId(0, 0), charId); assertEquals(0, length)
+            assertEquals(TopotextInvariants.CharId(0, 0), ts); assertEquals(listOf(1), children)
         }
         with(d.subs[1]) {
-            assertEquals(Topotext.CharId(1, 0), charId); assertEquals(n, length)
-            assertEquals(Topotext.CharId(1, 0), ts); assertEquals(listOf(2), children)
+            assertEquals(TopotextInvariants.CharId(1, 0), charId); assertEquals(n, length)
+            assertEquals(TopotextInvariants.CharId(1, 0), ts); assertEquals(listOf(2), children)
             assertEquals(false, tombstone)
         }
         with(d.subs[2]) {
-            assertEquals(Topotext.CharId(0, Topotext.SENTINEL_CLOCK), charId)
-            assertEquals(Topotext.CharId(0, Topotext.SENTINEL_CLOCK), ts)
+            assertEquals(TopotextInvariants.CharId(0, TopotextInvariants.SENTINEL_CLOCK), charId)
+            assertEquals(TopotextInvariants.CharId(0, TopotextInvariants.SENTINEL_CLOCK), ts)
             assertEquals(emptyList<Int>(), children)
         }
         // No substring carries an explicit tombstone=false field.
@@ -79,7 +79,7 @@ class NoteCreatorShapeTest {
     @Test
     fun structureOfEmptyNote() {
         val bytes = NoteCreator.buildEmptyNoteBytes(uuid, "")
-        val d = Topotext.checkInvariants(bytes, expectedRawVisible = "", ourUuid = uuid)
+        val d = TopotextInvariants.checkInvariants(bytes, expectedRawVisible = "", ourUuid = uuid)
         assertEquals(2, d.subs.size)
         assertEquals(listOf(1), d.subs[0].children) // doc-start links straight to the sentinel
         assertEquals(listOf(0L, 0L), d.clocks[0].counters)
@@ -103,23 +103,21 @@ class NoteCreatorShapeTest {
         // the VectorTimestamp unchanged.
         for (seed in 1..20) {
             val u = testUuid(seed)
-            val d = Topotext.parse(NoteCreator.buildEmptyNoteBytes(u, "x"))
+            val d = TopotextInvariants.parse(NoteCreator.buildEmptyNoteBytes(u, "x"))
             assertArrayEquals(u, d.clocks.single().uuid)
         }
     }
 
     @Test
     fun deviceIdentityGeneratesV4Uuids() {
-        // DeviceIdentity.generateV4Uuid is private; reach it reflectively so
-        // the README's "replica UUID must be RFC 4122 v4" rule is pinned.
-        val cls = Class.forName("com.example.applenotes.auth.DeviceIdentity")
-        val instance = cls.getField("INSTANCE").get(null)
-        val m = cls.getDeclaredMethod("generateV4Uuid").apply { isAccessible = true }
+        // DeviceIdentity (app) mints its UUID with ReplicaUuid.generateV4;
+        // pins the "replica UUID must be RFC 4122 v4" rule.
         repeat(200) {
-            val b = m.invoke(instance) as ByteArray
+            val b = com.example.applenotes.auth.ReplicaUuid.generateV4()
             assertEquals(16, b.size)
             assertEquals("version nibble", 4, (b[6].toInt() ushr 4) and 0xF)
             assertEquals("variant bits", 0b10, (b[8].toInt() ushr 6) and 0x3)
+            assertTrue(com.example.applenotes.auth.ReplicaUuid.isValidV4(b))
         }
     }
 
@@ -127,13 +125,13 @@ class NoteCreatorShapeTest {
     fun creatorOutputIsEditable() {
         val bytes = NoteCreator.buildEmptyNoteBytes(uuid, "Title\nbody")
         val appended = NoteAppender.appendBytes(bytes, uuid, "\nmore", 0)
-        Topotext.checkInvariants(appended, "Title\nbody\nmore", uuid)
+        TopotextInvariants.checkInvariants(appended, "Title\nbody\nmore", uuid)
         val spliced = NoteAppender.setBodySpliceBytes(appended, uuid, "Title\nnew body\nmore", 0)
-        Topotext.checkInvariants(spliced, "Title\nnew body\nmore", uuid)
+        TopotextInvariants.checkInvariants(spliced, "Title\nnew body\nmore", uuid)
         // Editing an empty note works too.
         val empty = NoteCreator.buildEmptyNoteBytes(uuid, "")
-        Topotext.checkInvariants(NoteAppender.appendBytes(empty, uuid, "first", 0), "first", uuid)
-        Topotext.checkInvariants(NoteAppender.setBodySpliceBytes(empty, uuid, "first", 0), "first", uuid)
+        TopotextInvariants.checkInvariants(NoteAppender.appendBytes(empty, uuid, "first", 0), "first", uuid)
+        TopotextInvariants.checkInvariants(NoteAppender.setBodySpliceBytes(empty, uuid, "first", 0), "first", uuid)
     }
 
     companion object {

@@ -107,12 +107,32 @@ Watch with `adb logcat -s AppleNotesClient:* AppleNotesDebug:*`.
 
 ## Code tour
 
+Two Gradle modules. `:core` is plain Kotlin/JVM (no Android): the protocol
+code, tested with `./gradlew :core:test`. `:app` is the Android app and
+depends on it. Package names didn't change when the code moved, so imports
+read the same in both.
+
 ```
-app/src/main/java/com/example/applenotes/
-├── auth/                      WebView cookie harvest, session refresh, DeviceIdentity (v4 UUID!)
+core/src/main/kotlin/com/example/applenotes/        (:core, pure Kotlin/JVM)
+├── auth/ICloudSession.kt     ICloudSession, LENIENT_JSON, USER_AGENT; ReplicaUuid.kt (v4 UUID helpers)
+├── client/                   AppleNotesClient: HTTP layer, fetchRecents/lookupNote/createNote/modifyNoteBody
+│   ├── NotesError.kt         Typed failures (AuthExpired, Offline, Conflict, Throttled, …) + mapping
+│   └── ZoneChanges.kt        changes/zone response parser
+├── log/CoreLog.kt            Logging seam: a sink the host installs (the app: AppLog; default: no-op)
+└── proto/
+    ├── ProtobufWire.kt       Hand-rolled protobuf wire format (no schema dep)
+    ├── Gzip.kt               gzip + zlib detect/compress/decompress
+    ├── NoteBodyEditor.kt     Decode topotext.String → visible text + attribute runs
+    ├── NoteAppender.kt       Append / splice / setBody — produces new proto bytes
+    ├── NoteCreator.kt        Build proto for a fresh note
+    ├── MergeableDataDecoder.kt  Table attachments (MergeableData CRDT graph)
+    └── TopotextInvariants.kt Independent reader + the invariant checker every write-path test runs
+core/src/testFixtures/        Fx / testUuid / loadFixture + captured protos (shared with :app's tests)
+
+app/src/main/java/com/example/applenotes/           (:app)
+├── NotesOfFruitApp.kt        Application: installs the CoreLog → AppLog bridge
+├── auth/                      WebView cookie harvest, session refresh, DeviceIdentity (stores the v4 UUID!)
 ├── automation/                Automation intent API (docs/automation.md): parsing, gate, receiver, OPEN_NOTE activity
-├── client/                    AppleNotesClient: HTTP layer, fetchRecents/lookupNote/createNote/modifyNoteBody
-│   └── NotesError.kt         Typed failures (AuthExpired, Offline, Conflict, Throttled, …) + mapping
 ├── data/
 │   ├── NotesApi.kt           Interface over the client calls the UI uses (+ fakes in tests)
 │   ├── NotesRepository.kt    App-scoped session, cached notes/folders, sync (full / incremental), save/delete flow, outbox
@@ -126,16 +146,9 @@ app/src/main/java/com/example/applenotes/
 │   └── NoteBody.kt           decodeNoteBody(): Editable vs ReadOnly(reason)
 ├── export/                   Attribute runs → HTML / Markdown, Markdown → spans (import), SAF export, print
 ├── integrations/             Share-in / PROCESS_TEXT / shortcuts / QS tile / notes-role entry (IntegrationEntryActivity)
-├── log/AppLog.kt              The only logcat access; release builds log no note content
+├── log/AppLog.kt              The only logcat access; release builds log no note content (CoreLogBridge feeds :core into it)
 ├── security/                 Optional app lock: policy (timeout), DataStore toggle, BiometricPrompt, lock screen
 ├── sync/                     DraftSyncer (+ WorkManager DraftSyncWorker): background saves of unsent drafts
-├── proto/
-│   ├── ProtobufWire.kt       Hand-rolled protobuf wire format (no schema dep)
-│   ├── Gzip.kt               gzip + zlib detect/compress/decompress
-│   ├── NoteBodyEditor.kt     Decode topotext.String → visible text + attribute runs
-│   ├── NoteAppender.kt       Append / splice / setBody — produces new proto bytes
-│   ├── NoteCreator.kt        Build proto for a fresh note
-│   └── MergeableDataDecoder.kt  Table attachments (MergeableData CRDT graph)
 └── ui/
     ├── AppleNotesApp.kt      Screen switch
     ├── AppViewModel.kt       Navigation, sign-in, list, folder selection
@@ -159,8 +172,8 @@ Read order if you're new:
 4. `NotesRepository.saveNote` — the deferred-create draft flow and the
    modify path; then `NoteDetailViewModel` (draft state, auto-save) and
    `AppViewModel.createNote` (the FAB).
-5. `src/test/.../proto/TopotextTestSupport.kt` — the invariant checker every
-   write-path test runs; use it for any new proto code.
+5. `core/src/main/.../proto/TopotextInvariants.kt` — the invariant checker
+   every write-path test runs; use it for any new proto code.
 
 ### Entry points from outside the app
 

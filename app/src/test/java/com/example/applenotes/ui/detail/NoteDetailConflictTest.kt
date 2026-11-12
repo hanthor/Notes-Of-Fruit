@@ -6,7 +6,7 @@ import androidx.lifecycle.SavedStateHandle
 import com.example.applenotes.data.NoteRebase
 import com.example.applenotes.data.NotesRepository
 import com.example.applenotes.proto.Gzip
-import com.example.applenotes.proto.Topotext
+import com.example.applenotes.proto.TopotextInvariants
 import com.example.applenotes.testing.FakeAuthGateway
 import com.example.applenotes.testing.FakeNotesApi
 import com.example.applenotes.testing.MainDispatcherRule
@@ -111,7 +111,7 @@ class NoteDetailConflictTest {
         val expected = "Shopping\nmilk\n6 eggs\n\n${NoteRebase.KEEP_BOTH_SEPARATOR}\nShopping\nmilk\nbrown eggs"
         assertEquals(expected, api.records.getValue("NOTE-A").visibleText())
         val written = api.modifies.single()
-        Topotext.checkInvariants(Gzip.decompress(Base64.decode(written.b64)), expected, REPLICA_UUID)
+        TopotextInvariants.checkInvariants(Gzip.decompress(Base64.decode(written.b64)), expected, REPLICA_UUID)
         assertNull(vm.status.value.conflict)
         assertFalse(vm.status.value.saveFailed)
         assertFalse(vm.isModified)
