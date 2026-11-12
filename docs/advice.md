@@ -41,7 +41,8 @@ record, never re-sends the stale bytes). The post-create race is real and
 consistent; there base == remote, so the merge is trivial.
 
 **Write logs that show wire shape.** `summarizeBase64` in `NoteBodyEditor` dumps
-ops/replicas/attr_runs in one line. That's how we caught most issues. When you
+ops/replicas/attr_runs in one line (`nof-cli summary` prints the same line
+for a capture). That's how we caught most issues. When you
 add a new field, add a corresponding summary line. Log through `log/AppLog`
 only: wire-shape dumps, note text and response bodies go to `AppLog.v`, which
 is off unless a debug build turns it on (any `DebugReceiver` broadcast does).
@@ -103,13 +104,22 @@ adb shell am broadcast -p $PKG -a com.example.applenotes.CREATE \
   --es title 'newnote' --es body 'hello'
 ```
 
-Watch with `adb logcat -s AppleNotesClient:* AppleNotesDebug:*`.
+Watch with `adb logcat -s AppleNotesClient:* AppleNotesDebug:*`. To look
+at a dumped proto (`DUMP_BY_TITLE` logs it as base64 chunks), save the log
+and give it to [`nof-cli`](cli.md) instead of decoding the chunks by hand:
+
+```bash
+adb logcat -d -s AppleNotesDebug:* > dump.log
+cli/build/install/nof-cli/bin/nof-cli summary dump.log   # after ./gradlew :cli:installDist
+cli/build/install/nof-cli/bin/nof-cli diff before.log after.log
+```
 
 ## Code tour
 
-Two Gradle modules. `:core` is plain Kotlin/JVM (no Android): the protocol
+Three Gradle modules. `:core` is plain Kotlin/JVM (no Android): the protocol
 code, tested with `./gradlew :core:test`. `:app` is the Android app and
-depends on it. Package names didn't change when the code moved, so imports
+depends on it. `:cli` is [`nof-cli`](cli.md), an offline inspector for
+captured protos built on `:core`. Package names didn't change when the code moved, so imports
 read the same in both.
 
 ```
@@ -128,6 +138,11 @@ core/src/main/kotlin/com/example/applenotes/        (:core, pure Kotlin/JVM)
     ├── MergeableDataDecoder.kt  Table attachments (MergeableData CRDT graph)
     └── TopotextInvariants.kt Independent reader + the invariant checker every write-path test runs
 core/src/testFixtures/        Fx / testUuid / loadFixture + captured protos (shared with :app's tests)
+
+cli/src/main/kotlin/com/example/applenotes/cli/     (:cli, nof-cli; docs/cli.md)
+├── NofCli.kt                 Argument parsing + summary / tree / runs / text / diff / check / table / raw
+├── ProtoInput.kt             Raw / gzip / zlib / base64 / DebugReceiver logcat capture → protobuf bytes
+└── ProtoDiff.kt              Char-ID-keyed structural diff of two bodies
 
 app/src/main/java/com/example/applenotes/           (:app)
 ├── NotesOfFruitApp.kt        Application: installs the CoreLog → AppLog bridge

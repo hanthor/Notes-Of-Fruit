@@ -6,7 +6,7 @@
 
 - [ ] Tests added or updated (proto changes come with a fixture-based test;
       fixtures scrubbed of personal text, see CONTRIBUTING.md)
-- [ ] `./gradlew :core:test :app:testDebugUnitTest :app:lintDebug` passes locally
+- [ ] `./gradlew :core:test :cli:test :app:testDebugUnitTest :app:lintDebug` passes locally
 - [ ] Touches the write path (proto encoding, CloudKit create/modify/delete,
       title/snippet, replica handling)? Round-trip verified on a Mac or on
       iCloud.com, described below. Otherwise: not applicable

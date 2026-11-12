@@ -140,11 +140,17 @@ the WebView auth flow.
 Tests and lint (the same checks CI runs):
 
 ```bash
-./gradlew :core:test :app:testDebugUnitTest :app:lintDebug
+./gradlew :core:test :cli:test :app:testDebugUnitTest :app:lintDebug
 ```
 
 Debug builds also include an adb-driven `DebugReceiver` for exercising the
 iCloud operations without the UI; see [docs/advice.md](docs/advice.md#what-works-and-how-to-verify).
+Protos it dumps can be inspected on your computer with `nof-cli`
+(`./gradlew :cli:installDist`; summary, substring tree, attribute runs,
+structural diff, invariant check, tables): see [docs/cli.md](docs/cli.md).
+
+The build has three modules: `:app` (Android), `:core` (the protocol code,
+plain Kotlin/JVM, `./gradlew :core:test`) and `:cli` (`nof-cli`).
 
 ## Contributing
 
@@ -174,6 +180,8 @@ that touches writes.
   limitations.
 - [docs/design-decisions.md](docs/design-decisions.md) — the original design
   decisions (attribute_runs vs Markdown, auto-save, new-note flow, …).
+- [docs/cli.md](docs/cli.md) — `nof-cli`, the offline inspector for captured
+  protos (summary, tree, runs, diff, invariant check, tables).
 - [docs/automation.md](docs/automation.md) — the automation intent API
   (create / append / open notes from Tasker-style apps).
 - [docs/signing.md](docs/signing.md) — how releases are signed and how to

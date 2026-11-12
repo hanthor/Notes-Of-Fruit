@@ -17,13 +17,14 @@ develop against notes you can't afford to lose.
 
 ```bash
 ./gradlew :app:assembleDebug                                # debug APK
-./gradlew :core:test :app:testDebugUnitTest :app:lintDebug  # what CI runs on every PR
+./gradlew :core:test :cli:test :app:testDebugUnitTest :app:lintDebug  # what CI runs on every PR
 ./gradlew :core:test                                        # protocol tests only (plain JVM, fast)
 ```
 
-- The build has two modules. `:core` is plain Kotlin/JVM: the protocol code
-  (`proto/`, `client/`) and its tests in `core/src/test/`. `:app` is the
-  Android app; its unit tests live in `app/src/test/`. Code in `:core` must
+- The build has three modules. `:core` is plain Kotlin/JVM: the protocol
+  code (`proto/`, `client/`) and its tests in `core/src/test/`. `:app` is the
+  Android app; its unit tests live in `app/src/test/`. `:cli` is
+  [`nof-cli`](docs/cli.md), an offline inspector for captured protos. Code in `:core` must
   not use Android APIs and logs through `CoreLog`, never `println`
   (`AppLogTest` checks).
 - Proto fixtures go in `core/src/testFixtures/resources/`; the fixture
@@ -46,9 +47,10 @@ to make Apple's own client do the same thing and diff the bytes.
    same shape ours do. A Mac or iPhone is the second-best reference.
 2. Do the operation under test on both (append a line, make a heading, tick a
    checkbox, delete a word…).
-3. Dump both notes' protos with `DUMP_BY_TITLE` (below) and compare the
-   `DUMP_SUMMARY`, `DESC`, `AR` (attribute runs) and `TREE` (substring tree)
-   lines. Look at the record fields too (`DUMP_RECORD`): which fields
+3. Dump both notes' protos with `DUMP_BY_TITLE` (below) and compare them on
+   your computer with [`nof-cli`](docs/cli.md): `summary`, `runs` (attribute
+   runs) and `tree` (substring tree) side by side, and `diff` for what an
+   edit changed. Look at the record fields too (`DUMP_RECORD`): which fields
    iCloud.com sends matters as much as their values.
 4. Change our output until it matches iCloud.com's *shape*, not just its field
    names.
@@ -76,35 +78,35 @@ adb logcat -d -s AppleNotesDebug:* > dump.log
 ```
 
 `title` matches the first note whose title *contains* that text (case
-insensitive), so give test notes distinctive titles. The log contains:
+insensitive), so give test notes distinctive titles. The log holds the raw
+`TextDataEncrypted` value (base64 of gzip- or zlib-compressed protobuf) as
+`DUMP_B64[i/n] …` chunks, so logcat doesn't truncate it, plus a few decoded
+lines (`DUMP_SUMMARY`, `DESC`, `AR`, `TREE`). Don't decode the chunks by
+hand: hand the whole log file to [`nof-cli`](docs/cli.md), which reassembles
+them (and refuses a capture with a chunk missing):
 
-- `DUMP_KIND`, `DUMP_SUMMARY`: what kind of proto it is and a one-line summary.
-- `DUMP_B64[i/n] …` between `DUMP_B64_BEGIN` and `DUMP_B64_END`: the raw
-  `TextDataEncrypted` value (base64 of gzip- or zlib-compressed protobuf),
-  split into chunks so logcat doesn't truncate it.
-- `DESC`, `AR`, `TREE` lines: decoded views of the document, attribute runs and
-  substring tree.
+```bash
+./gradlew :cli:installDist
+NOF=cli/build/install/nof-cli/bin/nof-cli
+$NOF summary dump.log          # wire-shape summary
+$NOF tree dump.log             # substring tree
+$NOF runs dump.log             # attribute runs, raw and decoded
+$NOF check dump.log            # the invariants the write-path tests run
+$NOF diff before.log after.log # what an edit did, by CRDT char ID
+```
 
 To turn it into a fixture (the decompressed protobuf bytes, the same format as
 the existing `core/src/testFixtures/resources/*.proto` files):
 
 ```bash
-python3 - dump.log core/src/testFixtures/resources/fixture-checklist.proto <<'EOF'
-import base64, re, sys, zlib
-chunks = {}
-for line in open(sys.argv[1], encoding="utf-8"):
-    m = re.search(r"DUMP_B64\[(\d+)/\d+\] (\S+)", line)
-    if m:
-        chunks[int(m.group(1))] = m.group(2)
-data = base64.b64decode("".join(chunks[i] for i in sorted(chunks)))
-# wbits=47 auto-detects gzip or zlib headers.
-open(sys.argv[2], "wb").write(zlib.decompress(data, 47))
-EOF
+$NOF raw dump.log > core/src/testFixtures/resources/fixture-checklist.proto
+$NOF check core/src/testFixtures/resources/fixture-checklist.proto
 ```
 
 `DUMP_RECORD --es recordName <name>` logs every string field of a record the
 same way (`FIELD_B64` lines), for looking at non-body fields such as
-`ReplicaIDToNotesVersionDataEncrypted` or table `MergeableDataEncrypted`.
+`ReplicaIDToNotesVersionDataEncrypted` or table `MergeableDataEncrypted`;
+pick one with `--field`, e.g. `$NOF table --field MergeableDataEncrypted record.log`.
 
 ## Scrubbing personal text before committing a fixture
 
@@ -142,7 +144,7 @@ checklist. In short:
 
 - Tests added or updated where it makes sense (proto changes should come with a
   fixture-based test).
-- `./gradlew :core:test :app:testDebugUnitTest :app:lintDebug` passes.
+- `./gradlew :core:test :cli:test :app:testDebugUnitTest :app:lintDebug` passes.
 - **Anything that touches the write path** (proto encoding, CloudKit
   modify/create/delete, title/snippet computation, replica handling) needs a
   manual round-trip check: make the change from this app, then open the note
