@@ -1,6 +1,6 @@
 package com.example.applenotes.proto
 
-import android.util.Log
+import com.example.applenotes.log.AppLog
 import kotlin.io.encoding.Base64
 import kotlin.io.encoding.ExperimentalEncodingApi
 
@@ -55,11 +55,11 @@ object NoteBodyEditor {
     fun mutateBase64(textDataEncryptedB64: String, mutator: (String) -> Mutation): String {
         val compressed = Base64.decode(textDataEncryptedB64)
         val proto = Gzip.decompress(compressed)
-        Log.i(TAG, "mutateBase64 IN: b64.len=${textDataEncryptedB64.length} compressed.len=${compressed.size} proto.len=${proto.size}")
+        AppLog.v(TAG) { "mutateBase64 IN: b64.len=${textDataEncryptedB64.length} compressed.len=${compressed.size} proto.len=${proto.size}" }
         val newProto = mutate(proto, mutator)
         val newCompressed = Gzip.compress(newProto)
         val newB64 = Base64.encode(newCompressed)
-        Log.i(TAG, "mutateBase64 OUT: proto.len=${newProto.size} compressed.len=${newCompressed.size} b64.len=${newB64.length}")
+        AppLog.v(TAG) { "mutateBase64 OUT: proto.len=${newProto.size} compressed.len=${newCompressed.size} b64.len=${newB64.length}" }
         return newB64
     }
 
@@ -105,7 +105,7 @@ object NoteBodyEditor {
         val protoBytes = ProtobufWire.encode(topFields)
         val gzipped = Gzip.compress(protoBytes)
         val b64 = Base64.encode(gzipped)
-        Log.i(TAG, "buildPlainTextBase64: text.len=${plainText.length} utf16.len=${utf16Length(plainText)} proto.len=${protoBytes.size} b64.len=${b64.length}")
+        AppLog.v(TAG) { "buildPlainTextBase64: text.len=${plainText.length} utf16.len=${utf16Length(plainText)} proto.len=${protoBytes.size} b64.len=${b64.length}" }
         return b64
     }
 
@@ -784,9 +784,9 @@ object NoteBodyEditor {
         }
         val original = if (textIdx >= 0) ProtobufWire.decodeString(fields[textIdx]) else ""
         val mutation = mutator(original)
-        Log.i(TAG, "rewriteNote: orig.len=${original.length} (utf16=${utf16Length(original)})  " +
+        AppLog.v(TAG) { "rewriteNote: orig.len=${original.length} (utf16=${utf16Length(original)})  " +
                 "prepend=${mutation.prepend.length}  append=${mutation.append.length}  " +
-                "noteFields=${fields.map { "${it.fieldNumber}(w${it.wireType},${it.payload.size}b)" }}")
+                "noteFields=${fields.map { "${it.fieldNumber}(w${it.wireType},${it.payload.size}b)" }}" }
         if (mutation.prepend.isEmpty() && mutation.append.isEmpty()) return
 
         val newText = mutation.prepend + original + mutation.append
@@ -795,7 +795,7 @@ object NoteBodyEditor {
         } else {
             fields.add(ProtobufWire.encodeString(FIELD_NOTE_TEXT, newText))
         }
-        Log.i(TAG, "rewriteNote: newText.len=${newText.length} (utf16=${utf16Length(newText)})")
+        AppLog.v(TAG) { "rewriteNote: newText.len=${newText.length} (utf16=${utf16Length(newText)})" }
 
         // attribute_run lengths are in UTF-16 code-units (matches NSString length on Apple).
         val prependCodeUnits = utf16Length(mutation.prepend)

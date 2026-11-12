@@ -1,7 +1,7 @@
 package com.example.applenotes.ui.login
 
 import android.annotation.SuppressLint
-import android.util.Log
+import com.example.applenotes.log.AppLog
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebView
@@ -44,7 +44,7 @@ internal fun LoginScreen(onCookiesArrived: () -> Unit) {
                         val cookies = CookieManager.getInstance().getCookie("https://www.icloud.com").orEmpty()
                         if (!detected && "X-APPLE-WEBAUTH-TOKEN" in cookies) {
                             detected = true
-                            Log.i(TAG, "Login cookies detected (post URL=$url)")
+                            AppLog.i(TAG) { "Login cookies detected" }
                             onCookiesArrived()
                         }
                     }

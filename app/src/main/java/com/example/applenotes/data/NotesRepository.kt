@@ -1,6 +1,6 @@
 package com.example.applenotes.data
 
-import android.util.Log
+import com.example.applenotes.log.AppLog
 import com.example.applenotes.auth.DeviceIdentity
 import com.example.applenotes.client.FolderSummary
 import com.example.applenotes.client.NoteRecord
@@ -71,7 +71,7 @@ class NotesRepository(
     suspend fun replicaUuid(): ByteArray = uuidLock.withLock {
         replicaUuid ?: replicaUuidLoader().also {
             replicaUuid = it
-            Log.i(TAG, "device replica uuid=${DeviceIdentity.hexEncode(it)}")
+            AppLog.i(TAG) { "device replica uuid=${DeviceIdentity.hexEncode(it)}" }
         }
     }
 
@@ -88,7 +88,7 @@ class NotesRepository(
         val notes = fetchNoteList(newApi)
         val folderIds = notes.mapNotNull { it.folderRecordName }.toSet()
         val folders = runCatching { newApi.lookupFolders(folderIds) }.getOrElse {
-            Log.w(TAG, "lookupFolders failed; falling back to ID-only list", it)
+            AppLog.w(TAG, "lookupFolders failed; falling back to ID-only list", it)
             folderIds.map { rn ->
                 FolderSummary(
                     recordName = rn,
@@ -192,11 +192,10 @@ class NotesRepository(
             val firstNlIdx = newBody.indexOf('\n')
             val createTitle = if (firstNlIdx < 0) newBody else newBody.substring(0, firstNlIdx)
             val createBody = if (firstNlIdx < 0) "" else newBody.substring(firstNlIdx + 1)
-            Log.i(
-                TAG,
+            AppLog.v(TAG) {
                 "save (draft→createNote): title='${createTitle.take(30)}' " +
-                    "body.len=${createBody.length} snippet='${newSnippet.take(30)}'",
-            )
+                    "body.len=${createBody.length} snippet='${newSnippet.take(30)}'"
+            }
             updated = client.createNote(
                 title = createTitle,
                 body = createBody,
@@ -237,11 +236,10 @@ class NotesRepository(
                 NoteAppender.setBodyBase64(textB64, uuid, newBody, now, newSpans)
             }
             val (oldTitle, oldSnippet) = computeTitleAndSnippet(originalBody)
-            Log.i(
-                TAG,
+            AppLog.v(TAG) {
                 "save: title '${oldTitle.take(30)}'->'${newTitle.take(30)}' " +
-                    "snippet '${oldSnippet.take(30)}'->'${newSnippet.take(30)}'",
-            )
+                    "snippet '${oldSnippet.take(30)}'->'${newSnippet.take(30)}'"
+            }
             updated = client.modifyNoteBody(
                 record.recordName,
                 tag,

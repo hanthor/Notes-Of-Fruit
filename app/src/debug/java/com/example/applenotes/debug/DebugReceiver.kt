@@ -3,7 +3,7 @@ package com.example.applenotes.debug
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.util.Log
+import com.example.applenotes.log.AppLog
 import com.example.applenotes.auth.AppleNotesSession
 import com.example.applenotes.auth.CookieReader
 import com.example.applenotes.auth.DeviceIdentity
@@ -48,6 +48,10 @@ private const val TAG = "AppleNotesDebug"
  *   DUMP_RECORD --es recordName <name>      — log every string field of a record
  *   CREATE --es title <t> --es body <b>     — create a note in an existing note's folder
  *
+ * Any broadcast also switches on `AppLog.verbose` (wire-shape dumps such as
+ * proto summaries and response bodies, off by default) for the rest of the
+ * process; pass `--ez verbose false` to switch it off again.
+ *
  * Each operation runs on a coroutine; [goAsync] keeps the broadcast (and so
  * the process) alive until it finishes. Android still enforces the broadcast
  * timeout (about 60 s for a background broadcast), so a very slow network
@@ -61,47 +65,52 @@ class DebugReceiver : BroadcastReceiver() {
 
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
+        // A debug session driven from adb wants wire-shape dumps (proto
+        // summaries, substring trees, response bodies): turn on AppLog's
+        // verbose level for the rest of this process. `--ez verbose false`
+        // turns it back off.
+        AppLog.verbose = intent.getBooleanExtra("verbose", true)
         val extras = intent.extras?.keySet()?.associateWith { intent.extras?.get(it) } ?: emptyMap()
-        Log.i(TAG, "RECV $action extras=$extras")
+        AppLog.i(TAG) { "RECV $action extras=$extras" }
         // Optional `strategy` extra to switch the appender's write pattern.
         intent.getStringExtra("strategy")?.let { stratStr ->
             val strat = runCatching { NoteAppender.Strategy.valueOf(stratStr) }.getOrNull()
             if (strat != null) {
                 NoteAppender.setStrategy(strat)
-                Log.i(TAG, "Strategy set to $strat")
+                AppLog.i(TAG) { "Strategy set to $strat" }
             }
         }
         when (action) {
             ACTION_LIST -> launchOp("LIST") { client, _ ->
                 val notes = client.fetchRecents(200)
-                Log.i(TAG, "LIST_OK count=${notes.size}")
+                AppLog.i(TAG) { "LIST_OK count=${notes.size}" }
                 notes
             }
             ACTION_LOOKUP -> {
                 val recordName = intent.getStringExtra("recordName")
                 if (recordName == null) {
-                    Log.e(TAG, "LOOKUP missing recordName")
+                    AppLog.e(TAG, "LOOKUP missing recordName")
                     return
                 }
                 launchOp("LOOKUP") { client, _ ->
                     client.lookupNote(recordName)
-                    Log.i(TAG, "LOOKUP_OK $recordName")
+                    AppLog.i(TAG) { "LOOKUP_OK $recordName" }
                 }
             }
             ACTION_LOOKUP_BY_TITLE -> {
                 val title = intent.getStringExtra("title")
                 if (title == null) {
-                    Log.e(TAG, "LOOKUP_BY_TITLE missing title")
+                    AppLog.e(TAG, "LOOKUP_BY_TITLE missing title")
                     return
                 }
                 launchOp("LOOKUP_BY_TITLE") { client, _ ->
                     val match = findByTitle(client, title)
                     if (match == null) {
-                        Log.w(TAG, "LOOKUP_BY_TITLE_NOT_FOUND title='$title'")
+                        AppLog.w(TAG, "LOOKUP_BY_TITLE_NOT_FOUND title='$title'")
                     } else {
-                        Log.i(TAG, "LOOKUP_BY_TITLE_FOUND '$title' -> ${match.recordName}")
+                        AppLog.i(TAG) { "LOOKUP_BY_TITLE_FOUND '$title' -> ${match.recordName}" }
                         client.lookupNote(match.recordName)
-                        Log.i(TAG, "LOOKUP_BY_TITLE_OK")
+                        AppLog.i(TAG) { "LOOKUP_BY_TITLE_OK" }
                     }
                 }
             }
@@ -109,7 +118,7 @@ class DebugReceiver : BroadcastReceiver() {
                 val recordName = intent.getStringExtra("recordName")
                 val text = intent.getStringExtra("text")
                 if (recordName == null || text == null) {
-                    Log.e(TAG, "APPEND missing recordName or text (got rec=$recordName text=$text)")
+                    AppLog.e(TAG, "APPEND missing recordName or text (got rec=$recordName text=$text)")
                     return
                 }
                 launchOp("APPEND") { client, session ->
@@ -120,15 +129,15 @@ class DebugReceiver : BroadcastReceiver() {
                 val title = intent.getStringExtra("title")
                 val text = intent.getStringExtra("text")
                 if (title == null || text == null) {
-                    Log.e(TAG, "APPEND_BY_TITLE missing title or text")
+                    AppLog.e(TAG, "APPEND_BY_TITLE missing title or text")
                     return
                 }
                 launchOp("APPEND_BY_TITLE") { client, session ->
                     val match = findByTitle(client, title)
                     if (match == null) {
-                        Log.w(TAG, "APPEND_BY_TITLE_NOT_FOUND title='$title'")
+                        AppLog.w(TAG, "APPEND_BY_TITLE_NOT_FOUND title='$title'")
                     } else {
-                        Log.i(TAG, "APPEND_BY_TITLE_FOUND '$title' -> ${match.recordName}")
+                        AppLog.i(TAG) { "APPEND_BY_TITLE_FOUND '$title' -> ${match.recordName}" }
                         appendToNote(context, client, match.recordName, text)
                     }
                 }
@@ -136,19 +145,19 @@ class DebugReceiver : BroadcastReceiver() {
             ACTION_DELETE_BY_TITLE -> {
                 val title = intent.getStringExtra("title")
                 if (title == null) {
-                    Log.e(TAG, "DELETE_BY_TITLE missing title")
+                    AppLog.e(TAG, "DELETE_BY_TITLE missing title")
                     return
                 }
                 launchOp("DELETE_BY_TITLE") { client, _ ->
                     val match = findByTitle(client, title)
                     if (match == null) {
-                        Log.w(TAG, "DELETE_BY_TITLE_NOT_FOUND title='$title'")
+                        AppLog.w(TAG, "DELETE_BY_TITLE_NOT_FOUND title='$title'")
                     } else {
-                        Log.i(TAG, "DELETE_BY_TITLE_FOUND '$title' -> ${match.recordName}")
+                        AppLog.i(TAG) { "DELETE_BY_TITLE_FOUND '$title' -> ${match.recordName}" }
                         val record = client.lookupNote(match.recordName)
                         val tag = record.recordChangeTag ?: error("no tag")
                         client.deleteNote(match.recordName, tag)
-                        Log.i(TAG, "DELETE_BY_TITLE_OK ${match.recordName}")
+                        AppLog.i(TAG) { "DELETE_BY_TITLE_OK ${match.recordName}" }
                     }
                 }
             }
@@ -156,15 +165,15 @@ class DebugReceiver : BroadcastReceiver() {
                 val title = intent.getStringExtra("title")
                 val body = intent.getStringExtra("body")
                 if (title == null || body == null) {
-                    Log.e(TAG, "SET_BODY_BY_TITLE missing title or body")
+                    AppLog.e(TAG, "SET_BODY_BY_TITLE missing title or body")
                     return
                 }
                 launchOp("SET_BODY_BY_TITLE") { client, _ ->
                     val match = findByTitle(client, title)
                     if (match == null) {
-                        Log.w(TAG, "SET_BODY_BY_TITLE_NOT_FOUND title='$title'")
+                        AppLog.w(TAG, "SET_BODY_BY_TITLE_NOT_FOUND title='$title'")
                     } else {
-                        Log.i(TAG, "SET_BODY_BY_TITLE_FOUND '$title' -> ${match.recordName}")
+                        AppLog.i(TAG) { "SET_BODY_BY_TITLE_FOUND '$title' -> ${match.recordName}" }
                         setBodyOnNote(context, client, match.recordName, body)
                     }
                 }
@@ -172,22 +181,22 @@ class DebugReceiver : BroadcastReceiver() {
             ACTION_DUMP_RECORD -> {
                 val recordName = intent.getStringExtra("recordName")
                 if (recordName == null) {
-                    Log.e(TAG, "DUMP_RECORD missing recordName")
+                    AppLog.e(TAG, "DUMP_RECORD missing recordName")
                     return
                 }
                 launchOp("DUMP_RECORD") { client, _ ->
                     val record = client.lookupNote(recordName)
-                    Log.i(TAG, "DUMP_RECORD type=${record.recordType} tag=${record.recordChangeTag}")
+                    AppLog.i(TAG) { "DUMP_RECORD type=${record.recordType} tag=${record.recordChangeTag}" }
                     for ((name, _) in record.rawFields) {
                         val s = record.stringField(name)
                         if (s == null) continue
-                        Log.i(TAG, "FIELD $name (b64.len=${s.length})")
+                        AppLog.i(TAG) { "FIELD $name (b64.len=${s.length})" }
                         val chunkSize = 800
                         val chunks = (s.length + chunkSize - 1) / chunkSize
                         for (i in 0 until chunks) {
                             val start = i * chunkSize
                             val end = minOf(start + chunkSize, s.length)
-                            Log.i(TAG, "FIELD_B64 $name [$i/$chunks] ${s.substring(start, end)}")
+                            AppLog.i(TAG) { "FIELD_B64 $name [$i/$chunks] ${s.substring(start, end)}" }
                         }
                     }
                 }
@@ -195,45 +204,45 @@ class DebugReceiver : BroadcastReceiver() {
             ACTION_DUMP_BY_TITLE -> {
                 val title = intent.getStringExtra("title")
                 if (title == null) {
-                    Log.e(TAG, "DUMP_BY_TITLE missing title")
+                    AppLog.e(TAG, "DUMP_BY_TITLE missing title")
                     return
                 }
                 launchOp("DUMP_BY_TITLE") { client, _ ->
                     val match = findByTitle(client, title)
                     if (match == null) {
-                        Log.w(TAG, "DUMP_BY_TITLE_NOT_FOUND title='$title'")
+                        AppLog.w(TAG, "DUMP_BY_TITLE_NOT_FOUND title='$title'")
                     } else {
-                        Log.i(TAG, "DUMP_BY_TITLE_FOUND '$title' -> ${match.recordName}")
+                        AppLog.i(TAG) { "DUMP_BY_TITLE_FOUND '$title' -> ${match.recordName}" }
                         val record = client.lookupNote(match.recordName)
                         val b64 = record.stringField("TextDataEncrypted")
                         if (b64 == null) {
-                            Log.w(TAG, "DUMP_BY_TITLE_NO_BODY")
+                            AppLog.w(TAG, "DUMP_BY_TITLE_NO_BODY")
                         } else {
-                            Log.i(TAG, "DUMP_KIND ${NoteBodyEditor.probeBase64(b64)}")
+                            AppLog.i(TAG) { "DUMP_KIND ${NoteBodyEditor.probeBase64(b64)}" }
                             // Log b64 in 1KB chunks so logcat doesn't truncate.
                             val chunkSize = 800
                             val chunks = (b64.length + chunkSize - 1) / chunkSize
-                            Log.i(TAG, "DUMP_B64_BEGIN total=${b64.length} chunks=$chunks")
+                            AppLog.i(TAG) { "DUMP_B64_BEGIN total=${b64.length} chunks=$chunks" }
                             for (i in 0 until chunks) {
                                 val start = i * chunkSize
                                 val end = minOf(start + chunkSize, b64.length)
-                                Log.i(TAG, "DUMP_B64[$i/$chunks] ${b64.substring(start, end)}")
+                                AppLog.i(TAG) { "DUMP_B64[$i/$chunks] ${b64.substring(start, end)}" }
                             }
-                            Log.i(TAG, "DUMP_B64_END")
-                            Log.i(TAG, "DUMP_SUMMARY ${NoteBodyEditor.summarizeBase64(b64)}")
+                            AppLog.i(TAG) { "DUMP_B64_END" }
+                            AppLog.i(TAG) { "DUMP_SUMMARY ${NoteBodyEditor.summarizeBase64(b64)}" }
                             // describeBase64 is multi-line; split for logcat.
                             val desc = NoteBodyEditor.describeBase64(b64)
-                            Log.i(TAG, "DUMP_DESCRIBE_BEGIN")
-                            for (line in desc.lines()) Log.i(TAG, "DESC $line")
-                            Log.i(TAG, "DUMP_DESCRIBE_END")
+                            AppLog.i(TAG) { "DUMP_DESCRIBE_BEGIN" }
+                            for (line in desc.lines()) AppLog.i(TAG) { "DESC $line" }
+                            AppLog.i(TAG) { "DUMP_DESCRIBE_END" }
                             val ar = NoteBodyEditor.dumpAttributeRunsBase64(b64)
-                            Log.i(TAG, "DUMP_ATTRRUNS_BEGIN")
-                            for (line in ar.lines()) Log.i(TAG, "AR $line")
-                            Log.i(TAG, "DUMP_ATTRRUNS_END")
+                            AppLog.i(TAG) { "DUMP_ATTRRUNS_BEGIN" }
+                            for (line in ar.lines()) AppLog.i(TAG) { "AR $line" }
+                            AppLog.i(TAG) { "DUMP_ATTRRUNS_END" }
                             val tree = NoteBodyEditor.dumpSubstringTreeBase64(b64)
-                            Log.i(TAG, "DUMP_TREE_BEGIN")
-                            for (line in tree.lines()) Log.i(TAG, "TREE $line")
-                            Log.i(TAG, "DUMP_TREE_END")
+                            AppLog.i(TAG) { "DUMP_TREE_BEGIN" }
+                            for (line in tree.lines()) AppLog.i(TAG) { "TREE $line" }
+                            AppLog.i(TAG) { "DUMP_TREE_END" }
                         }
                     }
                 }
@@ -250,10 +259,10 @@ class DebugReceiver : BroadcastReceiver() {
                     val folderRef = sample.rawFields["Folder"]
                         ?: error("sample note has no Folder field")
                     val created = client.createNote(title, body, folderRef, uuid)
-                    Log.i(TAG, "CREATE_OK ${created.recordName}")
+                    AppLog.i(TAG) { "CREATE_OK ${created.recordName}" }
                 }
             }
-            else -> Log.w(TAG, "RECV unknown action=$action")
+            else -> AppLog.w(TAG, "RECV unknown action=$action")
         }
     }
 
@@ -267,9 +276,9 @@ class DebugReceiver : BroadcastReceiver() {
                 val session = bootstrap()
                 val client = AppleNotesClient(httpClient, session)
                 op(client, session)
-                Log.i(TAG, "$label DONE")
+                AppLog.i(TAG) { "$label DONE" }
             } catch (e: Throwable) {
-                Log.e(TAG, "$label FAILED ${e.javaClass.simpleName}: ${e.message}", e)
+                AppLog.e(TAG, "$label FAILED ${e.javaClass.simpleName}: ${e.message}", e)
             } finally {
                 pending.finish()
             }
@@ -303,12 +312,11 @@ class DebugReceiver : BroadcastReceiver() {
         val newBody = originalBody + text
         val (oldTitle, oldSnippet) = computeTitleAndSnippet(originalBody)
         val (newTitle, newSnippet) = computeTitleAndSnippet(newBody)
-        Log.i(
-            TAG,
+        AppLog.i(TAG) {
             "APPEND rec=$recordName text='${text.take(40)}' " +
                 "title '${oldTitle.take(30)}'->'${newTitle.take(30)}' " +
-                "snippet '${oldSnippet.take(30)}'->'${newSnippet.take(30)}'",
-        )
+                "snippet '${oldSnippet.take(30)}'->'${newSnippet.take(30)}'"
+        }
         client.modifyNoteBody(
             recordName, tag, newB64,
             // Always send Title and Snippet, even when unchanged. Mac's notesync
@@ -320,7 +328,7 @@ class DebugReceiver : BroadcastReceiver() {
             newSnippet = newSnippet,
             replicaVersionPassThroughB64 = record.stringField("ReplicaIDToNotesVersionDataEncrypted"),
         )
-        Log.i(TAG, "APPEND_OK rec=$recordName")
+        AppLog.i(TAG) { "APPEND_OK rec=$recordName" }
     }
 
     /**
@@ -343,19 +351,18 @@ class DebugReceiver : BroadcastReceiver() {
         val newB64 = NoteAppender.setBodyBase64(textB64, uuid, newBody, now)
         val (oldTitle, oldSnippet) = computeTitleAndSnippet(originalBody)
         val (newTitle, newSnippet) = computeTitleAndSnippet(newBody)
-        Log.i(
-            TAG,
+        AppLog.i(TAG) {
             "SET_BODY rec=$recordName bodyLen=${newBody.length} " +
                 "title '${oldTitle.take(30)}'->'${newTitle.take(30)}' " +
-                "snippet '${oldSnippet.take(30)}'->'${newSnippet.take(30)}'",
-        )
+                "snippet '${oldSnippet.take(30)}'->'${newSnippet.take(30)}'"
+        }
         client.modifyNoteBody(
             recordName, tag, newB64,
             newTitle = newTitle.takeIf { it != oldTitle },
             newSnippet = newSnippet.takeIf { it != oldSnippet },
             replicaVersionPassThroughB64 = record.stringField("ReplicaIDToNotesVersionDataEncrypted"),
         )
-        Log.i(TAG, "SET_BODY_OK rec=$recordName")
+        AppLog.i(TAG) { "SET_BODY_OK rec=$recordName" }
     }
 
     companion object {

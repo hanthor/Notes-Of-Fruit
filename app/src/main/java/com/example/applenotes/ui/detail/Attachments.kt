@@ -1,6 +1,6 @@
 package com.example.applenotes.ui.detail
 
-import android.util.Log
+import com.example.applenotes.log.AppLog
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -67,7 +67,7 @@ internal suspend fun decodeAttachment(
         val mediaRefName = mediaField?.let {
             com.example.applenotes.client.extractReferenceRecordName(it)
         }
-        android.util.Log.i("AppleNotesUI", "Image attachment ${rec.recordName}: mediaRef=$mediaRefName uti=$uti")
+        AppLog.i("AppleNotesUI") { "Image attachment ${rec.recordName}: mediaRef=$mediaRefName uti=$uti" }
         if (mediaRefName != null) {
             val mediaRec = fetchRecord(mediaRefName)
             // Media record's asset typically lives in field "MediaEncrypted" or "Media".

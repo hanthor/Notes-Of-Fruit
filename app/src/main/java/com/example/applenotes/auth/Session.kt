@@ -1,6 +1,6 @@
 package com.example.applenotes.auth
 
-import android.util.Log
+import com.example.applenotes.log.AppLog
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.request.headers
@@ -81,7 +81,7 @@ class AppleNotesSession(
         }
 
         val raw = response.body<String>()
-        Log.i(TAG, "validate response: HTTP ${response.status.value}, body[0..400]=${raw.take(400)}")
+        AppLog.i(TAG) { "validate response: HTTP ${response.status.value}, ${raw.length}B" }
         val parsed = LENIENT_JSON.decodeFromString(AccountLoginResponse.serializer(), raw)
 
         val dsid = parsed.dsInfo?.dsid

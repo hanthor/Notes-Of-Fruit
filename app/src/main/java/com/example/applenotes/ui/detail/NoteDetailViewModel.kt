@@ -1,7 +1,7 @@
 package com.example.applenotes.ui.detail
 
 import android.content.Context
-import android.util.Log
+import com.example.applenotes.log.AppLog
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -221,7 +221,7 @@ class NoteDetailViewModel(
                     load(rec, null, draft.takeIf { rec.recordChangeTag == tag })
                 }
                 .onFailure {
-                    Log.w(TAG, "restore: lookupNote failed", it)
+                    AppLog.w(TAG, "restore: lookupNote failed", it)
                     if (_status.value.openId == openId) {
                         _status.update { s ->
                             s.copy(
@@ -254,7 +254,7 @@ class NoteDetailViewModel(
         val body = decodeNoteBody(rec)
         readOnlyReason = (body as? NoteBody.ReadOnly)?.reason
         if (body is NoteBody.ReadOnly) {
-            Log.w(TAG, "opening ${rec.recordName} read-only: ${body.reason}")
+            AppLog.w(TAG, "opening ${rec.recordName} read-only: ${body.reason}")
         }
         val original = body.text.orEmpty()
         originalBody = original
@@ -317,7 +317,7 @@ class NoteDetailViewModel(
                 if (_attachments.value.containsKey(rn)) continue
                 val rec = fetcher(rn) ?: continue
                 val content = runCatchingCancellable { decodeAttachment(rec, assetFetcher, fetcher) }
-                    .onFailure { Log.w(TAG, "decodeAttachment failed for $rn", it) }
+                    .onFailure { AppLog.w(TAG, "decodeAttachment failed for $rn", it) }
                     .getOrNull()
                 if (content != null) {
                     _attachments.value = _attachments.value + (rn to content)
@@ -447,7 +447,7 @@ class NoteDetailViewModel(
                     changedSince && (exit || queuedExit != null) -> save(alsoExit = exit)
                 }
             }.onFailure { e ->
-                Log.e(TAG, "save failed", e)
+                AppLog.e(TAG, "save failed", e)
                 if (!stillHere) return@onFailure
                 _status.update {
                     it.copy(
@@ -484,7 +484,7 @@ class NoteDetailViewModel(
                     updateIfOpen(openId) { it.copy(deleting = false, exitRequested = true) }
                 }
                 .onFailure { e ->
-                    Log.e(TAG, "delete failed", e)
+                    AppLog.e(TAG, "delete failed", e)
                     // Stay on the note (draft intact) and offer a retry.
                     updateIfOpen(openId) {
                         it.copy(

@@ -1,7 +1,7 @@
 package com.example.applenotes.ui
 
 import android.content.Context
-import android.util.Log
+import com.example.applenotes.log.AppLog
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -169,7 +169,7 @@ class AppViewModel(
                     }
                 }
                 .onFailure {
-                    Log.e(TAG, "bootstrap failed", it)
+                    AppLog.e(TAG, "bootstrap failed", it)
                     _screen.value = AppScreen.Error(userMessage(it))
                 }
         }
@@ -195,7 +195,7 @@ class AppViewModel(
         viewModelScope.launch {
             runCatchingCancellable { repository.refresh() }
                 .onFailure {
-                    Log.e(TAG, "refresh failed", it)
+                    AppLog.e(TAG, "refresh failed", it)
                     postListMessage("Couldn't refresh: ${userMessage(it)}", ListAction.RetryRefresh)
                 }
             // Either way the (possibly stale) cached list is still good.
@@ -209,7 +209,7 @@ class AppViewModel(
             runCatchingCancellable { repository.lookupNote(note.recordName) }
                 .onSuccess { showDetail(it, pendingFolderRef = null) }
                 .onFailure {
-                    Log.e(TAG, "lookupNote failed", it)
+                    AppLog.e(TAG, "lookupNote failed", it)
                     _screen.value = AppScreen.NotesList
                     postListMessage("Couldn't open the note: ${userMessage(it)}", ListAction.RetryOpen(note))
                 }
@@ -244,7 +244,7 @@ class AppViewModel(
                     showDetail(draftRecord, pendingFolderRef = folderRef)
                 }
                 .onFailure {
-                    Log.e(TAG, "createNote (folder lookup) failed", it)
+                    AppLog.e(TAG, "createNote (folder lookup) failed", it)
                     _screen.value = AppScreen.NotesList
                     postListMessage("Couldn't create a note: ${userMessage(it)}", ListAction.RetryCreate)
                 }
