@@ -35,12 +35,17 @@ look at what iCloud.com sends. We removed `PaperStyleType` / `AttachmentViewType
 defaults handle it. Sending zeros made the new record look "edited" and racy.
 
 **Pre-flight checks before edits.** Always re-`lookupNote` to get a fresh
-`recordChangeTag` before submitting a modify, OR rely on the auto-retry on
-CONFLICT (we do the latter). The post-create race is real and consistent.
+`recordChangeTag` before submitting a modify, OR handle CONFLICT (we do the
+latter: `NotesRepository.modifyWithRebase` re-applies the edit to the fresh
+record, never re-sends the stale bytes). The post-create race is real and
+consistent; there base == remote, so the merge is trivial.
 
 **Write logs that show wire shape.** `summarizeBase64` in `NoteBodyEditor` dumps
 ops/replicas/attr_runs in one line. That's how we caught most issues. When you
-add a new field, add a corresponding summary line.
+add a new field, add a corresponding summary line. Log through `log/AppLog`
+only: wire-shape dumps, note text and response bodies go to `AppLog.v`, which
+is off unless a debug build turns it on (any `DebugReceiver` broadcast does).
+Release builds log no note content at all.
 
 **Don't speculate about validation rules in production.** Apple's clients run
 validation we can't see. The only authoritative way to know if a write is
@@ -103,11 +108,16 @@ Watch with `adb logcat -s AppleNotesClient:* AppleNotesDebug:*`.
 app/src/main/java/com/example/applenotes/
 ├── auth/                      WebView cookie harvest, session refresh, DeviceIdentity (v4 UUID!)
 ├── client/                    AppleNotesClient: HTTP layer, fetchRecents/lookupNote/createNote/modifyNoteBody
+│   └── NotesError.kt         Typed failures (AuthExpired, Offline, Conflict, Throttled, …) + mapping
 ├── data/
 │   ├── NotesApi.kt           Interface over the client calls the UI uses (+ fakes in tests)
 │   ├── NotesRepository.kt    App-scoped session, cached notes/folders, save/delete flow
 │   ├── AppGraph.kt           Lazy singleton: one HttpClient, repository, alpha gate
+│   ├── TextMerge.kt          Line-level three-way merge for save conflicts
+│   ├── NoteRebase.kt         Merge formatting, splice the merge onto the fresh proto, "Keep both"
+│   ├── Connectivity.kt       Online/offline flow (ConnectivityManager)
 │   └── NoteBody.kt           decodeNoteBody(): Editable vs ReadOnly(reason)
+├── log/AppLog.kt              The only logcat access; release builds log no note content
 ├── proto/
 │   ├── ProtobufWire.kt       Hand-rolled protobuf wire format (no schema dep)
 │   ├── Gzip.kt               gzip + zlib detect/compress/decompress
@@ -140,12 +150,26 @@ Read order if you're new:
 
 ## Known limitations
 
-- **Concurrent-edit conflicts**: the auto-retry resubmits the original body
-  bytes, which last-writer-wins on a true concurrent edit. Safe for the
-  post-create housekeeping race we hit in practice. The proper v2 fix is to
-  decompose edits into char-ID-keyed ops and replay against a fresh base on
-  conflict; the design is sketched in commit `0462bcb`'s discussion thread but
-  not yet implemented.
+- **Concurrent-edit conflicts** (issue #4): on CONFLICT the save looks the
+  note up again and runs a three-way merge (`data/TextMerge.kt`: base = what
+  the user started from, local = the draft, remote = the fresh text). The
+  merge is **line level** and conservative: edits to different lines merge;
+  both sides touching the same line (including both appending at the end) is
+  a conflict, and the editor asks "Keep both" (the user's version is appended
+  under a marked separator, attachments in that copy become `[attachment]`
+  text) or "Discard my changes". Nothing is written until the user picks.
+  A clean merge is spliced onto the *fresh* proto one local change at a time
+  (`NoteRebase.rebaseBody`), so the other device's char IDs survive.
+  Formatting is merged per char: the user's spans where they changed them,
+  the remote's elsewhere. At most 3 writes per save. Still a text-level
+  rebase, not the char-ID-keyed op replay the CRDT would allow, and not yet
+  round-tripped against a real concurrent Mac/iPhone edit.
+- **Errors and sessions** (issue #11): failures are typed
+  (`client/NotesError.kt`); an expired session is refreshed from the cookie
+  jar once, then the user is sent to sign in with the open note and draft
+  kept. Drafts live in memory and the detail `SavedStateHandle` only; there
+  are no on-disk drafts yet, so force-stopping the app loses an unsaved
+  edit.
 - **Modern `MergableData` proto is not supported.** Newer Apple Notes (iOS 17+
   collaborative notes?) use a different shape. We refuse to operate on those —
   see `NoteBodyEditor.probe`. Read-only support would be a starting point.

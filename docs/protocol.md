@@ -55,7 +55,9 @@ and commit `3ee1a60`.
   with that sentinel. Always send `System.currentTimeMillis()`.
 - `recordChangeTag` is CloudKit's optimistic-concurrency token. Mac's notesync
   bumps it asynchronously after merging — expect `CONFLICT`/`oplock` errors on
-  edits that follow a create. We auto-retry once with a fresh tag.
+  edits that follow a create. On CONFLICT we re-read the record and re-apply
+  the edit to it (three-way merge), rather than re-sending the old bytes with
+  the new tag, which would overwrite a real concurrent edit.
 
 ### Listing notes and folders
 

@@ -46,6 +46,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -378,6 +379,31 @@ internal fun NoteDetailScreen(
                     }
                     TextButton(onClick = { showUnsavedDialog = false }) { Text("Keep editing") }
                 }
+            },
+        )
+    }
+
+    // Issue #4: the draft overlaps a change made on another device.
+    // Nothing was written; the user has to pick (no dismiss), because
+    // saving the draft as-is would revert the other change.
+    status.conflict?.let {
+        AlertDialog(
+            onDismissRequest = {},
+            properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
+            title = { Text("This note changed on another device") },
+            text = {
+                Text(
+                    "Your edits overlap a change made elsewhere, so nothing was saved. " +
+                        "Keep both adds your version below the other device's text, " +
+                        "clearly marked, so nothing is lost. Discard my changes shows " +
+                        "the other device's version instead.",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { vm.keepBoth() }) { Text("Keep both") }
+            },
+            dismissButton = {
+                TextButton(onClick = { vm.discardLocalChanges() }) { Text("Discard my changes") }
             },
         )
     }

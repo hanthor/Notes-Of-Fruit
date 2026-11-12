@@ -87,7 +87,7 @@ you can't say you weren't warned.
 | Other attachments (sketches, maps, etc.) | Rendered as a labeled placeholder card |
 | Format input toolbar | Works — paragraph style picker, list toggles (bullet/dash/numbered/checkbox), inline B/I/U/S, link |
 | Tap-to-toggle checkbox | Works in formatted view (auto-saves) |
-| Conflict UX | Auto-retry on CONFLICT/oplock; no concurrent-edit merge yet |
+| Conflict UX | On CONFLICT/oplock the edit is three-way merged (line level) onto the fresh record and spliced onto its proto; overlapping edits ask "Keep both" / "Discard my changes" (unit-tested; not yet round-tripped against a real concurrent Mac edit) |
 
 Known limitations are listed in [docs/advice.md](docs/advice.md#known-limitations).
 

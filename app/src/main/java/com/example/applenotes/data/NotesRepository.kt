@@ -30,6 +30,9 @@ private const val MAX_THROTTLE_RETRIES = 2
 private const val MIN_BACKOFF_MS = 500L
 private const val MAX_BACKOFF_MS = 30_000L
 
+/** Writes per save, counting re-tries after a CONFLICT (issue #4). */
+internal const val MAX_SAVE_ATTEMPTS = 3
+
 /**
  * Application-scoped owner of the iCloud session and the cached note list.
  *
@@ -302,55 +305,7 @@ class NotesRepository(
             _notes.update { listOf(newSummary) + it }
         } else {
             // EXISTING NOTE: incremental modify path.
-            val tag = record.recordChangeTag
-            val textB64 = record.stringField("TextDataEncrypted")
-                ?: error("No body field on this note.")
-            val originalBody = NoteBodyEditor.readVisibleTextFromBase64(textB64)
-                ?: NoteBodyEditor.readTextFromBase64(textB64).orEmpty()
-            val now = clock() / 1000L
-            // Pure-append edits go through the cheap APPEND path
-            // (one new substring at the sentinel slot). Anything
-            // else (replace/insert/delete in the middle) goes
-            // through the splice path which mirrors iCloud.com's
-            // pattern: slot promotion + split-and-tombstone +
-            // fresh ts on tombstones + new chunks for inserts.
-            val newB64 = if (isPureAppend && newSpans == null) {
-                val appended = newBody.removePrefix(originalBody)
-                require(appended.isNotEmpty()) { "Pure-append marked but no new chars" }
-                NoteAppender.appendBase64(textB64, uuid, appended, now)
-            } else {
-                NoteAppender.setBodyBase64(textB64, uuid, newBody, now, newSpans)
-            }
-            val (oldTitle, oldSnippet) = computeTitleAndSnippet(originalBody)
-            AppLog.v(TAG) {
-                "save: title '${oldTitle.take(30)}'->'${newTitle.take(30)}' " +
-                    "snippet '${oldSnippet.take(30)}'->'${newSnippet.take(30)}'"
-            }
-            updated = client.modifyNoteBody(
-                record.recordName,
-                tag,
-                newB64,
-                newTitle = newTitle.takeIf { it != oldTitle },
-                newSnippet = newSnippet.takeIf { it != oldSnippet },
-                // ReplicaIDToNotesVersionDataEncrypted must be passed through
-                // unchanged — Mac uses changes to it as its cache-invalidation
-                // signal and duplicates the body without it (see README).
-                replicaVersionPassThroughB64 = record.stringField("ReplicaIDToNotesVersionDataEncrypted"),
-            )
-            // Patch the cached list summary for this note so when
-            // the user navigates back they see the updated
-            // snippet/title without a refetch.
-            _notes.update { list ->
-                list.map { note ->
-                    if (note.recordName == record.recordName) {
-                        note.copy(
-                            title = newTitle,
-                            snippet = newSnippet,
-                            modificationTimestampMs = clock(),
-                        )
-                    } else note
-                }
-            }
+            updated = modifyWithRebase(client, uuid, record, newBody, isPureAppend, newSpans)
         }
         // The editor re-decodes the returned record. If CloudKit didn't echo
         // the body field, fetch it so a just-saved note doesn't look body-less
@@ -362,6 +317,140 @@ class NotesRepository(
                 ?.let { return it }
         }
         return updated
+    }
+
+    /**
+     * Write [newBody] over [record] (the version the user started editing),
+     * re-applying the edit to the server's current version on CONFLICT
+     * instead of overwriting it (issue #4):
+     *
+     * 1. First attempt: the edit spliced onto [record]'s proto, with its tag.
+     * 2. On [NotesError.Conflict]: look the note up again and three-way merge
+     *    the text ([TextMerge]: base = [record]'s text, local = [newBody],
+     *    remote = the fresh text). Clean → splice the merged text onto the
+     *    FRESH proto ([NoteRebase.rebaseBody], so the other device's char
+     *    IDs survive), with merged formatting ([NoteRebase.mergeSpans]) and
+     *    the fresh record's tag and ReplicaIDToNotesVersionDataEncrypted.
+     *    Overlapping edits → [EditConflictException] and nothing is written.
+     * 3. At most [MAX_SAVE_ATTEMPTS] writes, so a note that keeps changing
+     *    can't loop; the last Conflict is rethrown.
+     *
+     * The common post-create case (Mac's notesync bumps the tag without
+     * touching the text) is base == remote, which merges trivially.
+     */
+    private suspend fun modifyWithRebase(
+        client: NotesApi,
+        uuid: ByteArray,
+        record: NoteRecord,
+        newBody: String,
+        isPureAppend: Boolean,
+        newSpans: List<NoteBodyEditor.AttrSpan>?,
+    ): NoteRecord {
+        val baseB64 = record.stringField("TextDataEncrypted")
+            ?: error("No body field on this note.")
+        val baseText = NoteBodyEditor.readVisibleTextFromBase64(baseB64)
+            ?: NoteBodyEditor.readTextFromBase64(baseB64).orEmpty()
+        val now = clock() / 1000L
+
+        // Pure-append edits go through the cheap APPEND path (one new
+        // substring at the sentinel slot). Anything else (replace / insert /
+        // delete in the middle) goes through the splice path, which mirrors
+        // iCloud.com's pattern: slot promotion + split-and-tombstone + fresh
+        // ts on tombstones + new chunks for inserts.
+        var target = record
+        var targetText = baseText
+        var text = newBody
+        var b64 = if (isPureAppend && newSpans == null) {
+            val appended = newBody.removePrefix(baseText)
+            require(appended.isNotEmpty()) { "Pure-append marked but no new chars" }
+            NoteAppender.appendBase64(baseB64, uuid, appended, now)
+        } else {
+            NoteAppender.setBodyBase64(baseB64, uuid, newBody, now, newSpans)
+        }
+        var attempt = 1
+        while (true) {
+            val (oldTitle, oldSnippet) = computeTitleAndSnippet(targetText)
+            val (newTitle, newSnippet) = computeTitleAndSnippet(text)
+            AppLog.v(TAG) {
+                "save[a$attempt]: title '${oldTitle.take(30)}'->'${newTitle.take(30)}' " +
+                    "snippet '${oldSnippet.take(30)}'->'${newSnippet.take(30)}'"
+            }
+            val conflict = try {
+                val updated = client.modifyNoteBody(
+                    target.recordName,
+                    target.recordChangeTag ?: error("No change tag on ${target.recordName}"),
+                    b64,
+                    newTitle = newTitle.takeIf { it != oldTitle },
+                    newSnippet = newSnippet.takeIf { it != oldSnippet },
+                    // ReplicaIDToNotesVersionDataEncrypted must be passed through
+                    // unchanged (from the record the tag belongs to): Mac uses
+                    // changes to it as its cache-invalidation signal and
+                    // duplicates the body without it (see README).
+                    replicaVersionPassThroughB64 = target.stringField("ReplicaIDToNotesVersionDataEncrypted"),
+                )
+                patchSummary(record.recordName, newTitle, newSnippet)
+                return updated
+            } catch (e: NotesError.Conflict) {
+                e
+            }
+            if (attempt >= MAX_SAVE_ATTEMPTS) {
+                AppLog.w(TAG, "save: still conflicting after $attempt attempts; giving up")
+                throw conflict
+            }
+            attempt++
+            val fresh = conflict.fresh ?: client.lookupNote(record.recordName)
+            val freshB64 = fresh.stringField("TextDataEncrypted")
+                ?: throw EditConflictException(fresh, remoteText = "")
+            val remoteBody = decodeNoteBody(fresh)
+            if (remoteBody !is NoteBody.Editable) {
+                // The other device turned it into something we can't splice
+                // (e.g. the newer note format): never write over that.
+                throw EditConflictException(fresh, remoteBody.text.orEmpty())
+            }
+            val remoteText = remoteBody.text
+            val merged = TextMerge.merge(baseText, newBody, remoteText)
+            if (merged !is TextMerge.Clean) {
+                AppLog.i(TAG) { "save: edits overlap a remote change; not writing" }
+                throw EditConflictException(fresh, remoteText)
+            }
+            val mergedSpans = newSpans?.let {
+                NoteRebase.mergeSpans(
+                    merged,
+                    baseText = baseText,
+                    baseSpans = NoteBodyEditor.parseAttributeRunsFromBase64(baseB64),
+                    localText = newBody,
+                    localSpans = it,
+                    remoteText = remoteText,
+                    remoteSpans = remoteBody.spans,
+                )
+            }
+            if (merged.text == remoteText && (mergedSpans == null || mergedSpans == remoteBody.spans)) {
+                // The other device already made exactly this change.
+                AppLog.i(TAG) { "save: remote already has these edits; nothing to write" }
+                return fresh
+            }
+            AppLog.i(TAG) { "save: CONFLICT; re-applying the edit to the fresh record (attempt $attempt)" }
+            b64 = NoteRebase.rebaseBody(freshB64, uuid, merged, mergedSpans, clock() / 1000L)
+            target = fresh
+            targetText = remoteText
+            text = merged.text
+        }
+    }
+
+    /**
+     * Patch the cached list summary so back-navigation shows the updated
+     * title / snippet without a refetch.
+     */
+    private fun patchSummary(recordName: String, title: String, snippet: String) {
+        _notes.update { list ->
+            list.map { note ->
+                if (note.recordName == recordName) {
+                    note.copy(title = title, snippet = snippet, modificationTimestampMs = clock())
+                } else {
+                    note
+                }
+            }
+        }
     }
 
     /**
