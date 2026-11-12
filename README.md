@@ -93,7 +93,8 @@ you can't say you weren't warned.
 | Automation intent API (Tasker etc.) | Create / append / open; off by default, permission-protected — see [docs/automation.md](docs/automation.md) |
 | Home-screen widget | "Recent notes" (Jetpack Glance): up to 8 titles from the local cache (never the network) and a New note button; a title opens the note. Shows "Locked" and only the button while the app lock is on, nothing after sign-out. Not yet tried on a device |
 | On-device search (AppSearch) | Skipped on purpose: it would copy titles into a platform-wide index, see [docs/advice.md](docs/advice.md#entry-points-from-outside-the-app) |
-| `icloud.com/notes` links, DocumentsProvider | Not yet |
+| Files app / document picker | Read-only "Notes of Fruit" location (DocumentsProvider): folders → notes as Markdown (`.md`), generated on demand from the cache or one lookup; no write, delete or rename. Hidden while the app lock is on or signed out. Not yet tried on a device |
+| `icloud.com/notes` links | Not yet |
 | App lock | Optional (Settings, off by default): fingerprint / face / screen lock on cold start and after more than a minute in the background; while on, notes are hidden from Recents and screenshots (`FLAG_SECURE`) |
 | Tablet / landscape list-detail layout | Not yet |
 | Move notes between folders, folder create/rename/delete, restore from Recently Deleted, pinning | Not yet — needs writes to Apple's schema that haven't been observed |

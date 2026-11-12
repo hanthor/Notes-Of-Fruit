@@ -617,6 +617,12 @@ class NotesRepository(
         }
     }
 
+    /**
+     * Read-only access for the DocumentsProvider: the record cached when the
+     * note was last opened, else a lookup (which caches it). Never writes.
+     */
+    suspend fun noteForReading(recordName: String): NoteRecord = cachedBody(recordName) ?: lookupNote(recordName)
+
     private suspend fun cachedBody(recordName: String): NoteRecord? =
         runCatchingCancellable { store.getBody(recordName) }
             .onFailure { AppLog.w(TAG, "reading the cached note failed", it) }

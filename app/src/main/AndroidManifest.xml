@@ -190,6 +190,27 @@
                 android:resource="@xml/recent_notes_widget_info" />
         </receiver>
 
+        <!--
+            Read-only documents provider: folders -> notes as Markdown in the
+            system file picker. exported="true" because the documents UI
+            (another app) binds it; MANAGE_DOCUMENTS (signature|privileged,
+            held by the system documents UI only) guards it, as every
+            DocumentsProvider must. Apps reach a document only through the
+            picker's per-URI grant (grantUriPermissions). No write, delete,
+            rename or create. No roots while the app lock is on or nobody is
+            signed in.
+        -->
+        <provider
+            android:name=".documents.NotesDocumentsProvider"
+            android:authorities="${applicationId}.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+
         <!-- The adb DebugReceiver is declared in src/debug/AndroidManifest.xml
              so it never ships in release builds. -->
     </application>

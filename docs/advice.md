@@ -159,9 +159,10 @@ app/src/main/java/com/example/applenotes/           (:app)
 │   ├── AttachmentCache.kt    Disk cache for attachment images (LRU, 100 MB) + small LRU map
 │   ├── AttachmentAssets.kt   CKAsset / PreviewImages JSON → download URL + cache key
 │   └── NoteBody.kt           decodeNoteBody(): Editable vs ReadOnly(reason)
+├── documents/                Read-only DocumentsProvider (folders → notes as Markdown); NoteDocuments: id scheme + tree
 ├── export/                   Attribute runs → HTML / Markdown, Markdown → spans (import), SAF export, print
 ├── integrations/             Share-in / PROCESS_TEXT / shortcuts / QS tile / notes-role entry (IntegrationEntryActivity);
-│                             LocalSurfaces: refreshes the widget when the cache / sign-in / app lock change
+│                             LocalSurfaces: refreshes widget + documents provider when cache / sign-in / app lock change
 ├── log/AppLog.kt              The only logcat access; release builds log no note content (CoreLogBridge feeds :core into it)
 ├── security/                 Optional app lock: policy (timeout), DataStore toggle, BiometricPrompt, lock screen
 ├── sync/                     DraftSyncer (+ WorkManager DraftSyncWorker): background saves of unsent drafts
@@ -215,6 +216,21 @@ on, nothing after sign-out, otherwise up to 8 titles from the local cache;
 it never touches the network. `integrations/LocalSurfaces` refreshes it when
 `NotesRepository.notes` (every sync, save, delete and sign-out) or the app
 lock setting changes; that observer is the only hook.
+
+The documents provider (`documents/NotesDocumentsProvider`) shows a
+read-only "Notes of Fruit" location in the system file picker: `root` →
+`folder:<recordName>` → `note:<recordName>` (ids checked against the
+recordName shape), each note a `text/markdown` file rendered on open with
+the Export as Markdown converter, from the body cached when the note was
+last opened or one `lookupNote` (`NotesRepository.noteForReading`). Only
+cleanly decoded bodies are served (the editor's best-effort fallback can
+contain deleted text); locked notes never. No document has a write,
+delete, rename or create flag. It is guarded by `MANAGE_DOCUMENTS`; it has
+no roots, and every call fails, while the app lock is on or nobody is
+signed in, and `LocalSurfaces` notifies root and listing changes on
+sign-in, sign-out, lock changes and cache updates. The id scheme, the tree
+and the Markdown glue are unit-tested (`NoteDocumentsTest`); the provider
+itself has not run on a device yet.
 
 **On-device search (AppSearch) is skipped on purpose.** Putting note titles
 into AppSearch's platform storage would make them visible to system search

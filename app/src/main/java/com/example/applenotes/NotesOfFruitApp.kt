@@ -15,7 +15,7 @@ class NotesOfFruitApp : Application() {
         super.onCreate()
         // :core (proto/ + client/) logs through CoreLog; send it to AppLog.
         CoreLogBridge.install()
-        // Surfaces outside the app hide notes when the app lock is turned on.
+        // The widget and the documents provider hide notes when the app lock is turned on.
         LocalSurfaces.start(this)
     }
 }

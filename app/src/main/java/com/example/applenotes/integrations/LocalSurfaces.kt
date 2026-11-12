@@ -3,6 +3,7 @@ package com.example.applenotes.integrations
 import android.content.Context
 import com.example.applenotes.client.NoteSummary
 import com.example.applenotes.data.NotesRepository
+import com.example.applenotes.documents.NotesDocumentsProvider
 import com.example.applenotes.security.AppLockSettings
 import com.example.applenotes.widget.RecentNotesWidget
 import com.example.applenotes.widget.WidgetContent
@@ -17,11 +18,11 @@ import kotlinx.coroutines.launch
 
 /**
  * Keeps the surfaces outside the app that show cached notes (the home-screen
- * widget) in step with the cache, the sign-in state and the app lock. The
- * hook is deliberately small: it observes [NotesRepository.notes] (which
- * every sync, save, delete and sign-out updates) and
- * [AppLockSettings.enabled], and asks the surfaces to refresh; they re-read
- * what they show themselves.
+ * widget and the documents provider) in step with the cache, the sign-in
+ * state and the app lock. The hook is deliberately small: it observes
+ * [NotesRepository.notes] (which every sync, save, delete and sign-out
+ * updates) and [AppLockSettings.enabled], and asks both surfaces to refresh;
+ * they re-read what they show themselves.
  */
 internal object LocalSurfaces {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -53,6 +54,7 @@ internal object LocalSurfaces {
             notes.map { Triple(it.recordName, it.folderRecordName, it.title) }.toSet()
 
     private suspend fun changed(app: Context) {
+        NotesDocumentsProvider.notifyChanged(app)
         RecentNotesWidget.refresh(app)
     }
 }

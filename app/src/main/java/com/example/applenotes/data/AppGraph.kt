@@ -37,7 +37,7 @@ object AppGraph {
         repository ?: synchronized(this) {
             repository ?: createRepository(context.applicationContext).also {
                 repository = it
-                // Surfaces outside the app (home-screen widget, …) follow the cache.
+                // Surfaces outside the app (widget, documents provider) follow the cache.
                 LocalSurfaces.attach(context.applicationContext, it)
             }
         }
