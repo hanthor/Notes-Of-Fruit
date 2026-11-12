@@ -92,7 +92,24 @@ fun AppleNotesApp() {
     }
 
     val screen by appVm.screen.collectAsStateWithLifecycle()
-    when (val s = screen) {
+    // Issue #16: wide windows show the list and the open note side by side.
+    val twoPane = rememberTwoPane()
+    LaunchedEffect(twoPane) { appVm.setTwoPane(twoPane) }
+    val current = screen
+    if (twoPane && showsListAndDetail(current)) {
+        TwoPaneLayout(
+            list = { ListRoute(appVm, signOut, openNote = (current as? AppScreen.Detail)?.record?.recordName) },
+            detail = {
+                when (current) {
+                    is AppScreen.Detail -> DetailRoute(current, appVm, detailVm, twoPane = true)
+                    is AppScreen.Loading -> CenteredSpinner(current.msg.asString())
+                    else -> NoNoteSelectedPane()
+                }
+            },
+        )
+        return
+    }
+    when (val s = current) {
         AppScreen.Splash -> CenteredSpinner(stringResource(R.string.loading_starting))
         AppScreen.Login -> {
             val staleToken by appVm.loginStaleToken.collectAsStateWithLifecycle()
@@ -112,7 +129,12 @@ fun AppleNotesApp() {
 }
 
 @Composable
-private fun ListRoute(appVm: AppViewModel, signOut: () -> Unit) {
+private fun ListRoute(
+    appVm: AppViewModel,
+    signOut: () -> Unit,
+    /** Two-pane mode: the note shown next to the list, highlighted in it. */
+    openNote: String? = null,
+) {
     val context = LocalContext.current
     val resources = LocalResources.current
     val scope = rememberCoroutineScope()
@@ -172,9 +194,12 @@ private fun ListRoute(appVm: AppViewModel, signOut: () -> Unit) {
         folders = list.folders,
         selectedFolder = list.selectedFolder,
         onSelectFolder = appVm::selectFolder,
-        onSelect = appVm::openNote,
+        // Through the two-pane-aware entry points: with a note open beside
+        // the list, it is left (and saved) first.
+        onSelect = appVm::selectNote,
+        selectedNote = openNote,
         onRefresh = appVm::refresh,
-        onCreateNote = appVm::createNote,
+        onCreateNote = appVm::requestCreateNote,
         onSignOut = signOut,
         message = message,
         onMessageAction = appVm::onListMessageAction,
@@ -197,7 +222,7 @@ private fun ListRoute(appVm: AppViewModel, signOut: () -> Unit) {
                 exportFormat.value = ExportFormat.HTML
                 exportLauncher.launch(null)
             },
-            DrawerAction(UiText.Res(R.string.drawer_settings), Icons.Default.Settings) { appVm.showSettings() },
+            DrawerAction(UiText.Res(R.string.drawer_settings), Icons.Default.Settings) { appVm.requestSettings() },
         ),
     )
     if (exportState.running) {
@@ -210,6 +235,7 @@ private fun DetailRoute(
     screen: AppScreen.Detail,
     appVm: AppViewModel,
     detailVm: NoteDetailViewModel,
+    twoPane: Boolean = false,
 ) {
     val context = LocalContext.current
     LaunchedEffect(screen.openId) {
@@ -235,5 +261,22 @@ private fun DetailRoute(
     LaunchedEffect(status.exitRequested) {
         if (status.exitRequested) leave(status.exitMessage)
     }
-    NoteDetailScreen(vm = detailVm, onBack = { leave(null) }, onSignIn = appVm::signInAgain)
+    // Two-pane switching (issue #16): another note / New note / Settings was
+    // picked while this one is open. The screen runs its Back path; if the
+    // note stays open instead (the save failed, a question is up), the
+    // switch is dropped so a later Back just closes the note.
+    val leaveRequest by appVm.detailLeaveRequest.collectAsStateWithLifecycle()
+    LaunchedEffect(status.saving, status.saveFailed, status.conflict != null, status.savedDraft != null) {
+        val stays = status.saveFailed || status.conflict != null || status.savedDraft != null
+        if (!status.saving && !status.exitRequested && stays) appVm.cancelPendingSwitch()
+    }
+    NoteDetailScreen(
+        vm = detailVm,
+        onBack = { leave(null) },
+        onSignIn = appVm::signInAgain,
+        leaveRequest = leaveRequest,
+        onLeaveRequestHandled = appVm::onDetailLeaveRequestHandled,
+        onLeaveCancelled = appVm::cancelPendingSwitch,
+        inTwoPane = twoPane,
+    )
 }

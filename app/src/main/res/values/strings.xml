@@ -108,6 +108,8 @@
     <string name="detail_nothing_to_show">Nothing to show.</string>
     <string name="detail_start_typing">Start typing…</string>
     <string name="detail_edit_note">edit note</string>
+    <string name="detail_close_note">Close note</string>
+    <string name="two_pane_no_note">Pick a note from the list, or tap + to start a new one.</string>
     <!-- %1$s: a relative time such as "5m" or "Mar 4" -->
     <string name="detail_modified">Modified %1$s</string>
     <plurals name="detail_char_count">

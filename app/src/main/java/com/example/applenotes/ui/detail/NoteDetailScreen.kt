@@ -49,6 +49,8 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -76,6 +78,16 @@ internal fun NoteDetailScreen(
     onBack: () -> Unit,
     /** Go to sign-in after the session expired, keeping this note and its draft open. */
     onSignIn: () -> Unit = {},
+    /**
+     * Two-pane switching (issue #16): non-null asks the screen to leave
+     * exactly as Back does (save-on-leave, unsaved-changes dialog).
+     */
+    leaveRequest: Long? = null,
+    onLeaveRequestHandled: () -> Unit = {},
+    /** The user chose to stay on this note after a [leaveRequest] ("Keep editing"). */
+    onLeaveCancelled: () -> Unit = {},
+    /** Shown next to the list: Close instead of Back in the app bar. */
+    inTwoPane: Boolean = false,
 ) {
     val status by vm.status.collectAsStateWithLifecycle()
     val record = vm.record
@@ -179,6 +191,12 @@ internal fun NoteDetailScreen(
     androidx.activity.compose.BackHandler {
         onBackOrSave()
     }
+    val currentOnBackOrSave by rememberUpdatedState(onBackOrSave)
+    LaunchedEffect(leaveRequest) {
+        if (leaveRequest == null) return@LaunchedEffect
+        onLeaveRequestHandled()
+        currentOnBackOrSave()
+    }
 
     Scaffold(
         modifier = Modifier.imePadding(),
@@ -188,7 +206,11 @@ internal fun NoteDetailScreen(
                 TopAppBar(
                     navigationIcon = {
                         IconButton(onClick = onBackOrSave) {
-                            Icon(Icons.AutoMirrored.Default.ArrowBack, contentDescription = stringResource(R.string.action_back))
+                            if (inTwoPane) {
+                                Icon(Icons.Default.Close, contentDescription = stringResource(R.string.detail_close_note))
+                            } else {
+                                Icon(Icons.AutoMirrored.Default.ArrowBack, contentDescription = stringResource(R.string.action_back))
+                            }
                         }
                     },
                     title = {
@@ -392,7 +414,7 @@ internal fun NoteDetailScreen(
 
     if (showUnsavedDialog) {
         AlertDialog(
-            onDismissRequest = { showUnsavedDialog = false },
+            onDismissRequest = { showUnsavedDialog = false; onLeaveCancelled() },
             title = { Text(stringResource(R.string.unsaved_dialog_title)) },
             text = { Text(stringResource(R.string.unsaved_dialog_text)) },
             confirmButton = {
@@ -405,7 +427,7 @@ internal fun NoteDetailScreen(
                     TextButton(onClick = { showUnsavedDialog = false; vm.discardUnsavedChanges(); onBack() }) {
                         Text(stringResource(R.string.action_discard))
                     }
-                    TextButton(onClick = { showUnsavedDialog = false }) {
+                    TextButton(onClick = { showUnsavedDialog = false; onLeaveCancelled() }) {
                         Text(stringResource(R.string.unsaved_dialog_keep_editing))
                     }
                 }

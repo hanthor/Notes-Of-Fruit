@@ -67,6 +67,7 @@ import com.example.applenotes.ui.common.humanRelative
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import com.example.applenotes.R
 import kotlinx.coroutines.launch
@@ -96,6 +97,8 @@ internal fun NotesListScreen(
     onRetryUnsent: () -> Unit = {},
     /** Notes whose cached body matches a query (search beyond titles and snippets). */
     searchBodies: suspend (String) -> Set<String> = { emptySet() },
+    /** Two-pane mode: the recordName of the note open next to the list (issue #16). */
+    selectedNote: String? = null,
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var bodyMatches by remember { mutableStateOf<Set<String>>(emptySet()) }
@@ -255,7 +258,7 @@ internal fun NotesListScreen(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     items(filtered, key = { it.recordName }) { note ->
-                        NoteCard(note, onClick = { onSelect(note) })
+                        NoteCard(note, selected = note.recordName == selectedNote, onClick = { onSelect(note) })
                     }
                     item { Spacer(Modifier.height(80.dp)) } // FAB clearance
                 }
@@ -298,12 +301,12 @@ private fun EmptyNotesState(filtering: Boolean) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun NoteCard(note: NoteSummary, onClick: () -> Unit) {
+private fun NoteCard(note: NoteSummary, selected: Boolean, onClick: () -> Unit) {
     Card(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().semantics { this.selected = selected },
         colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surface,
+            containerColor = if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface,
         ),
         elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
         shape = MaterialTheme.shapes.large,

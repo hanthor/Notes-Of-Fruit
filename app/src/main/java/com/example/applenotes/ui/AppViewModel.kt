@@ -44,7 +44,11 @@ private const val TAG = "AppleNotesUi"
 sealed interface AppScreen {
     data object Splash : AppScreen
     data object Login : AppScreen
-    data class Loading(val msg: UiText) : AppScreen
+    /**
+     * [inDetailPane]: loading a note to open (or a new draft). On a wide
+     * window the list stays on screen and only the detail pane spins.
+     */
+    data class Loading(val msg: UiText, val inDetailPane: Boolean = false) : AppScreen
     /**
      * Full-screen error. Reserved for bootstrap (sign-in) failures.
      * [details] is the raw error text behind the "Details" button.
@@ -82,6 +86,18 @@ sealed interface AppScreen {
 
     /** The minimal settings screen (automation toggle). */
     data object Settings : AppScreen
+}
+
+/**
+ * Where to go once the open note has been left (two-pane mode, issue #16):
+ * picking another note, "New note" or Settings while a note is open first
+ * runs the editor's normal leave path (save-on-leave, unsaved-changes
+ * dialog), and only then switches.
+ */
+sealed interface PendingSwitch {
+    data class Open(val note: NoteSummary) : PendingSwitch
+    data object Create : PendingSwitch
+    data object Settings : PendingSwitch
 }
 
 /** Snackbar actions offered by the list screen. */
@@ -172,6 +188,25 @@ class AppViewModel(
         ) { base, syncing, refreshing, drafts ->
             base.copy(syncing = syncing, refreshing = refreshing, unsentCount = drafts.size)
         }.stateIn(viewModelScope, SharingStarted.Eagerly, NotesListUiState())
+
+    private val _twoPane = MutableStateFlow(false)
+
+    /** The window is wide enough for list + note side by side (set by the UI; issue #16). */
+    val twoPane: StateFlow<Boolean> = _twoPane.asStateFlow()
+
+    private val _detailLeaveRequest = MutableStateFlow<Long?>(null)
+    private var leaveRequestCounter = 0L
+
+    /**
+     * Non-null: the open note should leave exactly as if Back was pressed
+     * (two-pane switching). The detail screen runs its back path and calls
+     * [onDetailLeaveRequestHandled]; [showList] then performs [pendingSwitch].
+     */
+    val detailLeaveRequest: StateFlow<Long?> = _detailLeaveRequest.asStateFlow()
+
+    /** What to show after the open note has been left (see [PendingSwitch]). */
+    internal var pendingSwitch: PendingSwitch? = null
+        private set
 
     /** Last automatic (resume / reconnect) refresh attempt, for throttling. */
     private var lastAutoRefreshMs: Long? = null
@@ -322,6 +357,7 @@ class AppViewModel(
 
     fun signOut() {
         _loginStaleToken.value = null
+        cancelPendingSwitch()
         // Don't carry content shared before sign-out into another account.
         pendingIncoming = null
         repository.signOut()
@@ -360,7 +396,7 @@ class AppViewModel(
      * quietly, at most once a minute, never offline, never before sign-in.
      */
     fun onAppResumed(reconnected: Boolean = false) {
-        if (!online.value || _screen.value != AppScreen.NotesList) return
+        if (!online.value || !listVisible()) return
         if (repository.sessionExpired.value) return
         val now = System.currentTimeMillis()
         val last = maxOf(lastAutoRefreshMs ?: 0L, repository.lastSyncAtMs ?: 0L)
@@ -384,7 +420,7 @@ class AppViewModel(
     suspend fun searchCachedBodies(query: String): Set<String> = repository.searchCachedBodies(query)
 
     fun openNote(note: NoteSummary) {
-        _screen.value = AppScreen.Loading(UiText.Res(R.string.loading_note))
+        _screen.value = AppScreen.Loading(UiText.Res(R.string.loading_note), inDetailPane = true)
         viewModelScope.launch {
             runCatchingCancellable { repository.openNote(note.recordName) }
                 .onSuccess { showDetail(it.record, pendingFolderRef = null, offlineCopy = it.fromCache) }
@@ -409,7 +445,7 @@ class AppViewModel(
      * nothing is written until the editor saves.
      */
     fun createNote(prefill: DraftPrefill?) {
-        _screen.value = AppScreen.Loading(UiText.Res(R.string.loading_creating_note))
+        _screen.value = AppScreen.Loading(UiText.Res(R.string.loading_creating_note), inDetailPane = true)
         val folder = selectedFolder.value.takeIf { it != TRASH_RECORD_NAME } ?: DEFAULT_FOLDER_RECORD_NAME
         viewModelScope.launch {
             runCatchingCancellable { repository.folderRefForNewNote(folder) }
@@ -546,6 +582,68 @@ class AppViewModel(
         _screen.value = AppScreen.Settings
     }
 
+    // ----- Two-pane list + detail (issue #16) -----
+
+    /** Called by the UI whenever the window width class changes. */
+    fun setTwoPane(enabled: Boolean) {
+        _twoPane.value = enabled
+        // Back to one pane: a half-done switch would surprise later.
+        if (!enabled) cancelPendingSwitch()
+    }
+
+    /** The notes list is on screen (alone, or next to a note in two-pane mode). */
+    private fun listVisible(): Boolean = when (val s = _screen.value) {
+        AppScreen.NotesList -> true
+        is AppScreen.Detail -> _twoPane.value
+        is AppScreen.Loading -> _twoPane.value && s.inDetailPane
+        else -> false
+    }
+
+    /**
+     * A note tapped in the list. With a note open next to the list, that
+     * note is left first through its normal back path (saving it, or asking
+     * about unsaved changes); otherwise the note opens straight away.
+     */
+    fun selectNote(note: NoteSummary) {
+        val s = _screen.value
+        if (s is AppScreen.Detail) {
+            if (s.record?.recordName == note.recordName) return
+            requestSwitch(PendingSwitch.Open(note))
+        } else {
+            openNote(note)
+        }
+    }
+
+    /** "New note" (FAB), leaving the open note first in two-pane mode. */
+    fun requestCreateNote() {
+        if (_screen.value is AppScreen.Detail) requestSwitch(PendingSwitch.Create) else createNote()
+    }
+
+    /** Drawer → Settings, leaving the open note first in two-pane mode. */
+    fun requestSettings() {
+        if (_screen.value is AppScreen.Detail) requestSwitch(PendingSwitch.Settings) else showSettings()
+    }
+
+    private fun requestSwitch(target: PendingSwitch) {
+        pendingSwitch = target
+        _detailLeaveRequest.value = ++leaveRequestCounter
+    }
+
+    /** The detail screen started its back path for [detailLeaveRequest]. */
+    fun onDetailLeaveRequestHandled() {
+        _detailLeaveRequest.value = null
+    }
+
+    /**
+     * The open note stays (the save failed, a conflict / restore question is
+     * up, or the user chose "Keep editing"): forget the switch, so a later
+     * Back just closes the note.
+     */
+    fun cancelPendingSwitch() {
+        pendingSwitch = null
+        _detailLeaveRequest.value = null
+    }
+
     /**
      * Back to the cached list. No network round trip — the repository patched
      * its cache in place when we saved, so the snippet for the just-edited
@@ -555,7 +653,15 @@ class AppViewModel(
         savedState.remove<String>(KEY_DETAIL_OPEN_ID)
         _screen.value = AppScreen.NotesList
         if (message != null) postListMessage(message, action = null)
-        processPendingIncoming()
+        val switch = pendingSwitch
+        pendingSwitch = null
+        _detailLeaveRequest.value = null
+        when (switch) {
+            is PendingSwitch.Open -> openNote(switch.note)
+            PendingSwitch.Create -> createNote()
+            PendingSwitch.Settings -> showSettings()
+            null -> processPendingIncoming()
+        }
     }
 
     private fun postListMessage(text: UiText, action: ListAction?, details: String? = null) {
