@@ -115,7 +115,10 @@ jobs:
           WANT_CODE: ${{ steps.tag.outputs.version_code }}
         run: |
           BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -n 1)"
-          BADGING="$("$BT/aapt2" dump badging "$APK" | head -n 1)"
+          # Write to a file first: piping into `head -n 1` makes aapt2 die of
+          # SIGPIPE, which fails the step under the runner's `-o pipefail`.
+          "$BT/aapt2" dump badging "$APK" > "$RUNNER_TEMP/badging.txt"
+          BADGING="$(head -n 1 "$RUNNER_TEMP/badging.txt")"
           echo "$BADGING"
           GOT_NAME="$(sed -n "s/.*versionName='\([^']*\)'.*/\1/p" <<< "$BADGING")"
           GOT_CODE="$(sed -n "s/.*versionCode='\([^']*\)'.*/\1/p" <<< "$BADGING")"
